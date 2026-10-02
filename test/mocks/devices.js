@@ -49,7 +49,50 @@ function wsSend(sock, text) {
   sock.write(Buffer.concat([h, p]));
 }
 
+// --- Minimal S3 (path-style bucket "backups"), with independent SigV4 verification of what is received ---
+const S3 = { bucket: 'backups', accessKey: 'S3ACCESSKEY', secret: 'S3SECRETKEY123', objects: new Map(), requests: 0 };
+const h256 = (d) => crypto.createHash('sha256').update(d).digest('hex');
+const mac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
+function s3Verify(req, body) {
+  const auth = req.headers.authorization || '';
+  const m = /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, SignedHeaders=([a-z0-9;-]+), Signature=([0-9a-f]{64})$/.exec(auth);
+  if (!m || m[1] !== S3.accessKey) return 'InvalidAccessKeyId';
+  if (req.headers['x-amz-content-sha256'] !== h256(body)) return 'XAmzContentSHA256Mismatch';
+  const u = new URL(req.url, 'https://x');
+  const enc = (v) => encodeURIComponent(v).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  const query = [...u.searchParams].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${enc(k)}=${enc(v)}`).join('&');
+  const names = m[4].split(';');
+  const canon = [req.method, u.pathname, query, names.map((n) => `${n}:${String(req.headers[n]).trim()}\n`).join(''), m[4], req.headers['x-amz-content-sha256']].join('\n');
+  const scope = `${m[2]}/${m[3]}/s3/aws4_request`;
+  const sts = ['AWS4-HMAC-SHA256', req.headers['x-amz-date'], scope, h256(canon)].join('\n');
+  const key = mac(mac(mac(mac('AWS4' + S3.secret, m[2]), m[3]), 's3'), 'aws4_request');
+  return mac(key, sts).toString('hex') === m[5] ? null : 'SignatureDoesNotMatch';
+}
+function s3Handle(req, res, body) {
+  S3.requests++;
+  const err = s3Verify(req, body);
+  if (err) { res.writeHead(403, { 'Content-Type': 'application/xml' }); return res.end(`<Error><Code>${err}</Code></Error>`); }
+  const u = new URL(req.url, 'https://x');
+  const key = decodeURIComponent(u.pathname.slice(`/${S3.bucket}/`.length));
+  if (req.method === 'PUT') { S3.objects.set(key, body); res.writeHead(200); return res.end(); }
+  if (req.method === 'DELETE') { S3.objects.delete(key); res.writeHead(204); return res.end(); }
+  if (req.method === 'GET' && u.searchParams.get('list-type') === '2') {
+    const prefix = u.searchParams.get('prefix') || '';
+    const keys = [...S3.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    return res.end(`<?xml version="1.0"?><ListBucketResult><Name>${S3.bucket}</Name>${keys.map((k) => `<Contents><Key>${k}</Key><Size>${S3.objects.get(k).length}</Size></Contents>`).join('')}</ListBucketResult>`);
+  }
+  res.writeHead(400); res.end();
+}
+
 const server = https.createServer(opts, (req, res) => {
+  if (req.url.startsWith(`/${S3.bucket}/`) || req.url === '/__s3') {
+    if (req.url === '/__s3') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ keys: [...S3.objects.keys()], requests: S3.requests })); }
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => s3Handle(req, res, Buffer.concat(chunks)));
+    return;
+  }
   requests++;
   const u = req.url;
   if (u === '/__stats') { res.end(R({ requests, seenAuth, unifiLogins })); return; }

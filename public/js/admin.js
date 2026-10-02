@@ -1010,6 +1010,294 @@ $('web-form').addEventListener('submit', async (ev) => {
 });
 
 // ---------------------------------------------------------------------------
+// Backup
+
+let bk = null; // status from the server
+let destDraft = null; // destination being edited
+
+async function loadBackup() {
+  try {
+    bk = await api('GET', '/api/admin/backup');
+    renderBackup();
+  } catch (e) {
+    showMsg('bk-schedule-msg', e.message, false);
+  }
+}
+
+const destSummary = (d) => (d.type === 'folder' ? `${bk.folderBase}/${d.folder || ''}`.replace(/\/$/, '')
+  : d.type === 's3' ? `${d.bucket}${d.prefix ? `/${d.prefix}` : ''} · ${new URL(d.endpoint).host}`
+    : `${d.user}@${d.host}:${d.path}${d.port !== 22 ? ` (port ${d.port})` : ''}`);
+
+function renderBackup() {
+  const f = $('bk-schedule').elements;
+  f.enabled.checked = bk.schedule.enabled;
+  f.time.value = bk.schedule.time;
+  f.keep.value = bk.schedule.keep;
+  f.passphrase.value = '';
+  f.passphrase.placeholder = bk.hasPassphrase ? 'Stored (leave blank to keep)' : 'Not set';
+  $('bk-pass-hint').textContent = bk.hasPassphrase ? 'Write-only. Needed to restore these backups; keep a copy somewhere safe.' : 'Required for automatic backups (min. 12 characters).';
+  $('bk-history').replaceChildren(bk.history.length
+    ? el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, ['When', 'Trigger', 'Size', 'Result'].map((t) => el('th', { text: t })))),
+      el('tbody', null, bk.history.slice(0, 10).map((h) => el('tr', null,
+        el('td', { class: 'small', text: fmt.time(h.at) }), el('td', { class: 'small', text: h.trigger }),
+        el('td', { class: 'small num', text: h.bytes ? fmt.bytes(h.bytes) : '–' }),
+        el('td', null, h.error ? HD.status(h.error, 'critical')
+          : [HD.status('Local copy', 'good'), ...h.results.map((x) => [' ', HD.status(x.ok ? x.name : `${x.name}: ${x.error}`, x.ok ? 'good' : 'critical')])]))))))
+    : el('p', { class: 'small muted', text: 'No backups yet.' }));
+  $('bk-add').replaceChildren(el('option', { value: '', text: 'Add destination…' }), ...Object.entries(bk.types).map(([k, label]) => el('option', { value: k, text: label })));
+  $('bk-dests').replaceChildren(...(bk.destinations.length ? bk.destinations.map((d) => {
+    const last = bk.history.find((h) => h.results?.some((x) => x.id === d.id))?.results.find((x) => x.id === d.id);
+    const result = el('span', { class: 'small' });
+    return el('div', { class: `svc-row${destDraft?.id === d.id ? ' selected' : ''}` },
+      el('span', { class: `led ${!d.enabled ? 'off' : last ? (last.ok ? 'good' : 'critical') : 'off'}`, 'aria-hidden': 'true' }),
+      el('div', { class: 'device-main' }, el('strong', { text: d.name }), el('span', { class: 'small muted', text: `${bk.types[d.type]} · ${destSummary(d)}${d.enabled ? '' : ' · paused'}` }), result),
+      el('span'),
+      el('span', { class: 'svc-row-actions' },
+        el('button', { type: 'button', text: 'Test', onclick: () => testDestination(d, result) }),
+        el('button', { type: 'button', text: 'Edit', onclick: () => openDestination(d) })));
+  }) : [el('p', { class: 'small muted', text: 'None yet: backups are only kept on this server.' })]));
+  $('bk-local').replaceChildren(bk.local.length
+    ? el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, el('th', { text: 'File' }), el('th', { class: 'r', text: 'Size' }), el('th'))),
+      el('tbody', null, bk.local.map((x) => el('tr', null,
+        el('td', { class: 'small num', text: x.file }), el('td', { class: 'r small num', text: fmt.bytes(x.bytes) }),
+        el('td', { class: 'r' },
+          el('button', { type: 'button', text: 'Download', onclick: () => downloadLocal(x.file) }), ' ',
+          el('button', { type: 'button', text: 'Restore', onclick: () => restoreLocal(x.file) }), ' ',
+          el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: () => deleteLocal(x.file) })))))))
+    : el('p', { class: 'small muted', text: 'None yet.' }));
+}
+
+async function testDestination(d, out) {
+  out.textContent = ' Testing…';
+  out.className = 'small muted';
+  try {
+    const r = await api('POST', `/api/admin/backup/destinations/${d.id}/test`, {});
+    out.textContent = r.ok ? 'Works' : r.error;
+    out.className = `small msg ${r.ok ? 'ok' : 'error'}`;
+  } catch (e) {
+    out.textContent = e.message;
+    out.className = 'small msg error';
+  }
+}
+
+async function downloadLocal(file) {
+  const r = await HD.raw('GET', `/api/admin/backup/local/${file}`);
+  HD.saveBlob(await r.blob(), file);
+}
+async function deleteLocal(file) {
+  if (!confirm(`Delete the local copy ${file}?`)) return;
+  bk = await api('DELETE', `/api/admin/backup/local/${file}`);
+  renderBackup();
+}
+async function restoreLocal(file) {
+  const passphrase = prompt(`Restore ${file}?\n\nThis replaces the current settings, devices, services and docs (the current state is saved as a local copy first).\n\nPassphrase of this backup:`);
+  if (!passphrase) return;
+  try {
+    await api('POST', '/api/admin/backup/restore-local', { file, passphrase });
+    alert('Restored. The page will reload.');
+    location.reload();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+$('bk-download').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  showMsg('bk-download-msg', 'Preparing…', true);
+  try {
+    const r = await HD.raw('POST', '/api/admin/backup/download', { json: { passphrase: f.passphrase.value } });
+    const name = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '')?.[1] || 'homelab-dashboard.hldb';
+    HD.saveBlob(await r.blob(), name);
+    showMsg('bk-download-msg', `Saved ${name}`, true);
+  } catch (e) {
+    showMsg('bk-download-msg', e.message, false);
+  } finally {
+    f.passphrase.value = '';
+  }
+});
+
+$('bk-restore').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const file = f.file.files[0];
+  if (!file || !confirm(`Restore from ${file.name}? This replaces the current settings, devices, services and docs.`)) return;
+  showMsg('bk-restore-msg', 'Restoring…', true);
+  try {
+    const r = await HD.raw('POST', '/api/admin/backup/restore', {
+      body: file,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Backup-Passphrase': encodeURIComponent(f.passphrase.value), 'X-Restore-Admin': f.admin.checked ? '1' : '0', 'X-Restore-Server': f.server.checked ? '1' : '0' },
+    });
+    const info = await r.json();
+    alert(`Restored the backup from ${fmt.time(info.createdAt)} (${info.host}). The page will reload.`);
+    location.reload();
+  } catch (e) {
+    showMsg('bk-restore-msg', e.message, false);
+  } finally {
+    f.passphrase.value = '';
+  }
+});
+
+$('bk-schedule').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  try {
+    bk = await api('PUT', '/api/admin/backup/settings', { schedule: { enabled: f.enabled.checked, time: f.time.value, keep: Number(f.keep.value) }, passphrase: f.passphrase.value });
+    renderBackup();
+    showMsg('bk-schedule-msg', 'Saved', true);
+  } catch (e) {
+    showMsg('bk-schedule-msg', e.message, false);
+  } finally {
+    f.passphrase.value = '';
+  }
+});
+
+$('bk-run').addEventListener('click', async () => {
+  showMsg('bk-schedule-msg', 'Backing up…', true);
+  try {
+    const r = await api('POST', '/api/admin/backup/run', {});
+    bk = r.status;
+    renderBackup();
+    const failed = r.entry.results.filter((x) => !x.ok);
+    showMsg('bk-schedule-msg', failed.length ? `Saved locally; failed: ${failed.map((x) => x.name).join(', ')}` : `Done: ${r.entry.file}`, !failed.length);
+  } catch (e) {
+    showMsg('bk-schedule-msg', e.message, false);
+  }
+});
+
+// --- destination editor ---
+
+$('bk-add').addEventListener('change', (e) => {
+  const type = e.target.value;
+  e.target.value = '';
+  if (type) openDestination({ id: null, type, name: '', enabled: true, folder: '', port: 22, region: '', pathStyle: false, tlsMode: 'verify' });
+});
+
+function openDestination(d) {
+  destDraft = { ...d, secret: '' };
+  const box = $('bk-editor');
+  box.classList.remove('hidden');
+  const fields = [];
+  const input = (key, label, attrs = {}, hint = null, cls = null) => {
+    const n = el('input', { value: destDraft[key] ?? '', spellcheck: 'false', autocomplete: 'off', ...attrs });
+    n.addEventListener('input', () => (destDraft[key] = attrs.type === 'number' ? Number(n.value) : n.value));
+    fields.push(el('label', { class: cls }, el('span', { text: label }), n, hint ? el('span', { class: 'hint', text: hint }) : null));
+    return n;
+  };
+  const check = (key, label) => {
+    const n = el('input', { type: 'checkbox', checked: destDraft[key] });
+    n.addEventListener('change', () => (destDraft[key] = n.checked));
+    fields.push(el('label', { class: 'check' }, n, ` ${label}`));
+  };
+  input('name', 'Name', { placeholder: { folder: 'NAS', s3: 'Backblaze B2', rsync: 'Synology' }[d.type] });
+  check('enabled', 'Enabled');
+  const extra = [];
+  if (d.type === 'folder') {
+    input('folder', 'Subfolder', { placeholder: 'e.g. lookout' }, `Saved under ${bk.folderBase}/…`);
+    extra.push(el('details', { class: 'small' }, el('summary', { text: 'How to mount a share from the DS418 there' }),
+      el('p', { text: bk.folderBaseExists ? `${bk.folderBase} exists.` : `${bk.folderBase} does not exist yet: re-run the installer.` }),
+      el('pre', { text: [
+        '# NFS (DSM: Control Panel → Shared Folder → Edit → NFS Permissions → allow this VM)',
+        `192.168.1.x:/volume1/backups  ${bk.folderBase}  nfs  defaults,_netdev  0 0`,
+        '',
+        '# or SMB/CIFS (credentials file readable by root only)',
+        `//192.168.1.x/backups  ${bk.folderBase}  cifs  credentials=/root/.smb-backup,uid=homelab-dash,gid=homelab-dash,file_mode=0600,dir_mode=0700,_netdev  0 0`,
+      ].join('\n') })));
+  }
+  if (d.type === 's3') {
+    input('endpoint', 'Endpoint', { placeholder: 'https://s3.eu-central-003.backblazeb2.com' }, null, 'wide');
+    input('region', 'Region', { placeholder: 'eu-central-003' });
+    input('bucket', 'Bucket', { placeholder: 'my-homelab-backups' });
+    input('prefix', 'Folder in bucket', { placeholder: 'lookout' });
+    input('accessKey', 'Access key ID');
+    input('secret', 'Secret access key', { type: 'password', autocomplete: 'new-password', placeholder: d.hasSecret ? 'Stored (leave blank to keep)' : 'Not set' });
+    check('pathStyle', 'Path-style URLs (MinIO and most self-hosted S3)');
+    const tls = el('select', null, el('option', { value: 'verify', text: 'Verify with trusted CAs' }), el('option', { value: 'pin', text: 'Pin SHA-256 fingerprint' }));
+    tls.value = destDraft.tlsMode || 'verify';
+    tls.addEventListener('change', () => (destDraft.tlsMode = tls.value));
+    fields.push(el('label', null, el('span', { text: 'TLS certificate check' }), tls));
+    input('fingerprint', 'Fingerprint (when pinned)', { placeholder: 'AB:CD:…' });
+  }
+  if (d.type === 'rsync') {
+    input('host', 'Host', { placeholder: '192.168.1.x' });
+    input('port', 'SSH port', { type: 'number', min: 1, max: 65535 });
+    input('user', 'User', { placeholder: 'backup' });
+    input('path', 'Remote folder', { placeholder: '/volume1/backups/lookout' });
+    input('rsyncPath', 'Remote rsync path (optional)', { placeholder: 'only if rsync is not in PATH' });
+    if (d.id) {
+      const keyOut = el('div');
+      const hostOut = el('div');
+      const showKey = (pub) => keyOut.replaceChildren(el('p', { class: 'small', text: 'Add this line to ~/.ssh/authorized_keys of the user on the target (it can only be used with this key):' }), el('pre', { class: 'wrap', text: pub }));
+      if (d.publicKey) showKey(d.publicKey);
+      extra.push(el('h4', { text: 'SSH key' }), keyOut, el('div', { class: 'form-actions' }, el('button', {
+        type: 'button',
+        text: d.publicKey ? 'Generate a new key' : 'Generate key',
+        onclick: async () => {
+          if (d.publicKey && !confirm('Replace the key? The old public key stops working.')) return;
+          const r = await api('POST', `/api/admin/backup/destinations/${d.id}/sshkey`, {});
+          d.publicKey = r.publicKey;
+          showKey(r.publicKey);
+        },
+      })));
+      extra.push(el('h4', { text: 'Host key (pinned)' }), hostOut, el('div', { class: 'form-actions' }, el('button', {
+        type: 'button',
+        text: 'Fetch host key',
+        onclick: async () => {
+          hostOut.replaceChildren('Connecting…');
+          try {
+            const r = await api('POST', '/api/admin/backup/keyscan', { host: destDraft.host, port: destDraft.port });
+            hostOut.replaceChildren(el('ul', { class: 'small' }, r.fingerprints.map((x) => el('li', null, `${x.type}: `, el('code', { text: x.fingerprint })))),
+              el('p', { class: 'small muted', text: 'Compare with the target (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.' }),
+              el('button', { type: 'button', text: 'Trust this host key', onclick: () => { destDraft.knownHosts = r.knownHosts; hostOut.replaceChildren(el('span', { class: 'msg ok', text: 'Will be pinned when you save.' })); } }));
+          } catch (e) {
+            hostOut.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+          }
+        },
+      })));
+      if (d.knownHosts) hostOut.replaceChildren(el('span', { class: 'small muted', text: `Pinned: ${d.knownHosts.split('\n').map((l) => l.split(' ')[1]).join(', ')}` }));
+    } else extra.push(el('p', { class: 'hint', text: 'Save first; then generate the SSH key and pin the host key.' }));
+  }
+  const msg = el('span', { class: 'msg', role: 'status' });
+  box.replaceChildren(
+    el('h4', { text: `${d.id ? 'Edit' : 'New'} destination: ${bk.types[d.type]}` }),
+    el('div', { class: 'form-grid two' }, fields),
+    ...extra,
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: 'Save destination', onclick: async () => {
+        try {
+          const body = { ...destDraft };
+          const r = d.id ? await api('PUT', `/api/admin/backup/destinations/${d.id}`, body) : await api('POST', '/api/admin/backup/destinations', body);
+          bk = r.status;
+          if (r.note) alert(r.note);
+          renderBackup();
+          if (!d.id && d.type === 'rsync') openDestination(r.destination); // continue with key + host key
+          else closeDestination();
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      el('button', { type: 'button', text: 'Close', onclick: closeDestination }),
+      d.id ? el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: async () => {
+        if (!confirm(`Delete the destination ${d.name}? Files already there are kept.`)) return;
+        bk = await api('DELETE', `/api/admin/backup/destinations/${d.id}`);
+        closeDestination();
+      } }) : null,
+      msg));
+  renderBackup();
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function closeDestination() {
+  destDraft = null;
+  $('bk-editor').classList.add('hidden');
+  $('bk-editor').replaceChildren();
+  renderBackup();
+}
+
+// ---------------------------------------------------------------------------
 // Appearance
 
 const THEME_NAMES = {
@@ -1142,7 +1430,7 @@ $('ap-revert').addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // Tabs (remembered in the URL, e.g. /admin#devices)
 
-const TABS = ['devices', 'services', 'power', 'dashboard', 'appearance', 'account'];
+const TABS = ['devices', 'services', 'power', 'dashboard', 'appearance', 'backup', 'account'];
 
 function showTab(name, focus) {
   if (name === 'hosts' || name === 'rack') name = 'devices'; // old links
@@ -1158,6 +1446,7 @@ function showTab(name, focus) {
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
   if (name === 'services') loadServices();
   if (name === 'dashboard') loadWeb();
+  if (name === 'backup') loadBackup();
 }
 
 for (const t of TABS) $(`tabbtn-${t}`).addEventListener('click', () => showTab(t));

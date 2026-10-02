@@ -311,6 +311,7 @@ function loadConfig() {
     devices: Array.isArray(raw.devices) ? raw.devices : [],
     services: Array.isArray(raw.services) ? raw.services : [],
     icons: Array.isArray(raw.icons) ? raw.icons : [], // [{ id, mime, bytes, source, addedAt }]
+    backup: { ...structuredClone(DEFAULT_BACKUP), ...(raw.backup || {}), schedule: { ...DEFAULT_BACKUP.schedule, ...(raw.backup?.schedule || {}) } },
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   // Every connection belongs to a device
@@ -3841,6 +3842,155 @@ async function handleApi(req, res, url, session) {
     }
   }
 
+  // --- Backup ---
+  if (p === '/api/admin/backup' && m === 'GET') return sendJson(res, 200, backupStatus());
+  if (p === '/api/admin/backup/settings' && m === 'PUT') {
+    const b = await readBody(req);
+    const time = String(b.schedule?.time || '');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new UserError('Time must be HH:MM');
+    const schedule = { enabled: b.schedule?.enabled === true, time, keep: num(b.schedule?.keep, 1, 100, 'Copies to keep', { int: true }) };
+    if (typeof b.passphrase === 'string' && b.passphrase) {
+      const problem = backupPassphraseProblem(b.passphrase);
+      if (problem) throw new UserError(problem);
+      config.backup.passphrase = encryptSecret(passHost(), b.passphrase);
+    }
+    if (schedule.enabled && !config.backup.passphrase) throw new UserError('Set a backup passphrase to enable automatic backups');
+    config.backup.schedule = schedule;
+    saveConfig();
+    return sendJson(res, 200, backupStatus());
+  }
+  if (p === '/api/admin/backup/run' && m === 'POST') {
+    const entry = await runBackup('manual');
+    return sendJson(res, entry.error ? 400 : 200, { entry, status: backupStatus(), error: entry.error });
+  }
+  if (p === '/api/admin/backup/download' && m === 'POST') {
+    const { passphrase } = await readBody(req);
+    const problem = backupPassphraseProblem(passphrase);
+    if (problem) throw new UserError(problem);
+    saveEnergy();
+    const data = await encryptBackup(backupBundle(), passphrase);
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${backupStamp('-manual')}"`, 'Content-Length': data.length });
+    return res.end(data);
+  }
+  if ((p === '/api/admin/backup/restore' || p === '/api/admin/backup/restore-local') && m === 'POST') {
+    let passphrase;
+    let buf;
+    let opts;
+    if (p.endsWith('-local')) {
+      const b = await readBody(req);
+      if (typeof b.file !== 'string' || !BACKUP_NAME.test(b.file)) throw new UserError('Unknown backup');
+      buf = fs.readFileSync(path.join(LOCAL_BACKUP_DIR, b.file));
+      passphrase = String(b.passphrase || '');
+      opts = { admin: b.admin === true, server: b.server === true };
+    } else {
+      try {
+        passphrase = decodeURIComponent(String(req.headers['x-backup-passphrase'] || ''));
+      } catch {
+        throw new UserError('Invalid passphrase header');
+      }
+      opts = { admin: req.headers['x-restore-admin'] === '1', server: req.headers['x-restore-server'] === '1' };
+      buf = await readRawBody(req, 512 << 20);
+    }
+    const bundle = await decryptBackup(buf, passphrase);
+    // Safety net: the current state, encrypted with the same passphrase, kept as a local copy
+    fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true, mode: 0o700 });
+    saveEnergy();
+    fs.writeFileSync(path.join(LOCAL_BACKUP_DIR, backupStamp('-pre-restore')), await encryptBackup(backupBundle(), passphrase), { mode: 0o600 });
+    await restoreBundle(bundle, opts);
+    log(`Restored backup from ${new Date(bundle.createdAt).toISOString()} (${bundle.host})`);
+    return sendJson(res, 200, { ok: true, createdAt: bundle.createdAt, host: bundle.host });
+  }
+  const lb = p.match(/^\/api\/admin\/backup\/local\/(homelab-dashboard-[0-9a-z-]+\.hldb)$/);
+  if (lb && BACKUP_NAME.test(lb[1])) {
+    const file = path.join(LOCAL_BACKUP_DIR, lb[1]);
+    if (!fs.existsSync(file)) throw Object.assign(new UserError('Not found'), { status: 404 });
+    if (m === 'DELETE') {
+      fs.rmSync(file);
+      return sendJson(res, 200, backupStatus());
+    }
+    if (m === 'GET') {
+      const data = fs.readFileSync(file);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${lb[1]}"`, 'Content-Length': data.length });
+      return res.end(data);
+    }
+  }
+  if (p === '/api/admin/backup/keyscan' && m === 'POST') {
+    const b = await readBody(req);
+    const d = validateDestination({ type: 'rsync', host: b.host, port: b.port, user: 'x', path: 'x' });
+    return sendJson(res, 200, await sshKeyscan(d.host, d.port));
+  }
+  if (p === '/api/admin/backup/destinations' && m === 'POST') {
+    const b = await readBody(req);
+    const d = { id: crypto.randomUUID(), ...validateDestination(b), secret: null };
+    if (d.type === 's3' && b.secret) d.secret = encryptSecret(destHost(d), String(b.secret));
+    config.backup.destinations.push(d);
+    saveConfig();
+    return sendJson(res, 201, { destination: { ...d, secret: undefined, hasSecret: Boolean(d.secret) }, status: backupStatus() });
+  }
+  const dd = p.match(/^\/api\/admin\/backup\/destinations\/([0-9a-f-]{36})(\/test|\/sshkey)?$/);
+  if (dd) {
+    const old = config.backup.destinations.find((x) => x.id === dd[1]);
+    if (!old) throw Object.assign(new UserError('Destination not found'), { status: 404 });
+    if (dd[2] === '/sshkey' && m === 'POST') {
+      if (old.type !== 'rsync') throw new UserError('Only for rsync destinations');
+      const key = await generateSshKey(`homelab-dashboard@${os.hostname()}`);
+      old.publicKey = key.publicKey;
+      old.secret = encryptSecret(destHost(old), key.privateKey);
+      saveConfig();
+      return sendJson(res, 200, { publicKey: key.publicKey, status: backupStatus() });
+    }
+    if (dd[2] === '/test' && m === 'POST') {
+      try {
+        if (old.type === 'folder') {
+          const dir = path.join(BACKUP_BASE, old.folder || '');
+          if (!fs.existsSync(BACKUP_BASE)) throw new UserError(`${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
+          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          const probe = path.join(dir, `.write-test-${crypto.randomBytes(4).toString('hex')}`);
+          fs.writeFileSync(probe, 'ok');
+          fs.rmSync(probe);
+        } else if (old.type === 's3') {
+          const secret = secretOrNull(destHost(old));
+          if (!secret) throw new UserError('No secret access key set');
+          await s3List(old, secret);
+        } else {
+          fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true, mode: 0o700 });
+          await rsyncPush(old, LOCAL_BACKUP_DIR, { dryRun: true });
+        }
+        return sendJson(res, 200, { ok: true });
+      } catch (e) {
+        return sendJson(res, 200, { ok: false, error: e instanceof UserError ? e.message : safeErrorMessage(e, null) });
+      }
+    }
+    if (!dd[2] && m === 'PUT') {
+      const b = await readBody(req);
+      const next = { ...old, ...validateDestination({ ...b, type: old.type, publicKey: old.publicKey }) };
+      let note = null;
+      if (old.type === 's3') {
+        const changed = ['endpoint', 'accessKey', 'tlsMode', 'fingerprint'].some((k) => next[k] !== old[k]);
+        if (b.secret) next.secret = encryptSecret(destHost(next), String(b.secret));
+        else if (changed && old.secret) {
+          next.secret = null;
+          note = 'The endpoint, access key or certificate changed, so the stored secret was deleted. Enter it again.';
+        }
+      }
+      if (old.type === 'rsync') {
+        if (next.host !== old.host || next.port !== old.port) {
+          if (next.knownHosts === old.knownHosts) next.knownHosts = ''; // a different server needs its own pinned host key
+        }
+        // the SSH key is bound to the destination id, not to the host: keep it decryptable
+        next.secret = old.secret ? encryptSecret(destHost(next), decryptSecret(destHost(old))) : null;
+      }
+      config.backup.destinations[config.backup.destinations.indexOf(old)] = next;
+      saveConfig();
+      return sendJson(res, 200, { destination: { ...next, secret: undefined, hasSecret: Boolean(next.secret) }, note, status: backupStatus() });
+    }
+    if (!dd[2] && m === 'DELETE') {
+      config.backup.destinations = config.backup.destinations.filter((x) => x !== old);
+      saveConfig();
+      return sendJson(res, 200, backupStatus());
+    }
+  }
+
   if (p === '/api/admin/fingerprint' && m === 'POST') {
     // Connects and reads the certificate only; no application data is sent.
     const body = await readBody(req);
@@ -3955,6 +4105,435 @@ async function handle(req, res) {
     log('Request error:', e && e.stack ? e.stack : e);
     if (!res.headersSent) sendError(res, 500, 'Internal error');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Backup and restore
+//
+// A backup is one file: settings, devices, connections, services, docs, energy history and
+// uploaded images, gzip-compressed and encrypted with a passphrase (scrypt + AES-256-GCM).
+// Secrets are decrypted with the server key and travel inside the passphrase-encrypted file,
+// so a backup restores on a fresh install (new server key); the server key itself never leaves.
+// Automatic backups keep the last N copies locally and send them to the chosen destinations:
+// a mounted folder, S3-compatible storage, or rsync over SSH (pinned host key, encrypted SSH key).
+
+const zlib = require('node:zlib');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
+
+const BACKUP_MAGIC = Buffer.from('HLDBAK1\n');
+const BACKUP_SCRYPT = { N: 32768, r: 8, p: 1 };
+const LOCAL_BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_BASE = path.resolve(process.env.BACKUP_DIR || '/var/backups/homelab-dashboard'); // mount NAS shares here
+const BACKUP_NAME = /^homelab-dashboard-\d{4}-\d{2}-\d{2}-\d{6}(-[a-z-]+)?\.hldb$/;
+const DEFAULT_BACKUP = { schedule: { enabled: false, time: '03:30', keep: 14 }, passphrase: null, destinations: [], history: [], lastAutoDate: null };
+
+async function backupKey(passphrase, salt) {
+  return scryptAsync(passphrase, salt, { ...BACKUP_SCRYPT, keylen: 32 });
+}
+
+function backupPassphraseProblem(p) {
+  return typeof p !== 'string' || p.length < 12 ? 'The backup passphrase must be at least 12 characters' : p.length > 1024 ? 'Passphrase too long' : null;
+}
+
+const secretOrNull = (holder) => {
+  if (!holder?.secret) return null;
+  try {
+    return decryptSecret(holder);
+  } catch {
+    return null;
+  }
+};
+const destHost = (d) => ({ id: d.id, type: `backup:${d.type}`, address: d.endpoint || d.host || '', username: d.accessKey || d.user || '', tlsMode: d.tlsMode || '', fingerprint: d.fingerprint || '', secret: d.secret });
+const passHost = () => ({ id: 'backup-passphrase', type: 'backup', address: '', username: '', tlsMode: '', fingerprint: '', secret: config.backup.passphrase });
+
+// Everything worth keeping, with secrets in plain text (only ever written encrypted)
+function backupBundle() {
+  const files = (dir, list) => Object.fromEntries(list.map((x) => {
+    try {
+      return [x.id, fs.readFileSync(path.join(dir, x.id)).toString('base64')];
+    } catch {
+      return [x.id, null];
+    }
+  }).filter(([, v]) => v));
+  return {
+    format: 'homelab-dashboard-backup',
+    version: 1,
+    createdAt: Date.now(),
+    host: os.hostname(),
+    admin: readAdmin(),
+    config: {
+      ...config,
+      hosts: config.hosts.map((h) => ({ ...h, secret: undefined, secretPlain: secretOrNull(h) })),
+      services: config.services.map((x) => ({ ...x, secret: undefined, secretPlain: x.secret ? secretOrNull(serviceSecretHost(x)) : null })),
+      backup: {
+        ...config.backup,
+        passphrase: undefined,
+        passphrasePlain: config.backup.passphrase ? secretOrNull(passHost()) : null,
+        destinations: config.backup.destinations.map((d) => ({ ...d, secret: undefined, secretPlain: d.secret ? secretOrNull(destHost(d)) : null })),
+      },
+    },
+    docs,
+    energy,
+    files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
+  };
+}
+
+async function encryptBackup(bundle, passphrase) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', await backupKey(passphrase, salt), iv);
+  c.setAAD(BACKUP_MAGIC);
+  const body = Buffer.concat([c.update(zlib.gzipSync(Buffer.from(JSON.stringify(bundle)))), c.final()]);
+  return Buffer.concat([BACKUP_MAGIC, salt, iv, c.getAuthTag(), body]);
+}
+
+async function decryptBackup(buf, passphrase) {
+  if (buf.length < 52 || !buf.subarray(0, 8).equals(BACKUP_MAGIC)) throw new UserError('Not a homelab dashboard backup file');
+  const d = crypto.createDecipheriv('aes-256-gcm', await backupKey(passphrase, buf.subarray(8, 24)), buf.subarray(24, 36));
+  d.setAAD(BACKUP_MAGIC);
+  d.setAuthTag(buf.subarray(36, 52));
+  let plain;
+  try {
+    plain = Buffer.concat([d.update(buf.subarray(52)), d.final()]);
+  } catch {
+    throw new UserError('Wrong passphrase, or the file is damaged');
+  }
+  const bundle = JSON.parse(zlib.gunzipSync(plain, { maxOutputLength: 1024 * 1024 * 1024 }).toString('utf8'));
+  if (bundle?.format !== 'homelab-dashboard-backup' || bundle.version !== 1 || !bundle.config) throw new UserError('Unsupported backup format');
+  return bundle;
+}
+
+async function restoreBundle(bundle, { admin = false, server = false } = {}) {
+  const c = bundle.config;
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const hosts = arr(c.hosts).filter((h) => UUID.test(h?.id) && HOST_TYPES[h.type]).map(({ secretPlain, ...h }) => {
+    const out = { ...h, secret: null };
+    if (secretPlain) out.secret = encryptSecret(out, secretPlain);
+    return out;
+  });
+  const services = arr(c.services).filter((x) => UUID.test(x?.id)).map(({ secretPlain, ...x }) => {
+    const out = { ...x, secret: null };
+    if (secretPlain) out.secret = encryptSecret(serviceSecretHost(out), secretPlain);
+    return out;
+  });
+  const b = c.backup || {};
+  const destinations = arr(b.destinations).filter((d) => UUID.test(d?.id)).map(({ secretPlain, ...d }) => {
+    const out = { ...d, secret: null };
+    if (secretPlain) out.secret = encryptSecret(destHost(out), secretPlain);
+    return out;
+  });
+  const keepServer = config.settings.server;
+  config = {
+    version: 2,
+    settings: deepMerge(DEFAULT_SETTINGS, c.settings),
+    hosts,
+    backgrounds: arr(c.backgrounds),
+    layout: c.layout?.items ? c.layout : null,
+    rack: { ...DEFAULT_RACK, ...(c.rack || {}) },
+    devices: arr(c.devices),
+    services,
+    icons: arr(c.icons),
+    backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
+  };
+  if (b.passphrasePlain) config.backup.passphrase = encryptSecret(passHost(), b.passphrasePlain);
+  if (!server) config.settings.server = keepServer;
+  // uploaded images
+  for (const [dir, list, key] of [[BACKGROUND_DIR, config.backgrounds, 'backgrounds'], [ICON_DIR, config.icons, 'icons']]) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const rec of list) {
+      const data = bundle.files?.[key]?.[rec.id];
+      if (/^[0-9a-f]{32}$/.test(rec.id) && data) fs.writeFileSync(path.join(dir, rec.id), Buffer.from(data, 'base64'), { mode: 0o600 });
+    }
+  }
+  saveConfig();
+  docs = { ...emptyDocs(), ...(bundle.docs || {}) };
+  saveDocs();
+  energy = bundle.energy?.buckets ? bundle.energy : { buckets: {} };
+  energyDirty = true;
+  saveEnergy();
+  if (admin && bundle.admin?.username && bundle.admin?.hash) writeJsonAtomic(ADMIN_FILE, bundle.admin);
+  results.clear();
+  serviceResults.clear();
+  lastSample.clear();
+  unifiSessions.clear();
+  svcSessions.clear();
+  schedulePolling();
+}
+
+// --- destinations ---
+
+const BACKUP_TYPES = { folder: 'Folder (mounted NAS share)', s3: 'S3-compatible', rsync: 'rsync over SSH' };
+
+function validateDestination(b) {
+  const type = b.type;
+  if (!BACKUP_TYPES[type]) throw new UserError('Unknown destination type');
+  const out = { type, name: str(b.name, 48, 'Name') || BACKUP_TYPES[type], enabled: b.enabled !== false };
+  if (type === 'folder') {
+    const sub = str(b.folder, 120, 'Folder');
+    if (sub && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(sub)) throw new UserError('Folder: letters, digits, . _ - and / only');
+    if (sub.split('/').some((x) => x === '..' || x === '.')) throw new UserError('Invalid folder');
+    out.folder = sub;
+  }
+  if (type === 's3') {
+    const u = parseServiceUrl(str(b.endpoint, 300, 'Endpoint', { required: true }));
+    if (!u.https) throw new UserError('S3 endpoint must use https://');
+    out.endpoint = u.href;
+    out.region = str(b.region, 40, 'Region') || 'us-east-1';
+    if (!/^[a-z0-9-]+$/.test(out.region)) throw new UserError('Invalid region');
+    out.bucket = str(b.bucket, 63, 'Bucket', { required: true });
+    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(out.bucket)) throw new UserError('Invalid bucket name');
+    out.prefix = str(b.prefix, 200, 'Folder in bucket').replace(/^\/+|\/+$/g, '');
+    if (out.prefix && !/^[A-Za-z0-9._\/-]+$/.test(out.prefix)) throw new UserError('Folder in bucket: letters, digits, . _ - / only');
+    out.accessKey = str(b.accessKey, 128, 'Access key ID', { required: true });
+    out.pathStyle = b.pathStyle === true;
+    out.tlsMode = b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+  }
+  if (type === 'rsync') {
+    out.host = str(b.host, 253, 'Host', { required: true });
+    if (!net.isIP(out.host) && !/^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(out.host)) throw new UserError('Invalid host');
+    out.port = num(b.port || 22, 1, 65535, 'SSH port', { int: true });
+    out.user = str(b.user, 32, 'User', { required: true });
+    if (!/^[a-z_][a-z0-9_.-]*$/i.test(out.user)) throw new UserError('Invalid user name');
+    out.path = str(b.path, 200, 'Remote folder', { required: true });
+    if (!/^[A-Za-z0-9._\/~-]+$/.test(out.path) || out.path.split('/').includes('..')) throw new UserError('Remote folder: letters, digits, . _ - / ~ only');
+    out.knownHosts = str(b.knownHosts, 4000, 'Host key', { multiline: true });
+    if (out.knownHosts && !/^(\S+ (ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) [A-Za-z0-9+/=]+\n?)+$/.test(out.knownHosts.trim() + '\n')) throw new UserError('Invalid host key');
+    out.publicKey = str(b.publicKey, 600, 'Public key');
+    out.rsyncPath = str(b.rsyncPath, 200, 'Remote rsync path');
+    if (out.rsyncPath && !/^\/[A-Za-z0-9._\/-]+$/.test(out.rsyncPath)) throw new UserError('Remote rsync path must be an absolute path');
+  }
+  return out;
+}
+
+// --- S3 (AWS Signature Version 4) ---
+
+const sha256hex = (data) => crypto.createHash('sha256').update(data).digest('hex');
+const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+const awsEncode = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+
+// Returns the Authorization header for a request (kept generic so it can be checked against AWS's test vectors)
+function sigV4({ method, path: uriPath, query = {}, headers, payloadHash, accessKey, secretKey, region, service, amzDate }) {
+  const date = amzDate.slice(0, 8);
+  const canonicalQuery = Object.keys(query).sort().map((k) => `${awsEncode(k)}=${awsEncode(query[k])}`).join('&');
+  const names = Object.keys(headers).map((h) => h.toLowerCase()).sort();
+  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v).trim().replace(/\s+/g, ' ')]));
+  const canonicalRequest = [method, uriPath, canonicalQuery, names.map((h) => `${h}:${lower[h]}\n`).join(''), names.join(';'), payloadHash].join('\n');
+  const scope = `${date}/${region}/${service}/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonicalRequest)].join('\n');
+  const kSigning = hmac(hmac(hmac(hmac(`AWS4${secretKey}`, date), region), service), 'aws4_request');
+  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${names.join(';')}, Signature=${hmac(kSigning, stringToSign).toString('hex')}`;
+}
+
+async function s3Request(d, secretKey, method, key, { body = Buffer.alloc(0), query = {} } = {}) {
+  const u = parseServiceUrl(d.endpoint);
+  const hostName = d.pathStyle ? u.host : `${d.bucket}.${u.host}`;
+  const port = u.port === 443 ? '' : `:${u.port}`;
+  const uriPath = `${u.base}${d.pathStyle ? `/${d.bucket}` : ''}/${key.split('/').map(awsEncode).join('/')}`.replace(/\/+$/, key ? '' : '/');
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const payloadHash = sha256hex(body);
+  const headers = { host: `${hostName}${port}`, 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzDate };
+  const auth = sigV4({ method, path: uriPath, query, headers, payloadHash, accessKey: d.accessKey, secretKey, region: d.region, service: 's3', amzDate });
+  const qs = Object.keys(query).sort().map((k) => `${awsEncode(k)}=${awsEncode(query[k])}`).join('&');
+  const address = `${hostName}:${u.port}`;
+  const r = await httpsRequest(tlsConnect(address, { pin: d.tlsMode === 'pin' ? d.fingerprint : null, verify: true }), address, {
+    method, path: uriPath + (qs ? `?${qs}` : ''), full: true, timeoutMs: 120000, maxBytes: 4 << 20,
+    headers: { ...headers, Authorization: auth, 'Content-Type': 'application/octet-stream', ...(method === 'PUT' ? { 'Content-Length': body.length } : {}) },
+    body: method === 'PUT' ? body : null,
+  });
+  if (r.status < 200 || r.status >= 300) {
+    const code = /<Code>([^<]+)<\/Code>/.exec(r.text || '')?.[1];
+    throw Object.assign(new UserError(`S3: HTTP ${r.status}${code ? ` (${code})` : ''}`), { status: r.status });
+  }
+  return r;
+}
+
+async function s3List(d, secretKey) {
+  const prefix = d.prefix ? `${d.prefix}/` : '';
+  const r = await s3Request(d, secretKey, 'GET', '', { query: { 'list-type': '2', prefix } });
+  return [...(r.text || '').matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => m[1]).filter((k) => BACKUP_NAME.test(k.slice(prefix.length)));
+}
+
+// --- rsync over SSH (fixed binaries and validated arguments only; no shell) ---
+
+function run(cmd, argv, { timeoutMs = 120000, input } = {}) {
+  return new Promise((resolve, reject) => {
+    const env = { PATH: '/usr/bin:/bin', HOME: DATA_DIR, ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}) };
+    const child = execFile(cmd, argv, { timeout: timeoutMs, maxBuffer: 1 << 20, env }, (err, stdout, stderr) => {
+      if (err) return reject(Object.assign(err, { stderr: String(stderr) }));
+      resolve(String(stdout));
+    });
+    if (input) child.stdin.end(input);
+  });
+}
+
+// SSH key and known_hosts exist decrypted only in a private temporary folder during a run
+async function withSshFiles(d, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-ssh-'));
+  try {
+    const key = secretOrNull(destHost(d));
+    if (!key) throw new UserError('No SSH key: generate one for this destination');
+    if (!d.knownHosts) throw new UserError('No pinned host key: fetch and trust the host key first');
+    fs.writeFileSync(path.join(dir, 'key'), key, { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, 'known_hosts'), d.knownHosts.trim() + '\n', { mode: 0o600 });
+    const ssh = ['ssh', '-F', '/dev/null', '-i', path.join(dir, 'key'), '-o', 'IdentitiesOnly=yes', '-o', `UserKnownHostsFile=${path.join(dir, 'known_hosts')}`,
+      '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-p', String(d.port)];
+    return await fn(ssh, dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Prefer ssh's own explanation over rsync's generic "connection unexpectedly closed"
+function sshError(e) {
+  const lines = String(e.stderr || e.message).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.some((l) => /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(l)))
+    return new UserError("The server's SSH host key does not match the pinned key. Check the server, then fetch and trust its host key again.");
+  const ssh = lines.find((l) => /Permission denied|Connection refused|Connection timed out|No route to host|Could not resolve|Too many authentication failures|No such file or directory/i.test(l));
+  return new UserError((ssh || lines.slice(-2).join(' ') || 'ssh/rsync failed').slice(0, 300));
+}
+
+async function rsyncPush(d, sourceDir, { dryRun = false } = {}) {
+  return withSshFiles(d, async (ssh) => {
+    if (ssh.concat([sourceDir]).some((a) => /\s/.test(a))) throw new UserError('Paths with spaces are not supported');
+    const argv = ['-a', '--delete', '--include=*.hldb', '--exclude=*', ...(dryRun ? ['--dry-run'] : []), ...(d.rsyncPath ? [`--rsync-path=${d.rsyncPath}`] : []),
+      '-e', ssh.join(' '), `${sourceDir}/`, `${d.user}@${d.host}:${d.path.replace(/\/+$/, '')}/`];
+    try {
+      await run(process.env.RSYNC || 'rsync', argv);
+    } catch (e) {
+      throw e.code === 'ENOENT' ? new UserError('rsync is not installed on this server (the installer installs it)') : sshError(e);
+    }
+  });
+}
+
+async function sshKeyscan(host, port) {
+  let out;
+  try {
+    out = await run('ssh-keyscan', ['-T', '10', '-p', String(port), '-t', 'ed25519,ecdsa,rsa', host], { timeoutMs: 20000 });
+  } catch (e) {
+    throw sshError(e);
+  }
+  const lines = out.split('\n').filter((l) => l && !l.startsWith('#'));
+  if (!lines.length) throw new UserError('No SSH host key received');
+  const fingerprints = lines.map((l) => {
+    const [, type, b64] = l.split(' ');
+    return { type, fingerprint: `SHA256:${crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('base64').replace(/=+$/, '')}` };
+  });
+  return { knownHosts: lines.join('\n'), fingerprints };
+}
+
+async function generateSshKey(comment) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-keygen-'));
+  try {
+    await run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', comment, '-f', path.join(dir, 'key')]);
+    return { privateKey: fs.readFileSync(path.join(dir, 'key'), 'utf8'), publicKey: fs.readFileSync(path.join(dir, 'key.pub'), 'utf8').trim() };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- running backups ---
+
+const backupStamp = (suffix = '') => {
+  const z = zoned(Date.now());
+  const two = (n) => String(n).padStart(2, '0');
+  return `homelab-dashboard-${z.date}-${two(z.hour)}${two(z.minute)}${two(z.second)}${suffix}.hldb`;
+};
+
+function keepNewest(dir, keep) {
+  const files = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f)).sort();
+  for (const f of files.slice(0, Math.max(0, files.length - keep))) fs.rmSync(path.join(dir, f), { force: true });
+}
+
+async function sendToDestination(d, file, data, keep) {
+  if (d.type === 'folder') {
+    const dir = path.join(BACKUP_BASE, d.folder || '');
+    if (!isInside(dir, BACKUP_BASE)) throw new UserError('Invalid folder');
+    if (!fs.existsSync(BACKUP_BASE)) throw new UserError(`${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dir, file), data, { mode: 0o600 });
+    keepNewest(dir, keep);
+  } else if (d.type === 's3') {
+    const secret = secretOrNull(destHost(d));
+    if (!secret) throw new UserError('No secret access key set');
+    const prefix = d.prefix ? `${d.prefix}/` : '';
+    await s3Request(d, secret, 'PUT', prefix + file, { body: data });
+    const keys = (await s3List(d, secret)).sort();
+    for (const k of keys.slice(0, Math.max(0, keys.length - keep))) await s3Request(d, secret, 'DELETE', k);
+  } else if (d.type === 'rsync') {
+    await rsyncPush(d, LOCAL_BACKUP_DIR); // mirrors the local copies, so old ones are pruned too
+  }
+}
+
+let backupRunning = false;
+async function runBackup(trigger) {
+  if (backupRunning) throw new UserError('A backup is already running');
+  backupRunning = true;
+  const entry = { at: Date.now(), trigger, file: null, bytes: 0, results: [] };
+  try {
+    const passphrase = config.backup.passphrase ? secretOrNull(passHost()) : null;
+    if (!passphrase) throw new UserError('Set a backup passphrase first');
+    saveEnergy();
+    const data = await encryptBackup(backupBundle(), passphrase);
+    const file = backupStamp();
+    fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(LOCAL_BACKUP_DIR, file), data, { mode: 0o600 });
+    keepNewest(LOCAL_BACKUP_DIR, config.backup.schedule.keep);
+    Object.assign(entry, { file, bytes: data.length });
+    for (const d of config.backup.destinations.filter((x) => x.enabled)) {
+      const t0 = Date.now();
+      try {
+        await withTimeout(sendToDestination(d, file, data, config.backup.schedule.keep), 10 * 60000, 'Backup upload');
+        entry.results.push({ id: d.id, name: d.name, ok: true, ms: Date.now() - t0 });
+      } catch (e) {
+        entry.results.push({ id: d.id, name: d.name, ok: false, error: safeErrorMessage(e, null) });
+      }
+    }
+    log(`Backup ${file} (${data.length} bytes): ${entry.results.map((r) => `${r.name} ${r.ok ? 'ok' : 'FAILED'}`).join(', ') || 'local only'}`);
+  } catch (e) {
+    entry.error = e instanceof UserError ? e.message : 'Backup failed';
+    log(`Backup failed: ${e.message}`);
+  } finally {
+    backupRunning = false;
+    config.backup.history = [entry, ...config.backup.history].slice(0, 30);
+    saveConfig();
+  }
+  return entry;
+}
+
+// Checked every 30 s: runs once per day at the chosen time (Europe/Oslo)
+function backupTick() {
+  const sch = config.backup.schedule;
+  if (!sch.enabled || backupRunning) return;
+  const z = zoned(Date.now());
+  const [hh, mm] = sch.time.split(':').map(Number);
+  if (config.backup.lastAutoDate === z.date || z.hour * 60 + z.minute < hh * 60 + mm || z.hour * 60 + z.minute > hh * 60 + mm + 30) return;
+  config.backup.lastAutoDate = z.date;
+  runBackup('scheduled').catch(() => {});
+}
+
+function backupStatus() {
+  const b = config.backup;
+  let local = [];
+  try {
+    local = fs.readdirSync(LOCAL_BACKUP_DIR).filter((f) => BACKUP_NAME.test(f)).sort().reverse()
+      .map((f) => ({ file: f, bytes: fs.statSync(path.join(LOCAL_BACKUP_DIR, f)).size }));
+  } catch {
+    /* none yet */
+  }
+  return {
+    schedule: b.schedule,
+    hasPassphrase: Boolean(b.passphrase),
+    destinations: b.destinations.map((d) => ({ ...d, secret: undefined, hasSecret: Boolean(d.secret) })),
+    history: b.history,
+    local,
+    folderBase: BACKUP_BASE,
+    folderBaseExists: fs.existsSync(BACKUP_BASE),
+    types: BACKUP_TYPES,
+    running: backupRunning,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4221,6 +4800,7 @@ async function main() {
 
   schedulePolling();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
+  setInterval(backupTick, 30 * 1000).unref();
   const shutdown = () => {
     try {
       saveEnergy();

@@ -28,6 +28,7 @@
       <button type="button" role="tab" id="tabbtn-power" aria-controls="tab-power" aria-selected="false" tabindex="-1">Power &amp; cost</button>
       <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard</button>
       <button type="button" role="tab" id="tabbtn-appearance" aria-controls="tab-appearance" aria-selected="false" tabindex="-1">Appearance</button>
+      <button type="button" role="tab" id="tabbtn-backup" aria-controls="tab-backup" aria-selected="false" tabindex="-1">Backup</button>
       <button type="button" role="tab" id="tabbtn-account" aria-controls="tab-account" aria-selected="false" tabindex="-1">Account</button>
     </nav>
     <div class="tab-panel" role="tabpanel" id="tab-devices" aria-labelledby="tabbtn-devices" hidden>
@@ -267,6 +268,59 @@
         <button type="button" id="ap-revert">Revert</button>
         <span class="msg" id="ap-msg" role="status"></span>
       </div>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-backup" aria-labelledby="tabbtn-backup" hidden>
+    <section class="card">
+      <h3>Download or restore a backup</h3>
+      <p class="hint">A backup contains settings, devices with their credentials, services, docs, energy history and uploaded images, encrypted with a passphrase you choose. Keep the passphrase somewhere safe: without it the backup cannot be opened.</p>
+      <div class="backup-cols">
+        <form id="bk-download" autocomplete="off">
+          <h4>Download now</h4>
+          <label><span>Passphrase for this file (min. 12 characters)</span><input name="passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
+          <div class="form-actions"><button type="submit" class="primary">Download backup</button><span class="msg" id="bk-download-msg" role="status"></span></div>
+        </form>
+        <form id="bk-restore" autocomplete="off">
+          <h4>Restore</h4>
+          <label><span>Backup file (.hldb)</span><input name="file" type="file" accept=".hldb" required></label>
+          <label><span>Its passphrase</span><input name="passphrase" type="password" autocomplete="off" required></label>
+          <label class="check"><input type="checkbox" name="admin"> Also restore the admin login from the backup</label>
+          <label class="check"><input type="checkbox" name="server"> Also restore web server ports</label>
+          <p class="hint">Replaces the current settings, devices, services and docs. The current state is first saved as a local copy (with the same passphrase).</p>
+          <div class="form-actions"><button type="submit" class="danger">Restore</button><span class="msg" id="bk-restore-msg" role="status"></span></div>
+        </form>
+      </div>
+    </section>
+    <section class="card">
+      <h3>Automatic backups</h3>
+      <form id="bk-schedule" autocomplete="off">
+        <div class="form-grid">
+          <label class="check"><input type="checkbox" name="enabled"> Back up automatically every day</label>
+          <label><span>Time</span><input name="time" type="time" required></label>
+          <label><span>Copies to keep</span><input name="keep" type="number" min="1" max="100" step="1" required></label>
+          <label><span>Passphrase for automatic backups</span><input name="passphrase" type="password" autocomplete="new-password"><span class="hint" id="bk-pass-hint"></span></label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="bk-run">Back up now</button>
+          <span class="msg" id="bk-schedule-msg" role="status"></span>
+        </div>
+      </form>
+      <h4>Recent runs</h4>
+      <div id="bk-history"></div>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <div class="title"><h3>Destinations</h3><p class="hint">Where automatic backups are sent, in addition to the local copies on this server.</p></div>
+        <label class="add-dest"><select id="bk-add"></select></label>
+      </div>
+      <div id="bk-dests"></div>
+      <div class="dest-editor hidden" id="bk-editor"></div>
+    </section>
+    <section class="card">
+      <h3>Local copies</h3>
+      <p class="hint">Kept on this server (newest first); restore from one, or download it to keep elsewhere.</p>
+      <div id="bk-local"></div>
     </section>
     </div>
     <div class="tab-panel" role="tabpanel" id="tab-account" aria-labelledby="tabbtn-account" hidden>

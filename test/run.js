@@ -5,11 +5,12 @@
 //   node test/run.js              API suites
 //   node test/run.js --ui         also the browser tests (needs Playwright installed)
 //   node test/run.js --verbose    print every check, not only failures
+//   node test/run.js --only backup   run matching suites only
 //
 // Needs: Node 18+, openssl (test certificate). Optional: snmpd from net-snmp (set SNMPD=path if it
 // is not in PATH) for the SNMPv3 suite, which is skipped otherwise.
-// Uses ports 18080 (dashboard), 18444-18446 (HTTPS suite), 18443 (device mock), 18090 (service mock),
-// 16161/udp (snmpd).
+// Uses ports 18080 (dashboard), 18444-18448 (HTTPS/backup suites), 18443 (device mock), 18090 (service
+// mock), 18022 (sshd for the rsync test), 16161/udp (snmpd). rsync tests need rsync and sshd.
 
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -99,7 +100,7 @@ function runSuite(file, env) {
 }
 
 async function main() {
-  for (const port of [PORT, 18443, 18444, 18445, 18446, 18090]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use`);
+  for (const port of [PORT, 18022, 18443, 18444, 18445, 18446, 18447, 18448, 18090]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use (a leftover test process?)`);
 
   // Test certificate for the HTTPS device mock (pinned by the tests)
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem'), '-days', '7', '-subj', '/CN=mock-device'], { stdio: 'ignore' });
@@ -126,6 +127,8 @@ async function main() {
   await sleep(1200);
 
   const env = { BASE_URL, MOCK_FP: fp };
+  const backupBase = path.join(tmp, 'backup-base'); // stands in for /var/backups/homelab-dashboard
+  fs.mkdirSync(backupBase, { mode: 0o700 });
   const suites = [
     { file: 'test/core.test.js', fresh: true },
     { file: 'test/https.test.js', fresh: true, env: tlsEnv },
@@ -133,6 +136,7 @@ async function main() {
     { file: 'test/snmp-unifi.test.js', fresh: true, skip: !snmpd && 'snmpd not found (install net-snmp or set SNMPD)' },
     { file: 'test/devices.test.js', fresh: true },
     { file: 'test/services.test.js', fresh: true },
+    { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
   ];
   if (args.has('--ui')) {
     let playwright = true;
@@ -148,7 +152,8 @@ async function main() {
   let passed = 0;
   let failed = 0;
   let broken = 0;
-  for (const s of suites) {
+  const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
+  for (const s of suites.filter((x) => !only || x.file.includes(only))) {
     if (s.skip) {
       console.log(`SKIP  ${s.file}: ${s.skip}`);
       continue;

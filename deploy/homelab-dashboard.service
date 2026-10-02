@@ -24,6 +24,8 @@ LoadCredential=ca_cert:/etc/homelab-dashboard/tls/ca.crt
 # State: /var/lib/homelab-dashboard, owned by homelab-dash, mode 0700
 StateDirectory=homelab-dashboard
 StateDirectoryMode=0700
+# Backup folder destination: mount a NAS share here (the only other writable path)
+ReadWritePaths=-/var/backups/homelab-dashboard
 UMask=0077
 
 # Sandboxing

@@ -46,6 +46,29 @@ const HD = (() => {
     return handle(r, url);
   }
 
+  // For non-JSON requests and responses (backup files). Adds the CSRF token; throws on errors.
+  async function raw(method, url, { body, json, headers = {} } = {}) {
+    if (!csrf) await session();
+    const r = await fetch(url, {
+      method,
+      headers: { 'X-CSRF-Token': csrf || '', ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers },
+      body: json !== undefined ? JSON.stringify(json) : body,
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    if (!r.ok) await handle(r, url);
+    return r;
+  }
+
+  // Saves a Blob as a file
+  function saveBlob(blob, name) {
+    const a = el('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
   async function handle(r, url) {
     let data = null;
     try {
@@ -184,5 +207,5 @@ const HD = (() => {
     return node;
   }
 
-  return { api, upload, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon };
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon };
 })();

@@ -895,3 +895,11 @@ textarea.md-input, .md-editor textarea {
   .web-grid { grid-template-columns: 1fr 1fr; }
   .web-grid > span:empty { display: none; }
 }
+
+/* Admin: backup */
+.backup-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.backup-cols label { margin-bottom: 10px; }
+.dest-editor { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.dest-editor pre, pre.wrap { white-space: pre-wrap; word-break: break-all; font-size: 12px; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; }
+.add-dest select { width: auto; }
+@media (max-width: 860px) { .backup-cols { grid-template-columns: 1fr; } }

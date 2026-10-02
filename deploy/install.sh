@@ -53,7 +53,9 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'parseInt(process.versions.
   apt-get install -y -qq nodejs
 fi
 [ -x /usr/bin/node ] || { echo "/usr/bin/node not found" >&2; exit 1; }
-command -v openssl >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y -qq openssl; }
+for pkg in openssl rsync; do
+  command -v "$pkg" >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y -qq "$pkg"; }
+done
 echo "Node.js $(/usr/bin/node --version)"
 
 # --- Service user (no shell, no home, not in any extra group) --------------
@@ -163,7 +165,10 @@ chown -R root:root "$TLS_DIR"
 chmod 0600 "$TLS_DIR/ca.key" "$TLS_DIR/server.key"
 chmod 0644 "$TLS_DIR/ca.crt" "$TLS_DIR/server.crt"
 
-# --- State directory --------------------------------------------------------
+# --- State directory and backup folder ---------------------------------------
+# Mount a NAS share on /var/backups/homelab-dashboard (owned by the service user) for folder backups
+install -d -o root -g root -m 0755 /var/backups
+[ -d /var/backups/homelab-dashboard ] || install -d -o "$SVC_USER" -g "$SVC_USER" -m 0700 /var/backups/homelab-dashboard
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 0700 "$DATA_DIR"
 chown -R "$SVC_USER:$SVC_USER" "$DATA_DIR"
 chmod 0700 "$DATA_DIR"

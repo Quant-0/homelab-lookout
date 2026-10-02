@@ -106,6 +106,19 @@ Import the CA certificate once on each device to get rid of browser warnings. Do
 - **Bound to the VM's internal IP** (reached via WireGuard or a subnet router): browse to `https://<ip>:8443/`.
 - **Bound to 127.0.0.1 with Tailscale on the VM**: run `tailscale serve --bg --https=443 http://127.0.0.1:8080` with HTTP set to *serve*. Then add the MagicDNS name to `ALLOWED_HOSTS` and set `COOKIE_SECURE=1` in `/etc/homelab-dashboard/env`.
 
+## Backups
+
+In Admin → Backup:
+
+- **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, docs, energy history and uploaded images.
+- **Restore** from such a file, or from a local copy. The current state is first saved as a local copy. The admin login and port settings are only restored if you tick them.
+- **Automatic backups:** daily at a time you choose, keeping the last N copies on this server plus on each destination:
+  - **Folder:** mount a NAS share (NFS/SMB) on `/var/backups/homelab-dashboard`, the only path outside the data directory the service can write. Admin shows example `/etc/fstab` lines.
+  - **S3-compatible:** Backblaze B2, Wasabi, Cloudflare R2, MinIO, AWS. Uses AWS Signature V4 and HTTPS, with optional certificate pinning.
+  - **rsync over SSH** to any machine with rsync (e.g. the DS418 with its rsync service). The app generates the SSH key and you add the public key to the target's `authorized_keys`. The private key is stored encrypted and only decrypted into the service's private `/tmp` during a run. The target's host key is pinned: a different key is refused.
+
+How the file is encrypted: secrets are decrypted with the server key and travel inside the passphrase-encrypted file (scrypt + AES-256-GCM). A backup therefore restores on a fresh install with a new server key, and the server key itself never leaves the server. For security, the app never runs custom commands, only the fixed `rsync`/`ssh`/`ssh-keygen` binaries with validated arguments.
+
 ## Credentials for the devices (read-only is enough)
 
 - **iDRAC**: create a local user with the *Read Only* role.
@@ -131,7 +144,7 @@ DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js
 ## Tests
 
 ```sh
-node test/run.js              # end-to-end API suites (~255 checks)
+node test/run.js              # end-to-end API suites (~325 checks)
 node test/run.js --ui         # also browser tests (needs Playwright)
 node test/run.js --verbose    # print every check
 ```
