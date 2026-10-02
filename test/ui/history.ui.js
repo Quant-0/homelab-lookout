@@ -67,16 +67,16 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
 
   await page.click('#range button:has-text("24 h")');
 
-  // services: response time under each checked service; dark theme
+  // services: status dot only (no response time), no range choice; dark theme
   await page.evaluate(async (csrf) => fetch('/api/admin/services', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
     body: JSON.stringify({ name: 'Mock web', connection: { url: 'http://127.0.0.1:18090/' } }),
   }), csrf);
   const dark = await (await browser.newContext({ viewport: { width: 1200, height: 800 }, colorScheme: 'dark', storageState: await ctx.storageState() })).newPage();
   await dark.goto(B + '/services');
-  await dark.locator('.svc-card .spark-slot').waitFor();
-  check(/Response time/.test(await dark.locator('.svc-card .spark-cell').textContent()), 'service card has a response-time graph');
-  check(await dark.locator('#range .range-tabs').count() === 1, 'range tabs on the services page');
+  await dark.locator('.svc-card .led.good').waitFor();
+  check(!/\d\s?ms\b/.test(await dark.locator('.svc-card').first().textContent()) && await dark.locator('.svc-card .spark-slot').count() === 0, 'service cards show no response time');
+  check(await dark.locator('.range-tabs').count() === 0, 'no range choice on the services page');
   await dark.screenshot({ path: `${S}/history-services-dark.png` });
   await dark.goto(B + '/');
   await dark.locator('.hero .spark').waitFor();

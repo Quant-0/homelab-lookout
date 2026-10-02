@@ -12,9 +12,9 @@ function statusBadge(svc) {
   if (!svc.check) return el('span', { class: 'svc-status', title: 'Waiting for the first check' }, el('span', { class: 'led off' }));
   const c = svc.check;
   const title = c.up ? `Up · HTTP ${c.code} · ${c.ms} ms` : `Down${c.error ? ` · ${c.error}` : c.code ? ` · HTTP ${c.code}` : ''}`;
-  return el('span', { class: 'svc-status', title },
+  return el('span', { class: 'svc-status', title, 'aria-label': c.up ? 'Up' : 'Down' },
     el('span', { class: `led ${c.up ? 'good' : 'critical'}` }),
-    el('span', { class: 'small muted num', text: c.up ? `${c.ms} ms` : 'Down' }));
+    c.up ? null : el('span', { class: 'small muted', text: 'Down' }));
 }
 
 function card(svc) {
@@ -32,7 +32,6 @@ function card(svc) {
       el('span', { class: 'v num', text: HD.statValue(st) }),
       el('span', { class: 'l', text: st.label })))));
   }
-  if (svc.check) body.push(HD.sparkSlot(`svc:${svc.id}:ms`, { label: 'Response time', unit: ' ms' }));
   if (svc.error) body.push(el('p', { class: 'svc-error small', text: `${svc.integration}: ${svc.error}` }));
   if (svc.device) body.push(el('div', { class: 'svc-device small muted', text: `on ${svc.device}` }));
   // Links open in a new tab without leaking this page (noopener, no referrer)
@@ -45,18 +44,44 @@ function render(d) {
   document.title = `Services · ${d.title}`;
   $('title').textContent = d.title;
   $('view-tabs').replaceChildren(...HD.viewTabs('services', d.loggedIn));
-  if (!$('range').firstChild) $('range').append(HD.rangeTabs());
   $('nav').replaceChildren(...(d.loggedIn
     ? [el('a', { class: 'button', href: '/admin#services', text: 'Edit services' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout })]
     : [el('a', { class: 'button', href: '/login?next=services', text: 'Log in' })]));
-  if (!d.groups.length) {
+  const sections = d.groups.map((g) => el('section', { class: 'svc-group' },
+    el('h2', { text: g.name }),
+    el('div', { class: 'svc-grid' }, g.services.map(card))));
+  if (d.vms) sections.push(vmsSection(d.vms));
+  if (!sections.length) {
     $('groups').replaceChildren(el('p', { class: 'empty' }, 'No services yet. ', d.loggedIn ? el('a', { href: '/admin#services', text: 'Add them in Admin → Services' }) : ''));
     return;
   }
-  $('groups').replaceChildren(...d.groups.map((g) => el('section', { class: 'svc-group' },
-    el('h2', { text: g.name }),
-    el('div', { class: 'svc-grid' }, g.services.map(card)))));
-  HD.fillSparks();
+  $('groups').replaceChildren(...sections);
+}
+
+// Proxmox VMs and containers
+function vmCard(g) {
+  const running = g.status === 'running';
+  const memF = g.maxmem ? g.mem / g.maxmem : null;
+  return el('div', { class: `svc-card card vm-card${running ? '' : ' stopped'}` },
+    el('div', { class: 'svc-head' },
+      el('span', { class: `vm-type ${g.type}`, text: g.type === 'lxc' ? 'CT' : 'VM', title: g.type === 'lxc' ? 'Container' : 'Virtual machine' }),
+      el('div', { class: 'svc-title' },
+        el('strong', { text: g.name }),
+        el('span', { class: 'small muted num', text: `${g.vmid} · ${g.node}` })),
+      el('span', { class: 'svc-status', title: g.status }, el('span', { class: `led ${running ? 'good' : 'off'}` }), running ? null : el('span', { class: 'small muted', text: g.status }))),
+    running ? el('div', { class: 'vm-stats small muted num' },
+      el('span', { text: `CPU ${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` }),
+      el('span', { text: `RAM ${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` }),
+      el('span', { text: `Up ${fmt.uptime(g.uptime)}` })) : null);
+}
+
+function vmsSection(vms) {
+  const shown = vms.items.filter((g) => vms.showStopped || g.status === 'running');
+  const running = vms.items.filter((g) => g.status === 'running').length;
+  return el('section', { class: 'svc-group', id: 'vms' },
+    el('h2', null, 'Virtual machines & containers', el('span', { class: 'count', text: ` ${running} of ${vms.items.length} running` })),
+    vms.notes.map((n) => el('p', { class: 'banner', text: n })),
+    shown.length ? el('div', { class: 'svc-grid vm-grid' }, shown.map(vmCard)) : el('p', { class: 'empty', text: vms.items.length ? 'No running guests' : 'No VMs or containers' }));
 }
 
 async function refresh() {

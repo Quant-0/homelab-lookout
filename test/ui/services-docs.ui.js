@@ -39,6 +39,13 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.selectOption('#svc-integration', 'jellyfin');
   await page.waitForFunction(() => document.querySelector('#svc-icon-preview img'));
   check(await page.inputValue('#svc-form input[name=name]') === 'Jellyfin' && await page.inputValue('#svc-form input[name=group]') === 'Media', 'choosing Jellyfin fills in name, group and icon');
+  const jellyIcon = await page.getAttribute('#svc-icon-preview img', 'src');
+  await page.selectOption('#svc-integration', 'emby');
+  await page.waitForFunction((src) => document.querySelector('#svc-icon-preview img')?.getAttribute('src') !== src, jellyIcon);
+  check(await page.inputValue('#svc-form input[name=name]') === 'Emby', 'changing the integration changes the logo and name too');
+  await page.selectOption('#svc-integration', 'jellyfin');
+  await page.waitForFunction((src) => document.querySelector('#svc-icon-preview img')?.getAttribute('src') === src, jellyIcon);
+  check(await page.inputValue('#svc-form input[name=name]') === 'Jellyfin', '...and back again');
   await page.fill('#svc-form input[name=url]', `${M}/jellyfin`);
   await page.fill('#svc-form input[name=href]', 'https://jellyfin.example.lan');
   await page.fill('#svc-int-fields input[type=password]', 'svc-key-123');

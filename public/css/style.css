@@ -825,9 +825,6 @@ table.rules td:first-child { min-width: 220px; }
 .spark-range { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spark-empty { display: flex; align-items: center; height: 36px; font-size: 12px; color: var(--muted); }
 .hero .sparks { grid-template-columns: 1fr; margin-top: 10px; }
-.svc-card .spark-slot { min-height: 46px; }
-.svc-card .spark { height: 28px; }
-.svc-card .spark-empty { height: 28px; }
 @media (max-width: 720px) {
   #range { order: 6; width: 100%; display: flex; justify-content: center; }
 }
@@ -852,6 +849,13 @@ a.svc-card:hover { border-color: var(--accent); }
 .svc-stat .v { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .svc-stat .l { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .svc-error { color: var(--critical); margin: 0; overflow-wrap: anywhere; }
+.svc-group > h2 .count { font-size: 13px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.vm-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.vm-card { gap: 6px; padding: 10px 12px; }
+.vm-card.stopped { opacity: 0.6; }
+.vm-type { flex: none; width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; background: var(--accent-wash); color: var(--text); }
+.vm-type.lxc { background: var(--surface-2); }
+.vm-stats { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .svc-device { margin-top: auto; }
 
 /* admin: service list, icon picker */

@@ -67,7 +67,7 @@ async function run() {
   // --- key validation and cleaning ---
   r = await hist(['evil:key', '../config', 'power:total']);
   ok(Object.keys(r.json.series).join() === 'power:total', 'unknown keys are ignored');
-  r = await hist(Array.from({ length: 100 }, (_, i) => `svc:${BAD_ID.slice(0, -2)}${String(i).padStart(2, '0')}:ms`));
+  r = await hist(Array.from({ length: 100 }, (_, i) => `pve:${BAD_ID}:node${i}:cpu`));
   ok(Object.keys(r.json.series).length === 80, 'at most 80 series per request');
   r = await hist([`idrac:${BAD_ID}:watts`]);
   ok(JSON.stringify(r.json.series[`idrac:${BAD_ID}:watts`]) === JSON.stringify([[r.json.series[`idrac:${BAD_ID}:watts`][0]?.[0], 150]]), 'malformed points in the file are dropped on load');
@@ -76,9 +76,7 @@ async function run() {
   r = await req('POST', '/api/admin/devices', { name: 'Orion', kind: 'server', location: 'none', connections: [
     { type: 'idrac', address: '127.0.0.1:18443', username: 'root', tlsMode: 'pin', fingerprint: FP, secret: 'calvin' }] });
   const hostId = (await req('GET', '/api/admin/config')).json.hosts.find((h) => h.deviceId === r.json.device.id).id;
-  r = await req('POST', '/api/admin/services', { name: 'Mock web', connection: { url: 'http://127.0.0.1:18090/' } });
-  const svcId = r.json.service?.id || r.json.id;
-  const keys = [`idrac:${hostId}:watts`, `idrac:${hostId}:inlet`, `idrac:${hostId}:tmax`, `svc:${svcId}:ms`];
+  const keys = [`idrac:${hostId}:watts`, `idrac:${hostId}:inlet`, `idrac:${hostId}:tmax`];
   let series = {};
   for (let i = 0; i < 40; i++) {
     series = (await hist(keys)).json.series;
@@ -88,7 +86,6 @@ async function run() {
   const watts = series[keys[0]]?.at(-1)?.[1];
   ok(watts >= 212 && watts <= 232, `iDRAC power draw recorded (${watts} W)`);
   ok(series[keys[1]]?.length && series[keys[2]]?.length && series[keys[2]].at(-1)[1] >= series[keys[1]].at(-1)[1], 'inlet and hottest-sensor temperatures recorded');
-  ok(series[keys[3]]?.length === 1 && series[keys[3]][0][1] >= 0, `service response time recorded (${series[keys[3]]?.[0]?.[1]} ms)`);
   const total = (await hist(['power:total'], '24h', 500)).json.series['power:total'].at(-1);
   ok(total[0] > Date.now() - 2 * MIN && total[1] > 200, `total measured power includes the current minute (${total[1]} W)`);
 

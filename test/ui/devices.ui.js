@@ -99,11 +99,15 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   console.log('  widgets:', JSON.stringify(widgets));
   const odinW = widgets.find((w) => w.name === 'Orion');
   check(odinW && odinW.sections.includes('Hardware · iDRAC') && odinW.sections.includes('Proxmox · node pve1'), 'Orion: one widget with iDRAC and Proxmox sections');
-  const guests = await page.$$eval('.widget', (ws) => {
-    const w = ws.find((x) => x.querySelector('h3')?.textContent === 'Orion');
-    return [...w.querySelectorAll('tbody tr')].map((r) => r.textContent);
-  });
-  check(guests.some((g) => g.includes('truenas')) && !guests.some((g) => g.includes('pve2')), 'Orion shows its own node and its guests only');
+  const odinText = await page.$$eval('.widget', (ws) => ws.find((x) => x.querySelector('h3')?.textContent === 'Orion').textContent);
+  check(odinText.includes('pve1') && !odinText.includes('pve2') && /VMs & containers, \d+ running/.test(odinText) && !odinText.includes('truenas'), 'Orion shows its own node; VMs are summarised with a link to Services');
+  const vmPage = await page.context().newPage();
+  await vmPage.goto(B + '/services#vms');
+  await vmPage.waitForSelector('#vms .vm-card');
+  const vms = await vmPage.$$eval('#vms .vm-card strong', (n) => n.map((x) => x.textContent));
+  check(vms.includes('truenas') && !vms.includes('tmpl'), `Services page lists the VMs and containers (${vms.join(', ')})`);
+  await vmPage.screenshot({ path: `${S}/vms-services.png`, fullPage: true });
+  await vmPage.close();
   const udmW = widgets.find((w) => w.name === 'UDM Pro');
   check(udmW && udmW.sections.includes('UniFi network') && udmW.sections.some((x) => /UniFi · UDMPRO/.test(x)), 'UDM Pro: network overview + its own gateway section');
   check(widgets.some((w) => w.name === 'USW-24-POE Rack'), 'switch gets its own widget');

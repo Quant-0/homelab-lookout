@@ -175,7 +175,7 @@ function renderIdrac(hosts) {
 // ---------------------------------------------------------------------------
 // Proxmox
 
-function renderProxmox(hosts, showStopped, nodeFor = () => null) {
+function renderProxmox(hosts, nodeFor = () => null) {
   return hosts.map((h0) => {
     const node = nodeFor(h0.id);
     const h = h0.data && node
@@ -197,16 +197,7 @@ function renderProxmox(hosts, showStopped, nodeFor = () => null) {
           el('td', null, meter(diskF, usageClass(diskF)), el('span', { class: 'small muted num', text: `${fmt.bytes(n.disk)} / ${fmt.bytes(n.maxdisk)}` })),
           el('td', { class: 'r', text: n.status === 'online' ? fmt.uptime(n.uptime) : '–' }));
       });
-      const guests = d.guests.filter((g) => showStopped || g.status === 'running');
-      const guestRows = guests.map((g) => el('tr', null,
-        el('td', { class: 'r', text: g.vmid }),
-        el('td', { text: g.name }),
-        el('td', { text: g.type === 'lxc' ? 'CT' : 'VM' }),
-        el('td', { text: g.node }),
-        el('td', null, status(g.status, g.status === 'stopped' ? '' : undefined)),
-        el('td', { class: 'r', text: g.status === 'running' ? fmt.pct(g.cpu, 1) : '–' }),
-        el('td', { class: 'r', text: g.status === 'running' ? `${fmt.bytes(g.mem)} / ${fmt.bytes(g.maxmem)}` : fmt.bytes(g.maxmem) }),
-        el('td', { class: 'r', text: g.status === 'running' ? fmt.uptime(g.uptime) : '–' })));
+      const up = d.guests.filter((g) => g.status === 'running').length;
       return [
         el('h4', { text: 'Nodes' }),
         el('div', { class: 'table-wrap' }, el('table', null,
@@ -216,12 +207,7 @@ function renderProxmox(hosts, showStopped, nodeFor = () => null) {
           [`pve:${h0.id}:${n.name}:cpu`, d.nodes.length > 1 ? `${n.name} CPU` : 'CPU', ' %'],
           [`pve:${h0.id}:${n.name}:mem`, d.nodes.length > 1 ? `${n.name} memory` : 'Memory', ' %'],
         ])),
-        el('h4', { text: showStopped ? 'VMs & containers' : 'Running VMs & containers' }),
-        guests.length
-          ? el('div', { class: 'table-wrap' }, el('table', null,
-            el('thead', null, el('tr', null, el('th', { class: 'r', text: 'ID' }), ['Name', 'Type', 'Node', 'Status'].map((t) => el('th', { text: t })), ['CPU', 'Memory', 'Uptime'].map((t) => el('th', { class: 'r', text: t })))),
-            el('tbody', null, guestRows)))
-          : el('p', { class: 'empty', text: 'No guests' }),
+        el('p', { class: 'small muted' }, `${d.guests.length} VMs & containers, ${up} running · `, el('a', { href: '/services#vms', text: 'see Services' })),
       ];
     });
     return [h.id, { ...card, title: `Proxmox · ${node ? `node ${node}` : h.name}` }];
@@ -444,7 +430,7 @@ function renderDevices(d) {
   const nodeFor = new Map(d.devices.flatMap((dev) => dev.connections.filter((c) => c.node).map((c) => [c.id, c.node])));
   const sections = new Map([
     ...renderIdrac(d.idrac),
-    ...renderProxmox(d.proxmox, d.showStoppedGuests, (id) => nodeFor.get(id)),
+    ...renderProxmox(d.proxmox, (id) => nodeFor.get(id)),
     ...renderTruenas(d.truenas),
     ...renderSynology(d.synology || []),
     ...renderUnifi(d.unifi || []),

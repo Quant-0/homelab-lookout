@@ -615,6 +615,7 @@ $('rack-numbering').addEventListener('change', (e) => saveRackSettings({ numberi
 // Services (dashboard Services tab)
 
 let svcState = null; // { services, integrations, devices, icons }
+let svcPrevIntegration = ''; // integration type before the current change
 let svcDraft = null; // service in the editor; a typed secret lives here only until saved
 const svcForm = () => $('svc-form').elements;
 
@@ -694,6 +695,7 @@ function openService(svc) {
   $('svc-integration').replaceChildren(el('option', { value: '', text: 'None (status check only)' }),
     ...Object.entries(byGroup).map(([g, items]) => el('optgroup', { label: g }, items.map(([k, d]) => el('option', { value: k, text: d.label })))));
   f.integration.value = svcDraft.integration?.type || '';
+  svcPrevIntegration = f.integration.value;
   $('svc-editor-title').textContent = svc ? `Edit ${svc.name}` : 'Add service';
   $('svc-delete').hidden = !svc;
   $('svc-test-result').replaceChildren();
@@ -813,6 +815,7 @@ async function pickLibraryIcon(name) {
   try {
     const { icon } = await api('POST', '/api/admin/icons/library', { name });
     svcDraft.icon = { kind: 'file', id: icon.id };
+    if (!svcState.icons.some((i) => i.id === icon.id)) svcState.icons.push({ id: icon.id, source: `library:${name}` });
     renderIconPreview();
     $('icon-results').replaceChildren();
     $('icon-search').value = '';
@@ -844,14 +847,23 @@ $('svc-form').addEventListener('input', (e) => {
 });
 $('svc-form').addEventListener('change', syncService);
 $('svc-integration').addEventListener('change', async () => {
-  const type = svcForm().integration.value;
+  const f = svcForm();
+  const type = f.integration.value;
+  const prev = svcState.integrations[svcPrevIntegration];
+  svcPrevIntegration = type;
   renderIntegrationFields();
-  syncService();
   const def = svcState.integrations[type];
-  // Choosing an integration fills in the obvious bits: name, group and icon
-  if (def && !svcForm().name.value) svcForm().name.value = def.label.split(' / ')[0];
-  if (def && !svcForm().group.value) svcForm().group.value = def.group;
-  if (def?.icon && svcDraft.icon.kind === 'letter') await pickLibraryIcon(def.icon).catch(() => {});
+  // Choosing an integration fills in name, group and icon; they follow later changes of the
+  // integration as long as they are still what the previous one filled in
+  const label = (d) => d?.label.split(' / ')[0];
+  if (def && (!f.name.value || f.name.value === label(prev))) f.name.value = label(def);
+  if (def && (!f.group.value || f.group.value === prev?.group)) f.group.value = def.group;
+  const source = svcDraft.icon.kind === 'file' ? svcState.icons.find((i) => i.id === svcDraft.icon.id)?.source : null;
+  if (svcDraft.icon.kind === 'letter' || (prev?.icon && source === `library:${prev.icon}`)) {
+    if (def?.icon) await pickLibraryIcon(def.icon).catch(() => {});
+    else svcDraft.icon = { kind: 'letter' };
+  }
+  syncService();
   renderIconPreview();
 });
 

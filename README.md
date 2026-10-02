@@ -7,7 +7,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 ## What it shows
 
 - **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s).
-- **Proxmox**: nodes (CPU, memory, root disk, uptime) and VMs/containers with their status.
+- **Proxmox**: nodes (CPU, memory, root disk, uptime) on the Overview; VMs/containers with their status on the Services page.
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
 - **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
@@ -19,7 +19,8 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - switch ports lit by link and PoE, NAS bays by disk health, and servers with status LEDs and watts;
   - click a device to jump to its widget; devices outside the rack (e.g. access points) are listed below it.
   - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
-- **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down, response time) and up to 4 numbers from the app.
+- **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down; response time on hover) and up to 4 numbers from the app.
+  - Proxmox **VMs and containers** are listed here too, with CPU, memory and uptime. The Overview keeps each node's health and links here.
   - 28 integrations: Jellyfin, Emby, Plex, Tautulli, Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, Overseerr/Jellyseerr, qBittorrent, Transmission, SABnzbd, Pi-hole (v5/v6), AdGuard Home, Nginx Proxy Manager, Traefik, Home Assistant, Nextcloud, Immich, Paperless-ngx, Uptime Kuma, Grafana, Portainer, Speedtest Tracker, Prometheus, authentik, plus **Custom JSON API** for anything else.
   - Icons come from the [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) library (downloaded once by the server and served locally) or are uploaded.
 - **Docs** tab (always requires login, even with a public dashboard), edited in place:
@@ -30,7 +31,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Your own Markdown pages in folders.
   - Not meant for passwords: link to your password manager instead.
 - **History graphs**: small graphs in the widgets and service cards, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the top bar (remembered per browser).
-  - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw; service response times.
+  - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw.
   - Stored in `history.json` in the data directory: 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. That's roughly 75 kB per graph once full. Graphs for removed devices are dropped after 30 days.
   - Only numbers are kept (no names or addresses). The graphs follow the dashboard's visibility: they need login unless the dashboard is public.
 - **Alerts** (Admin → Alerts): messages to **ntfy**, **Telegram**, **Discord** and **e-mail (SMTP)**. You can add several channels of each kind and tick which alerts go to which channel.

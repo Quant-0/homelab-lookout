@@ -2302,7 +2302,6 @@ async function pollService(svc) {
   const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc)]);
   if (config.services.find((x) => x.id === svc.id) !== svc) return;
   const prev = serviceResults.get(svc.id);
-  if (check?.up) histRecord(`svc:${svc.id}:ms`, check.ms);
   serviceResults.set(svc.id, {
     check,
     stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
@@ -2426,7 +2425,24 @@ function servicesPayload() {
       updatedAt: r?.updatedAt ?? null,
     });
   }
-  return { groups: [...groups].map(([name, services]) => ({ name, services })), refreshSeconds: config.settings.dashboard.refreshSeconds };
+  return { groups: [...groups].map(([name, services]) => ({ name, services })), vms: vmsPayload(), refreshSeconds: config.settings.dashboard.refreshSeconds };
+}
+
+// Proxmox VMs and containers, shown on the Services page (the Overview keeps the node health)
+function vmsPayload() {
+  const pve = config.hosts.filter((h) => h.type === 'proxmox');
+  if (!pve.length) return null;
+  const items = [];
+  const notes = [];
+  for (const h of pve) {
+    const r = results.get(h.id);
+    const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+    if (r && !r.ok) notes.push(`${name}: ${r.error}${r.data ? ' (showing the last known state)' : ''}`);
+    for (const g of r?.data?.guests || []) {
+      items.push({ key: `${h.id}:${g.vmid}`, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime });
+    }
+  }
+  return { items, notes, showStopped: config.settings.dashboard.showStoppedGuests };
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
@@ -2594,7 +2610,6 @@ async function docsAuto() {
 // Every poll adds a value per series; values are averaged into 1-minute (kept 24 h),
 // 15-minute (8 days) and 2-hour (92 days) buckets. Series: power:total, idrac:<host>:watts|inlet|tmax,
 // pve:<host>:<node>:cpu|mem, syno:<host>:temp|cpu|mem, nas:<host>:load, unifi:<host>:<mac>:cpu|mem|temp|clients|poe,
-// svc:<service>:ms
 
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 const HIST_TIERS = [
@@ -2602,7 +2617,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|svc:[0-9a-f-]{36}:ms)$/;
+const HIST_KEY = /^(power:total|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
