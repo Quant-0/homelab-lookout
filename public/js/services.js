@@ -32,6 +32,7 @@ function card(svc) {
       el('span', { class: 'v num', text: HD.statValue(st) }),
       el('span', { class: 'l', text: st.label })))));
   }
+  if (svc.check) body.push(HD.sparkSlot(`svc:${svc.id}:ms`, { label: 'Response time', unit: ' ms' }));
   if (svc.error) body.push(el('p', { class: 'svc-error small', text: `${svc.integration}: ${svc.error}` }));
   if (svc.device) body.push(el('div', { class: 'svc-device small muted', text: `on ${svc.device}` }));
   // Links open in a new tab without leaking this page (noopener, no referrer)
@@ -44,6 +45,7 @@ function render(d) {
   document.title = `Services · ${d.title}`;
   $('title').textContent = d.title;
   $('view-tabs').replaceChildren(...HD.viewTabs('services', d.loggedIn));
+  if (!$('range').firstChild) $('range').append(HD.rangeTabs());
   $('nav').replaceChildren(...(d.loggedIn
     ? [el('a', { class: 'button', href: '/admin#services', text: 'Edit services' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout })]
     : [el('a', { class: 'button', href: '/login?next=services', text: 'Log in' })]));
@@ -54,6 +56,7 @@ function render(d) {
   $('groups').replaceChildren(...d.groups.map((g) => el('section', { class: 'svc-group' },
     el('h2', { text: g.name }),
     el('div', { class: 'svc-grid' }, g.services.map(card)))));
+  HD.fillSparks();
 }
 
 async function refresh() {

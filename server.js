@@ -2300,6 +2300,7 @@ async function pollService(svc) {
   const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc)]);
   if (config.services.find((x) => x.id === svc.id) !== svc) return;
   const prev = serviceResults.get(svc.id);
+  if (check?.up) histRecord(`svc:${svc.id}:ms`, check.ms);
   serviceResults.set(svc.id, {
     check,
     stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
@@ -2585,6 +2586,124 @@ async function docsAuto() {
 }
 
 // ---------------------------------------------------------------------------
+// History: metrics over time for the small graphs
+//
+// Every poll adds a value per series; values are averaged into 1-minute (kept 24 h),
+// 15-minute (8 days) and 2-hour (92 days) buckets. Series: power:total, idrac:<host>:watts|inlet|tmax,
+// pve:<host>:<node>:cpu|mem, syno:<host>:temp|cpu|mem, nas:<host>:load, unifi:<host>:<mac>:cpu|mem|temp|clients|poe,
+// svc:<service>:ms
+
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const HIST_TIERS = [
+  { name: 'm', step: 60e3, keep: 24 * 3600e3 + 3600e3 },
+  { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
+  { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
+];
+const HIST_KEY = /^(power:total|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|svc:[0-9a-f-]{36}:ms)$/;
+let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
+let historyDirty = false;
+
+// Only well-formed series with known keys are kept (the file may come from a backup)
+function cleanHistory(h) {
+  const out = { series: {} };
+  const pts = (a) => (Array.isArray(a) ? a.filter((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite)) : []);
+  for (const [k, v] of Object.entries(h?.series && typeof h.series === 'object' ? h.series : {})) {
+    if (!HIST_KEY.test(k) || !v || typeof v !== 'object') continue;
+    const acc = {};
+    for (const t of HIST_TIERS) {
+      const a = v.acc?.[t.name];
+      if (a && [a.t, a.sum, a.n].every(Number.isFinite)) acc[t.name] = { t: a.t, sum: a.sum, n: a.n };
+    }
+    out.series[k] = { m: pts(v.m), q: pts(v.q), h: pts(v.h), acc, seen: Number.isFinite(v.seen) ? v.seen : 0 };
+  }
+  return out;
+}
+
+function loadHistory() {
+  history = cleanHistory(readJson(HISTORY_FILE, null));
+}
+
+function saveHistory() {
+  if (!historyDirty) return;
+  const cutoff = Date.now() - 30 * 86400e3;
+  for (const [k, s] of Object.entries(history.series)) if ((s.seen || 0) < cutoff) delete history.series[k]; // removed devices
+  writeJsonAtomic(HISTORY_FILE, history);
+  historyDirty = false;
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+function histRecord(key, value, t = Date.now()) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return;
+  const s = (history.series[key] ||= { m: [], q: [], h: [], acc: {} });
+  s.seen = t;
+  for (const tier of HIST_TIERS) {
+    const bucket = Math.floor(t / tier.step) * tier.step;
+    const a = s.acc[tier.name];
+    if (a && a.t !== bucket && a.n) {
+      s[tier.name].push([a.t, round2(a.sum / a.n)]);
+      const from = t - tier.keep;
+      let i = 0;
+      while (i < s[tier.name].length && s[tier.name][i][0] < from) i++;
+      if (i) s[tier.name].splice(0, i);
+    }
+    if (!a || a.t !== bucket) s.acc[tier.name] = { t: bucket, sum: 0, n: 0 };
+    s.acc[tier.name].sum += value;
+    s.acc[tier.name].n++;
+  }
+  historyDirty = true;
+}
+
+// Values for a range, averaged down to at most `points` points
+function histQuery(key, rangeMs, points) {
+  const s = history.series[key];
+  if (!s) return [];
+  const tier = rangeMs <= 26 * 3600e3 ? 'm' : rangeMs <= 8 * 86400e3 ? 'q' : 'h';
+  const from = Date.now() - rangeMs;
+  let data = s[tier].filter(([t]) => t >= from);
+  const a = s.acc[tier];
+  if (a?.n) data = [...data, [a.t, round2(a.sum / a.n)]];
+  if (data.length <= points) return data;
+  const out = [];
+  for (let g = 0; g < points; g++) {
+    const chunk = data.slice(Math.floor((g * data.length) / points), Math.floor(((g + 1) * data.length) / points));
+    out.push([chunk[0][0], round2(chunk.reduce((x, [, v]) => x + v, 0) / chunk.length)]);
+  }
+  return out;
+}
+
+// What a poll result contributes to the history
+function recordHistory(h, data, t) {
+  const pct = (a, b) => (typeof a === 'number' && b ? (100 * a) / b : null);
+  if (h.type === 'idrac') {
+    histRecord(`idrac:${h.id}:watts`, data.watts, t);
+    const inlet = data.temps.find((x) => /inlet/i.test(x.name));
+    if (inlet) histRecord(`idrac:${h.id}:inlet`, inlet.celsius, t);
+    if (data.temps.length) histRecord(`idrac:${h.id}:tmax`, Math.max(...data.temps.map((x) => x.celsius)), t);
+  } else if (h.type === 'proxmox') {
+    for (const n of data.nodes.filter((x) => x.status === 'online')) {
+      histRecord(`pve:${h.id}:${n.name}:cpu`, typeof n.cpu === 'number' ? n.cpu * 100 : null, t);
+      histRecord(`pve:${h.id}:${n.name}:mem`, pct(n.mem, n.maxmem), t);
+    }
+  } else if (h.type === 'synology') {
+    histRecord(`syno:${h.id}:temp`, data.system.temp, t);
+    histRecord(`syno:${h.id}:cpu`, typeof data.system.cpu === 'number' ? data.system.cpu * 100 : null, t);
+    histRecord(`syno:${h.id}:mem`, pct(data.system.memUsed, data.system.memTotal), t);
+  } else if (h.type === 'truenas') {
+    histRecord(`nas:${h.id}:load`, data.system.loadavg?.[0], t);
+  } else if (h.type === 'unifi') {
+    for (const d of data.devices.filter((x) => x.online)) {
+      const k = `unifi:${h.id}:${d.mac}`;
+      histRecord(`${k}:cpu`, typeof d.cpu === 'number' ? d.cpu * 100 : null, t);
+      histRecord(`${k}:mem`, typeof d.mem === 'number' ? d.mem * 100 : null, t);
+      if (d.temps.length) histRecord(`${k}:temp`, Math.max(...d.temps.map((x) => x.value)), t);
+      histRecord(`${k}:clients`, d.clients, t);
+      if (d.poe) histRecord(`${k}:poe`, d.poe.usedW, t);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Polling
 
 const results = new Map(); // host id -> { ok, error, data, updatedAt, lastOkAt }
@@ -2611,11 +2730,13 @@ async function pollHost(h) {
   const prev = results.get(h.id);
   if (r.ok) {
     results.set(h.id, { ok: true, data: r.data, updatedAt: now, lastOkAt: now });
+    recordHistory(h, r.data, now);
     if (h.type === 'idrac' && typeof r.data.watts === 'number') recordPower(`idrac:${h.id}`, r.data.watts, now);
     if (h.type === 'unifi') {
       for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now);
       syncUnifiDevices(h, r.data.devices);
     }
+    if (h.type === 'idrac' || h.type === 'unifi') histRecord('power:total', measuredWatts().total, now);
   } else {
     results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null });
   }
@@ -3439,6 +3560,15 @@ async function handleApi(req, res, url, session) {
     return sendJson(res, 200, { ...dashboardPayload(), loggedIn: Boolean(session) });
   }
 
+  if (p === '/api/history' && m === 'GET') {
+    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    const ranges = { '24h': 24 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
+    const rangeMs = ranges[url.searchParams.get('range')] || ranges['24h'];
+    const points = Math.min(Math.max(parseInt(url.searchParams.get('points') || '120', 10) || 120, 10), 500);
+    const keys = String(url.searchParams.get('keys') || '').split(',').filter((k) => HIST_KEY.test(k)).slice(0, 80);
+    return sendJson(res, 200, { series: Object.fromEntries(keys.map((k) => [k, histQuery(k, rangeMs, points)])) });
+  }
+
   if (p === '/api/services' && m === 'GET') {
     if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
     return sendJson(res, 200, { ...servicesPayload(), loggedIn: Boolean(session), title: config.settings.dashboard.title });
@@ -4175,6 +4305,7 @@ function backupBundle() {
     },
     docs,
     energy,
+    history,
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
   };
 }
@@ -4253,6 +4384,9 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   energy = bundle.energy?.buckets ? bundle.energy : { buckets: {} };
   energyDirty = true;
   saveEnergy();
+  history = cleanHistory(bundle.history);
+  historyDirty = true;
+  saveHistory();
   if (admin && bundle.admin?.username && bundle.admin?.hash) writeJsonAtomic(ADMIN_FILE, bundle.admin);
   results.clear();
   serviceResults.clear();
@@ -4782,6 +4916,7 @@ async function main() {
   KEY = loadKey();
   loadConfig();
   loadEnergy();
+  loadHistory();
   loadDocs();
   loadStatic();
   initAllowedHosts();
@@ -4800,10 +4935,12 @@ async function main() {
 
   schedulePolling();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
+  setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(backupTick, 30 * 1000).unref();
   const shutdown = () => {
     try {
       saveEnergy();
+      saveHistory();
     } finally {
       process.exit(0);
     }

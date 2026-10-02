@@ -75,7 +75,7 @@ function route() {
 }
 
 function show(...nodes) {
-  $('docs-content').replaceChildren(...nodes.flat().filter(Boolean));
+  $('docs-content').replaceChildren(...nodes.flat(Infinity).filter(Boolean));
 }
 
 function factsTable(rows) {

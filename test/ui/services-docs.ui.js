@@ -108,9 +108,10 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(/192\.168\.1\.0\/24/.test(plan) && /Mgmt/.test(plan) && /192\.168\.1\.80/.test(plan), 'network plan imported from UniFi (networks + fixed IPs)');
   check(!/PPPOE|IPSEC/.test(plan), 'no secrets from UniFi network settings');
   await page.click('#docs-nav a:has-text("Switch ports")');
+  await page.waitForSelector('.docs-content h2:has-text("Switch ports")');
   await page.waitForSelector('.docs-content table');
   const ports = await page.textContent('.docs-content');
-  check(/U7 Pro Hallway/.test(ports) && /Printer/.test(ports), 'switch ports: AP and wired clients on their ports');
+  check(/U7 Pro Hallway/.test(ports) && /Printer/.test(ports) && !/\[object /.test(ports), 'switch ports: AP and wired clients on their ports');
   await page.click('#docs-nav a:has-text("Topology")');
   await page.waitForSelector('.topology svg');
   const topo = await page.$$eval('.topo-node .topo-label', (t) => t.map((x) => x.textContent));

@@ -207,5 +207,122 @@ const HD = (() => {
     return node;
   }
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon };
+  // --- History sparklines ---
+  // A slot is a placeholder in the page; fillSparks() fetches all slots' series in one request
+  // (cached for a minute) and draws them. One series per graph: 2px line, light area, hover value.
+  const RANGES = { '24h': '24 h', '7d': '7 d', '30d': '30 d' };
+  const RANGE_MS = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 };
+  let range = '24h';
+  try {
+    range = RANGES[localStorage.getItem('hd.range')] ? localStorage.getItem('hd.range') : '24h';
+  } catch {
+    /* storage unavailable */
+  }
+  let cache = { range: null, at: 0, series: {} };
+
+  function sparkSlot(key, { label = '', unit = '', decimals = 0 } = {}) {
+    return el('div', { class: 'spark-cell' },
+      label ? el('div', { class: 'spark-label', text: label }) : null,
+      el('div', { class: 'spark-slot', 'data-key': key, 'data-unit': unit, 'data-dec': decimals, 'data-label': label }));
+  }
+
+  const fmtVal = (v, unit, dec) => `${nf(dec).format(v)}${unit}`;
+
+  function drawSpark(slot, points) {
+    const unit = slot.dataset.unit;
+    const dec = Number(slot.dataset.dec);
+    if (!points || points.length < 2) return slot.replaceChildren(el('span', { class: 'spark-empty', text: 'Collecting history…' }));
+    const W = 300;
+    const H = 40;
+    // The x axis is the whole range, so a series that started recently fills only the right part
+    const t1 = Date.now();
+    const t0 = Math.min(points[0][0], t1 - RANGE_MS[range]);
+    const vs = points.map((p) => p[1]);
+    let lo = Math.min(...vs);
+    let hi = Math.max(...vs);
+    if (hi - lo < 1e-9) {
+      lo -= 1;
+      hi += 1;
+    }
+    const x = (t) => ((t - t0) / (t1 - t0 || 1)) * W;
+    const y = (v) => H - 3 - ((v - lo) / (hi - lo)) * (H - 6);
+    const line = points.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
+    const marker = svg('line', { class: 'spark-marker', x1: 0, x2: 0, y1: 0, y2: H, 'vector-effect': 'non-scaling-stroke' });
+    marker.style.display = 'none';
+    const graph = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
+      svg('path', { class: 'spark-area', d: `${line}L${x(points[points.length - 1][0]).toFixed(1)},${H}L${x(points[0][0]).toFixed(1)},${H}Z` }),
+      svg('path', { class: 'spark-line', d: line, 'vector-effect': 'non-scaling-stroke' }),
+      marker);
+    const tip = el('div', { class: 'tooltip spark-tip hidden' });
+    const min = Math.min(...vs);
+    const max = Math.max(...vs);
+    const last = vs[vs.length - 1];
+    const span = `${RANGES[range]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
+    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[range]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, tip);
+    const show = (clientX) => {
+      const r = box.getBoundingClientRect();
+      const t = t0 + ((clientX - r.left) / r.width) * (t1 - t0);
+      let best = 0;
+      for (let i = 1; i < points.length; i++) if (Math.abs(points[i][0] - t) < Math.abs(points[best][0] - t)) best = i;
+      const [bt, bv] = points[best];
+      marker.setAttribute('x1', x(bt));
+      marker.setAttribute('x2', x(bt));
+      marker.style.display = '';
+      tip.replaceChildren(el('strong', { text: fmtVal(bv, unit, dec) }), ` ${new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(range !== '24h' ? { day: 'numeric', month: 'short' } : {}) })}`);
+      tip.classList.remove('hidden');
+      const px = (x(bt) / W) * r.width;
+      tip.style.left = `${Math.min(Math.max(px - tip.offsetWidth / 2, 0), r.width - tip.offsetWidth)}px`;
+    };
+    box.addEventListener('pointermove', (e) => show(e.clientX));
+    box.addEventListener('pointerdown', (e) => show(e.clientX));
+    box.addEventListener('pointerleave', () => {
+      tip.classList.add('hidden');
+      marker.style.display = 'none';
+    });
+    slot.replaceChildren(box, el('div', { class: 'spark-range', text: span }));
+  }
+
+  async function fillSparks(force = false) {
+    const slots = [...document.querySelectorAll('.spark-slot')];
+    if (!slots.length) return;
+    const keys = [...new Set(slots.map((s) => s.dataset.key))];
+    const draw = () => {
+      for (const s of document.querySelectorAll('.spark-slot')) if (cache.range === range && s.dataset.key in cache.series) drawSpark(s, cache.series[s.dataset.key]);
+    };
+    draw(); // from cache right away, so a re-render doesn't flicker
+    const stale = force || cache.range !== range || Date.now() - cache.at > 60000 || keys.some((k) => !(k in cache.series));
+    if (stale) {
+      try {
+        const r = await fetch(`/api/history?range=${range}&points=120&keys=${encodeURIComponent(keys.join(','))}`, { credentials: 'same-origin', cache: 'no-store' });
+        if (r.ok) {
+          const got = (await r.json()).series;
+          cache = { range, at: Date.now(), series: { ...(cache.range === range ? cache.series : {}), ...Object.fromEntries(keys.map((k) => [k, got[k] || []])) } };
+        }
+      } catch {
+        /* keep what we have */
+      }
+    }
+    draw();
+  }
+
+  function rangeTabs(onChange) {
+    return el('div', { class: 'range-tabs', role: 'group', 'aria-label': 'History range' }, Object.entries(RANGES).map(([k, label]) => el('button', {
+      type: 'button',
+      'aria-pressed': String(k === range),
+      text: label,
+      onclick: (e) => {
+        range = k;
+        try {
+          localStorage.setItem('hd.range', k);
+        } catch {
+          /* fine */
+        }
+        for (const b of e.target.parentElement.children) b.setAttribute('aria-pressed', String(b === e.target));
+        fillSparks(true);
+        if (onChange) onChange(k);
+      },
+    })));
+  }
+
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs };
 })();

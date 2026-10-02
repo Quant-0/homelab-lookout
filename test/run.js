@@ -71,7 +71,7 @@ function which(bin) {
 
 // Fresh data dir + admin account; or reuse the current one (fresh = false)
 let dataDir = null;
-async function startServer(fresh, extraEnv = {}) {
+async function startServer(fresh, extraEnv = {}, seed = null) {
   if (server) {
     server.kill();
     await new Promise((r) => server.once('exit', r));
@@ -81,6 +81,7 @@ async function startServer(fresh, extraEnv = {}) {
     fs.chmodSync(dataDir, 0o700);
     execFileSync(process.execPath, ['server.js', 'set-admin', 'admin'], { cwd: ROOT, env: { ...process.env, DATA_DIR: dataDir }, input: `${ADMIN_PW}\n${ADMIN_PW}\n`, stdio: ['pipe', 'ignore', 'inherit'] });
   }
+  if (seed) seed(dataDir);
   server = start(process.execPath, ['server.js'], { DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(PORT), ...extraEnv }, 'server');
   await waitFor(`${BASE_URL}/login`);
 }
@@ -137,6 +138,7 @@ async function main() {
     { file: 'test/devices.test.js', fresh: true },
     { file: 'test/services.test.js', fresh: true },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
+    { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
   ];
   if (args.has('--ui')) {
     let playwright = true;
@@ -145,8 +147,9 @@ async function main() {
     } catch {
       playwright = false;
     }
+    const seeds = { 'history.ui.js': require('./history.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
-      suites.push({ file: `test/ui/${f}`, fresh: true, skip: !playwright && 'Playwright not installed' });
+      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], skip: !playwright && 'Playwright not installed' });
   }
 
   let passed = 0;
@@ -158,7 +161,7 @@ async function main() {
       console.log(`SKIP  ${s.file}: ${s.skip}`);
       continue;
     }
-    await startServer(s.fresh, s.env);
+    await startServer(s.fresh, s.env, s.seed);
     console.log(`RUN   ${s.file}`);
     const r = await runSuite(s.file, { ...env, ...s.env, DATA_DIR: dataDir });
     passed += r.passed;
@@ -176,8 +179,13 @@ main()
     console.error(e.message);
     return 1;
   })
-  .then((code) => {
-    for (const c of children) c.kill();
+  .then(async (code) => {
+    // wait for the server's shutdown save before removing its data directory
+    await Promise.all(children.filter((c) => c.exitCode === null && c.signalCode === null).map((c) => new Promise((r) => {
+      c.once('exit', r);
+      c.kill();
+      setTimeout(r, 3000);
+    })));
     fs.rmSync(tmp, { recursive: true, force: true });
     process.exit(code);
   });

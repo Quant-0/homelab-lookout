@@ -114,6 +114,12 @@ function kv(pairs) {
   return el('div', { class: 'kv' }, pairs.map(([k, v]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }))));
 }
 
+// History graphs: [key, label, unit, decimals] (null entries are skipped)
+function sparks(list) {
+  const cells = list.filter(Boolean).map(([key, label, unit, decimals = 0]) => HD.sparkSlot(key, { label, unit, decimals }));
+  return cells.length ? el('div', { class: 'sparks' }, cells) : null;
+}
+
 // ---------------------------------------------------------------------------
 // iDRAC
 
@@ -128,6 +134,10 @@ function renderIdrac(hosts) {
         ['Power state', d.powerState || '–'],
         ['PSUs', `${d.psus.length}`],
         ['Fans', `${d.fans.length}`],
+      ]), sparks([
+        [`idrac:${h.id}:watts`, 'Power draw', ' W'],
+        d.temps.some((t) => /inlet/i.test(t.name)) ? [`idrac:${h.id}:inlet`, 'Inlet temperature', ' °C'] : null,
+        d.temps.length ? [`idrac:${h.id}:tmax`, 'Hottest sensor', ' °C'] : null,
       ])];
       if (d.psus.length) {
         parts.push(el('h4', { text: 'Power supplies' }));
@@ -202,6 +212,10 @@ function renderProxmox(hosts, showStopped, nodeFor = () => null) {
         el('div', { class: 'table-wrap' }, el('table', null,
           el('thead', null, el('tr', null, ['Node', 'Status', 'CPU', 'Memory', 'Root disk'].map((t) => el('th', { text: t })), el('th', { class: 'r', text: 'Uptime' }))),
           el('tbody', null, nodeRows))),
+        d.nodes.filter((n) => n.status === 'online').map((n) => sparks([
+          [`pve:${h0.id}:${n.name}:cpu`, d.nodes.length > 1 ? `${n.name} CPU` : 'CPU', ' %'],
+          [`pve:${h0.id}:${n.name}:mem`, d.nodes.length > 1 ? `${n.name} memory` : 'Memory', ' %'],
+        ])),
         el('h4', { text: showStopped ? 'VMs & containers' : 'Running VMs & containers' }),
         guests.length
           ? el('div', { class: 'table-wrap' }, el('table', null,
@@ -237,6 +251,7 @@ function renderTruenas(hosts) {
           ['Uptime', fmt.uptime(s.uptime)],
           ['Load (1/5/15)', s.loadavg ? s.loadavg.map((l) => fmt.n(l, 2)).join(' / ') : '–'],
         ]),
+        sparks([[`nas:${h.id}:load`, 'Load (1 min)', '', 2]]),
         el('h4', { text: 'Pools' }),
         d.pools.length
           ? el('div', null, d.pools.map((p) => {
@@ -284,6 +299,11 @@ function renderSynology(hosts) {
           ['CPU', s.cpu != null ? fmt.pct(s.cpu) : '–'],
           ['Memory', memF != null ? `${fmt.pct(memF)} of ${fmt.bytes(s.memTotal)}` : '–'],
           ['Uptime', fmt.uptime(s.uptime)],
+        ]),
+        sparks([
+          s.temp != null ? [`syno:${h.id}:temp`, 'Temperature', ' °C'] : null,
+          s.cpu != null ? [`syno:${h.id}:cpu`, 'CPU', ' %'] : null,
+          memF != null ? [`syno:${h.id}:mem`, 'Memory', ' %'] : null,
         ]),
         el('div', { class: 'status-line' },
           status(`System ${s.status || 'unknown'}`, s.status === 'Normal' ? 'good' : s.status ? 'critical' : ''),
@@ -389,6 +409,13 @@ function unifiDeviceSection(ud, consoleHost) {
         ...(x.ports.length ? [['Ports up', `${up} of ${x.ports.length}`]] : []),
         ...(x.poe ? [['PoE', `${fmt.n(x.poe.usedW, 1)}${x.poe.budgetW ? ` of ${fmt.n(x.poe.budgetW)}` : ''} W`]] : []),
       ])];
+      const k = `unifi:${consoleHost.id}:${x.mac}`;
+      if (x.online) parts.push(sparks([
+        x.cpu != null ? [`${k}:cpu`, 'CPU', ' %'] : null,
+        maxTemp(x) != null ? [`${k}:temp`, 'Temperature', ' °C'] : null,
+        x.clients != null ? [`${k}:clients`, 'Clients', ''] : null,
+        x.poe ? [`${k}:poe`, 'PoE draw', ' W', 1] : null,
+      ]));
       if (x.upgradable) parts.push(el('div', { class: 'status-line' }, status('Firmware update available', 'warning')));
       const poe = x.ports.filter((p) => p.poeW > 0);
       if (poe.length) {
@@ -598,7 +625,8 @@ function renderPowerSummary(p, idracCount) {
     el('div', { class: 'label', text: p.includeEstimates && p.estimatedW > 0 ? 'Current draw (measured + estimated)' : 'Current draw (measured)' }),
     el('div', { class: 'value' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
     el('div', { class: 'muted small', text: breakdown || (idracCount ? '' : 'Add an iDRAC host to measure power') }),
-    el('div', { class: 'muted small', text: `${plan}${p.vat ? ' · incl. VAT' : ''}` }));
+    el('div', { class: 'muted small', text: `${plan}${p.vat ? ' · incl. VAT' : ''}` }),
+    p.watts != null ? sparks([['power:total', 'Measured draw', ' W']]) : null);
   const tiles = el('div', { class: 'tiles' },
     tile('Price now', pn ? `${fmt.n(pn.total, 1)} øre/kWh` : '–', pn ? `Energy ${fmt.n(pn.energy, 1)} + grid ${fmt.n(pn.grid, 1)} (${pn.period})` : p.plan === 'spot' ? 'Spot price unavailable' : ''),
     tile('Estimated per day', est ? fmt.kr(est.day) : '–', est ? `${fmt.n(est.kwhDay, 1)} kWh at current draw` : ''),
@@ -641,6 +669,7 @@ let layoutLoaded = false;
 
 function renderNav(d) {
   $('view-tabs').replaceChildren(...HD.viewTabs('overview', d.loggedIn));
+  if (!$('range').firstChild) $('range').append(HD.rangeTabs());
   const items = [];
   if (d.loggedIn) {
     items.push(el('button', { type: 'button', id: 'customize', text: 'Customize', disabled: board.editing, onclick: () => board.startEdit() }));
@@ -696,6 +725,7 @@ function render(d) {
     ...renderDevices(d),
   ];
   board.render(defs);
+  HD.fillSparks();
   renderRackPanel(d);
   pruneFans();
   const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi'].every((k) => !(d[k] || []).length);

@@ -29,7 +29,11 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Topology diagram drawn from UniFi uplinks.
   - Your own Markdown pages in folders.
   - Not meant for passwords: link to your password manager instead.
-- **Admin** is organised in tabs: Devices, Services, Power & cost, Dashboard, Appearance, Account.
+- **History graphs**: small graphs in the widgets and service cards, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the top bar (remembered per browser).
+  - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw; service response times.
+  - Stored in `history.json` in the data directory: 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. That's roughly 75 kB per graph once full. Graphs for removed devices are dropped after 30 days.
+  - Only numbers are kept (no names or addresses). The graphs follow the dashboard's visibility: they need login unless the dashboard is public.
+- **Admin** is organised in tabs: Devices, Services, Power & cost, Dashboard, Appearance, Backup, Account.
 - **Power cost**:
   - Price plans: spot price per price area (NO1–NO5, from [hvakosterstrommen.no](https://www.hvakosterstrommen.no/strompris-api)), or Norgespris (40 øre/kWh excl. VAT, 50 incl.).
   - Optional supplier markup and strømstøtte.
@@ -110,7 +114,7 @@ Import the CA certificate once on each device to get rid of browser warnings. Do
 
 In Admin → Backup:
 
-- **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, docs, energy history and uploaded images.
+- **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, docs, energy and graph history, and uploaded images.
 - **Restore** from such a file, or from a local copy. The current state is first saved as a local copy. The admin login and port settings are only restored if you tick them.
 - **Automatic backups:** daily at a time you choose, keeping the last N copies on this server plus on each destination:
   - **Folder:** mount a NAS share (NFS/SMB) on `/var/backups/homelab-dashboard`, the only path outside the data directory the service can write. Admin shows example `/etc/fstab` lines.
@@ -144,7 +148,7 @@ DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js
 ## Tests
 
 ```sh
-node test/run.js              # end-to-end API suites (~325 checks)
+node test/run.js              # end-to-end API suites (~350 checks)
 node test/run.js --ui         # also browser tests (needs Playwright)
 node test/run.js --verbose    # print every check
 ```
