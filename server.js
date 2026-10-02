@@ -62,7 +62,12 @@ const MAX_BACKGROUND_BYTES = 10 << 20;
 const RACK_KINDS = ['server', 'storage', 'nas', 'switch', 'gateway', 'patch-panel', 'shelf', 'pdu', 'ups', 'blank', 'ap', 'other'];
 // host:<host id> | unifi:<host id>:<device mac> | pve:<host id>:<node name>
 const RACK_LINK = /^(host:[0-9a-f-]{36}|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}|pve:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
-const DEFAULT_RACK = { enabled: true, units: 24, numbering: 'bottom' };
+const DEFAULT_RACK = { enabled: true, units: 24, numbering: 'bottom', passive: [] };
+// Passive rack items: no name, no monitoring, not in the docs
+const PASSIVE_KINDS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Brush panel', cable: 'Cable management', patch: 'Patch panel', shelf: 'Shelf' };
+// How a device's front is drawn in the rack ('auto' = from the model it reports)
+const FRONTS = ['auto', 'dell13', 'dell14', 'udm-pro', 'usw-24-poe', 'unifi-switch', 'synology-rs', 'synology-ds', 'server', 'switch', 'plain'];
+const DRIVE_LAYOUTS = ['auto', 'none', '4x3.5', '8x3.5', '12x3.5', '8x2.5', '10x2.5', '16x2.5', '24x2.5'];
 const DEVICE_LOCATIONS = ['rack', 'outside', 'none']; // none = not placed
 const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway' };
 const WIDGET_ID = /^(power-summary|power-chart|device:[0-9a-f-]{36})$/;
@@ -307,6 +312,7 @@ function loadConfig() {
       enabled: raw.rack?.enabled !== false,
       units: Number.isInteger(raw.rack?.units) ? raw.rack.units : DEFAULT_RACK.units,
       numbering: raw.rack?.numbering === 'top' ? 'top' : 'bottom',
+      passive: cleanPassive(raw.rack?.passive),
     },
     devices: Array.isArray(raw.devices) ? raw.devices : [],
     services: Array.isArray(raw.services) ? raw.services : [],
@@ -316,6 +322,16 @@ function loadConfig() {
     alerts: normalizeAlerts(raw.alerts),
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
+  // Blank panels, patch panels and shelves used to be devices; they are passive rack items now
+  const PASSIVE_FROM = { blank: 'blank', 'patch-panel': 'patch', shelf: 'shelf' };
+  config.devices = config.devices.filter((d) => {
+    if (!PASSIVE_FROM[d.kind] || d.unifi || config.hosts.some((h) => h.deviceId === d.id)) return true;
+    if (d.location === 'rack' && Number.isInteger(d.u)) {
+      config.rack.passive.push({ id: d.id, kind: PASSIVE_FROM[d.kind], u: d.u, height: Math.min(Math.max(d.height || 1, 1), 4), ...(d.kind === 'patch-panel' ? { ports: 24 } : {}) });
+      return false;
+    }
+    return true;
+  });
   // Every connection belongs to a device
   for (const h of config.hosts) {
     if (config.devices.some((d) => d.id === h.deviceId)) continue;
@@ -584,13 +600,38 @@ const PVE_NODE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 function validateRackSettings(b) {
   const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
   if (!int(b.units, 1, 60)) throw new UserError('Rack size must be 1–60 U');
-  const tooHigh = config.devices.find((d) => !d.hidden && d.location === 'rack' && d.u + d.height - 1 > b.units);
+  const tooHigh = config.devices.find((d) => !d.hidden && d.location === 'rack' && d.u + d.height - 1 > b.units)
+    || config.rack.passive.map((x) => ({ ...x, name: `The ${PASSIVE_KINDS[x.kind].toLowerCase()}` })).find((x) => x.u + x.height - 1 > b.units);
   if (tooHigh) throw new UserError(`${tooHigh.name} sits at U${tooHigh.u + tooHigh.height - 1}; move it before shrinking the rack`);
-  return { enabled: b.enabled !== false, units: b.units, numbering: b.numbering === 'top' ? 'top' : 'bottom' };
+  return { enabled: b.enabled !== false, units: b.units, numbering: b.numbering === 'top' ? 'top' : 'bottom', passive: config.rack.passive };
 }
 
 function rackClash(dev, selfId) {
-  return config.devices.find((o) => o.id !== selfId && !o.hidden && o.location === 'rack' && o.u <= dev.u + dev.height - 1 && dev.u <= o.u + o.height - 1);
+  const overlaps = (o) => o.id !== selfId && o.u <= dev.u + dev.height - 1 && dev.u <= o.u + o.height - 1;
+  const d = config.devices.find((o) => !o.hidden && o.location === 'rack' && overlaps(o));
+  if (d) return d;
+  const p = config.rack.passive.find(overlaps);
+  return p ? { name: `the ${PASSIVE_KINDS[p.kind].toLowerCase()} at U${p.u}` } : null;
+}
+
+function validatePassive(b, selfId) {
+  const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+  if (!PASSIVE_KINDS[b.kind]) throw new UserError('Invalid panel type');
+  const label = PASSIVE_KINDS[b.kind];
+  const height = b.height ?? 1;
+  if (!int(height, 1, 4)) throw new UserError('Height must be 1–4 U');
+  if (!int(b.u, 1, config.rack.units) || b.u + height - 1 > config.rack.units) throw new UserError(`The ${label.toLowerCase()} does not fit at U${b.u ?? '?'} (the rack has ${config.rack.units} U)`);
+  const clash = rackClash({ u: b.u, height }, selfId);
+  if (clash) throw new UserError(`The ${label.toLowerCase()} overlaps ${clash.name}`);
+  return { kind: b.kind, u: b.u, height, ...(b.kind === 'patch' ? { ports: [12, 24, 48].includes(b.ports) ? b.ports : 24 } : {}) };
+}
+
+// From the config file or a backup: keep well-formed items only
+const cleanPassive = (list) => (Array.isArray(list) ? list : []).filter((x) => UUID.test(x?.id) && PASSIVE_KINDS[x.kind] && Number.isInteger(x.u) && Number.isInteger(x.height) && x.height >= 1 && x.height <= 4)
+  .slice(0, 120).map((x) => ({ id: x.id, kind: x.kind, u: x.u, height: x.height, ...(x.kind === 'patch' ? { ports: [12, 24, 48].includes(x.ports) ? x.ports : 24 } : {}) }));
+
+function validateFront(f) {
+  return { model: FRONTS.includes(f?.model) ? f.model : 'auto', drives: DRIVE_LAYOUTS.includes(f?.drives) ? f.drives : 'auto' };
 }
 
 function validatePlacement(b, selfId, name) {
@@ -612,7 +653,7 @@ function validateDeviceFields(b, selfId) {
   if (!name || name.length > 48 || hasControlChars(name)) throw new UserError('Name is required (max 48 characters)');
   if (!RACK_KINDS.includes(b.kind)) throw new UserError('Invalid device type');
   const estimateW = b.estimateW === null || b.estimateW === undefined || b.estimateW === '' ? null : num(b.estimateW, 0, 5000, 'Estimated power');
-  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW };
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.front !== undefined ? { front: validateFront(b.front) } : {}) };
 }
 
 // Creates or updates a connection from request data. A changed address, user name or pinned
@@ -3617,6 +3658,7 @@ function dashboardPayload() {
       u: d.u,
       height: d.height,
       estimateW: d.estimateW,
+      front: d.front || null,
       unifi: d.unifi,
       links: deviceLinks(d),
       connections: deviceHosts(d).map((h) => ({ id: h.id, type: h.type, node: h.type === 'proxmox' ? effectiveNode(h, d) : undefined })),
@@ -3833,6 +3875,30 @@ async function handleApi(req, res, url, session) {
     saveConfig();
     log('Rack settings updated');
     return sendJson(res, 200, { rack: config.rack });
+  }
+
+  if (p === '/api/admin/rack/passive' && m === 'POST') {
+    if (config.rack.passive.length >= 120) throw new UserError('Too many panels');
+    const item = { id: crypto.randomUUID(), ...validatePassive(await readBody(req), null) };
+    config.rack.passive.push(item);
+    saveConfig();
+    return sendJson(res, 201, { item });
+  }
+  const rp = p.match(/^\/api\/admin\/rack\/passive\/([0-9a-f-]{36})$/);
+  if (rp) {
+    const item = config.rack.passive.find((x) => x.id === rp[1]);
+    if (!item) throw Object.assign(new UserError('Panel not found'), { status: 404 });
+    if (m === 'PUT') {
+      Object.assign(item, validatePassive({ ...item, ...(await readBody(req)) }, item.id));
+      if (item.kind !== 'patch') delete item.ports;
+      saveConfig();
+      return sendJson(res, 200, { item });
+    }
+    if (m === 'DELETE') {
+      config.rack.passive = config.rack.passive.filter((x) => x !== item);
+      saveConfig();
+      return sendJson(res, 200, { ok: true });
+    }
   }
 
   if (p === '/api/admin/devices' && m === 'POST') {
@@ -5147,7 +5213,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     hosts,
     backgrounds: arr(c.backgrounds),
     layout: c.layout?.items ? c.layout : null,
-    rack: { ...DEFAULT_RACK, ...(c.rack || {}) },
+    rack: { ...DEFAULT_RACK, ...(c.rack || {}), passive: cleanPassive(c.rack?.passive) },
     devices: arr(c.devices),
     services,
     icons: arr(c.icons),

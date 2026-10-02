@@ -53,7 +53,10 @@ async function load() {
   try {
     state = await api('GET', '/api/admin/config');
     $('whoami').textContent = `Signed in as ${state.user}`;
-    $('device-kind').replaceChildren(...state.rackKinds.map((k) => el('option', { value: k, text: Rack.KIND_LABELS[k] || k })));
+    $('passive-add').replaceChildren(el('option', { value: '', text: 'Add panel…' }), ...Object.entries(Rack.PASSIVE_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
+    $('passive-kind').replaceChildren(...Object.entries(Rack.PASSIVE_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
+    $('device-front').replaceChildren(...Object.entries(Rack.FRONT_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
+    $('device-drives').replaceChildren(...Object.entries(Rack.DRIVE_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
     fillPower(state.settings.power);
     fillDashboard(state.settings.dashboard);
     appearance = structuredClone(state.settings.appearance);
@@ -234,9 +237,10 @@ function fillRackSettings() {
   $('rack-numbering').value = state.rack.numbering;
 }
 
-function freeU(height, exceptId) {
-  for (let u = 1; u + height - 1 <= state.rack.units; u++) {
-    if (!state.devices.some((o) => o.id !== exceptId && !o.hidden && o.location === 'rack' && o.u <= u + height - 1 && u <= o.u + o.height - 1)) return u;
+function freeU(height, exceptId, from = 1) {
+  const taken = [...state.devices.filter((o) => !o.hidden && o.location === 'rack'), ...state.rack.passive].filter((o) => o.id !== exceptId);
+  for (let u = from; u + height - 1 <= state.rack.units; u++) {
+    if (!taken.some((o) => o.u <= u + height - 1 && u <= o.u + o.height - 1)) return u;
   }
   return null;
 }
@@ -247,13 +251,120 @@ function renderDevicesTab() {
   Rack.render($('rack-preview'), rack, rackData, {
     uPx: 28,
     editable: true,
-    selectedId: draft?.id,
+    selectedId: draft?.id || passiveDraft?.id,
     onSelect: (item) => openDevice(state.devices.find((d) => d.id === item.id)),
     onMove: (item, u) => moveDevice(item, u),
-    onEmpty: (u) => openDevice(null, { location: 'rack', u }),
+    onSelectPassive: (p) => openPassive(p),
+    onMovePassive: (p, u) => savePassive({ ...p, u }, `Moved to U${u}`),
+    onEmpty: (u) => showRackAdd(u),
   });
   renderDeviceList();
 }
+
+// --- Passive rack items (blank and patch panels, shelves…) and the "add at this U" chooser ---
+
+let passiveDraft = null;
+
+function hideRackSide() {
+  $('rack-add').hidden = true;
+  $('passive-editor').hidden = true;
+  passiveDraft = null;
+}
+
+function showRackAdd(u) {
+  if (draft) closeDevice();
+  hideRackSide();
+  $('rack-add-title').textContent = `Add at U${u}`;
+  $('rack-add-choices').replaceChildren(
+    el('button', { type: 'button', class: 'primary', text: 'Device…', onclick: () => { hideRackSide(); openDevice(null, { location: 'rack', u }); } }),
+    ...Object.entries(Rack.PASSIVE_LABELS).map(([kind, label]) => el('button', { type: 'button', text: label, onclick: () => addPassive(kind, u) })),
+    el('button', { type: 'button', text: 'Cancel', onclick: () => { hideRackSide(); renderDevicesTab(); } }));
+  $('rack-add').hidden = false;
+  $('rack-add').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  $('rack-add-choices').firstChild.focus();
+}
+
+async function addPassive(kind, u) {
+  try {
+    const { item } = await api('POST', '/api/admin/rack/passive', { kind, u, height: 1, ...(kind === 'patch' ? { ports: 24 } : {}) });
+    hideRackSide();
+    await refreshDevices();
+    showMsg('rack-msg', `${Rack.PASSIVE_LABELS[kind]} added at U${u}`, true);
+    openPassive(item);
+  } catch (e) {
+    showMsg('rack-msg', e.message, false);
+  }
+}
+
+$('passive-add').addEventListener('change', (e) => {
+  const kind = e.target.value;
+  e.target.value = '';
+  if (!kind) return;
+  const u = freeU(1);
+  if (u === null) return showMsg('rack-msg', 'The rack is full', false);
+  addPassive(kind, u);
+});
+
+function openPassive(p) {
+  if (draft) closeDevice();
+  hideRackSide();
+  passiveDraft = { ...p };
+  const f = $('passive-form').elements;
+  f.kind.value = p.kind;
+  f.ports.value = String(p.ports || 24);
+  f.height.value = p.height;
+  f.u.value = p.u;
+  $('passive-title').textContent = `${Rack.PASSIVE_LABELS[p.kind]} at U${p.u}`;
+  $('passive-msg').textContent = '';
+  syncPassive();
+  $('passive-editor').hidden = false;
+  renderDevicesTab();
+  $('passive-editor').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function syncPassive() {
+  const f = $('passive-form').elements;
+  for (const n of document.querySelectorAll('#passive-form .patch-only')) n.classList.toggle('hidden', f.kind.value !== 'patch');
+}
+
+async function savePassive(p, okText) {
+  try {
+    await api('PUT', `/api/admin/rack/passive/${p.id}`, { kind: p.kind, u: p.u, height: p.height, ports: p.ports });
+    showMsg('rack-msg', okText || `${Rack.PASSIVE_LABELS[p.kind]} saved`, true);
+    return true;
+  } catch (e) {
+    showMsg(passiveDraft ? 'passive-msg' : 'rack-msg', e.message, false);
+    return false;
+  } finally {
+    await refreshDevices();
+  }
+}
+
+$('passive-form').addEventListener('change', syncPassive);
+$('passive-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const p = { ...passiveDraft, kind: f.kind.value, height: Number(f.height.value), u: Number(f.u.value), ports: f.kind.value === 'patch' ? Number(f.ports.value) : undefined };
+  if (await savePassive(p)) {
+    hideRackSide();
+    renderDevicesTab();
+  }
+});
+$('passive-close').addEventListener('click', () => {
+  hideRackSide();
+  renderDevicesTab();
+});
+$('passive-delete').addEventListener('click', async () => {
+  if (!passiveDraft) return;
+  try {
+    await api('DELETE', `/api/admin/rack/passive/${passiveDraft.id}`);
+    showMsg('rack-msg', `${Rack.PASSIVE_LABELS[passiveDraft.kind]} removed`, true);
+    hideRackSide();
+    await refreshDevices();
+  } catch (e) {
+    showMsg('passive-msg', e.message, false);
+  }
+});
 
 async function moveDevice(item, u) {
   try {
@@ -332,9 +443,16 @@ function openDevice(dev, preset = {}) {
     ? { ...structuredClone(dev), connections: hostsOf(dev).map(connFromHost) }
     : { id: null, name: '', kind: 'server', location: 'rack', u: null, height: 1, estimateW: null, discovered: false, unifi: null, connections: [], ...preset };
   if (!dev && draft.location === 'rack' && !draft.u) draft.u = freeU(draft.height);
+  hideRackSide();
+  draft.front = { model: 'auto', drives: 'auto', ...(draft.front || {}) };
   const f = deviceForm();
   f.name.value = draft.name;
+  // blank and patch panels and shelves are passive rack items now, not devices
+  const passiveKinds = ['blank', 'patch-panel', 'shelf'];
+  $('device-kind').replaceChildren(...state.rackKinds.filter((k) => !passiveKinds.includes(k) || k === draft.kind).map((k) => el('option', { value: k, text: Rack.KIND_LABELS[k] || k })));
   f.kind.value = draft.kind;
+  f.frontModel.value = draft.front.model;
+  f.frontDrives.value = draft.front.drives;
   f.location.value = draft.location;
   f.height.value = draft.height;
   f.u.value = draft.u ?? '';
@@ -370,7 +488,13 @@ function syncDraft() {
   draft.height = Number(f.height.value) || 1;
   draft.u = f.u.value === '' ? null : Number(f.u.value);
   draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
+  draft.front = { model: f.frontModel.value || 'auto', drives: f.frontDrives.value || 'auto' };
   for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
+  // what "Automatic" means for this device, from what it reports
+  const item = { ...(rackData?.devices?.find((x) => x.id === draft.id) || { links: [] }), kind: draft.kind, height: draft.height, front: draft.front };
+  const fr = Rack.frontOf(item, Rack.itemInfo(item, rackData));
+  $('device-drives-label').classList.toggle('hidden', !Rack.WITH_DRIVES.has(fr.model));
+  $('device-front-hint').textContent = `Automatic here: ${Rack.FRONT_LABELS[fr.auto.model]}${fr.auto.drives ? `, ${Rack.DRIVE_LABELS[fr.auto.drives]}` : ''}${item.links.length ? ', from what the device reports.' : '.'}`;
   const types = draft.connections.map((c) => c.type);
   $('device-est-hint').textContent = types.includes('idrac')
     ? 'Power is measured by the iDRAC; an estimate is ignored.'
@@ -555,7 +679,7 @@ $('device-form').addEventListener('submit', async (ev) => {
   syncDraft();
   const d = draft;
   const body = {
-    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false,
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false, front: d.front,
     connections: d.connections.map((c) => ({
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
       options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,

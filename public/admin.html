@@ -39,7 +39,10 @@
           <h3>Devices</h3>
           <p class="hint">A device is a physical box: server, NAS, switch, patch panel… Its monitoring connections (iDRAC, Proxmox, TrueNAS, Synology, UniFi) are added on the device itself. Passwords, tokens and keys are encrypted and write-only: only whether one is set is ever shown.</p>
         </div>
-        <button type="button" class="primary" id="device-new">Add device</button>
+        <div class="head-actions">
+          <select id="passive-add" aria-label="Add a panel to the rack"></select>
+          <button type="button" class="primary" id="device-new">Add device</button>
+        </div>
       </div>
       <div class="form-grid">
         <label class="check"><input type="checkbox" id="rack-enabled"> Show the rack on the dashboard</label>
@@ -55,10 +58,32 @@
     </section>
     <div class="rack-layout">
       <section class="card rack-preview-card">
-        <p class="hint">Drag a device to move it. Click it to edit. Double-click an empty U to add a device there.</p>
+        <p class="hint">Drag a device or panel to move it. Click it to edit. Double-click an empty U to add something there.</p>
         <div class="rack-view" id="rack-preview"></div>
       </section>
       <div class="rack-side">
+        <section class="card" id="rack-add" hidden aria-labelledby="rack-add-title">
+          <h3 id="rack-add-title">Add at U?</h3>
+          <div class="rack-add-choices" id="rack-add-choices"></div>
+        </section>
+        <section class="card" id="passive-editor" hidden>
+          <h3 id="passive-title">Panel</h3>
+          <p class="hint">Passive items have no name and no monitoring, and don't appear in the docs.</p>
+          <form id="passive-form" autocomplete="off">
+            <div class="form-grid two">
+              <label><span>Type</span><select name="kind" id="passive-kind"></select></label>
+              <label class="patch-only"><span>Ports</span><select name="ports"><option value="12">12</option><option value="24">24</option><option value="48">48</option></select></label>
+              <label><span>Height (U)</span><input name="height" type="number" min="1" max="4" step="1"></label>
+              <label><span>Lowest U</span><input name="u" type="number" min="1" max="60" step="1"></label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="primary">Save</button>
+              <button type="button" id="passive-close">Close</button>
+              <button type="button" class="danger" id="passive-delete">Remove</button>
+            </div>
+            <p class="msg" id="passive-msg" role="status"></p>
+          </form>
+        </section>
         <section class="card device-editor" id="device-editor" hidden>
           <h3 id="device-editor-title">Add device</h3>
           <p class="hint" id="device-origin"></p>
@@ -76,6 +101,14 @@
                 <label><span>Height (U)</span><input name="height" type="number" min="1" max="12" step="1"></label>
                 <label><span>Lowest U</span><input name="u" type="number" min="1" max="60" step="1"></label>
               </div>
+            </fieldset>
+            <fieldset class="front rack-only">
+              <legend>Front in the rack</legend>
+              <div class="form-grid two">
+                <label><span>Look</span><select name="frontModel" id="device-front"></select></label>
+                <label id="device-drives-label"><span>Drive bays</span><select name="frontDrives" id="device-drives"></select></label>
+              </div>
+              <p class="hint" id="device-front-hint"></p>
             </fieldset>
             <h4>Connections</h4>
             <p class="hint">How this device is monitored. A server can have both its iDRAC (hardware, power) and Proxmox (VMs). Use Test to check a connection before saving.</p>

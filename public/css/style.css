@@ -243,6 +243,9 @@ label.check { display: flex; align-items: center; gap: 8px; font-size: 14px; col
 .card-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .card-head .title { flex: 1; min-width: 0; }
 .card-head .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.head-actions select { width: auto; }
+.rack-add-choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .card.stale .body { opacity: 0.55; }
 .empty { color: var(--muted); padding: 16px 0; }
 
@@ -569,26 +572,29 @@ input[type="range"] { padding: 0; accent-color: var(--accent); }
   background: repeating-linear-gradient(to bottom, var(--rack-dark) 0, var(--rack-dark) calc(var(--u) - 1px), #202328 calc(var(--u) - 1px), #202328 var(--u));
 }
 .rack-item { position: absolute; left: 0; right: 0; display: flex; padding: 1px 0; cursor: pointer; outline: none; }
+/* mounting ears with one screw per U */
 .rack-item .ear {
   width: 9px;
   flex: none;
-  background: radial-gradient(circle at 50% 22%, #15171a 0 2px, transparent 2.5px), radial-gradient(circle at 50% 78%, #15171a 0 2px, transparent 2.5px), #3b3f46;
+  background: radial-gradient(circle, #15171a 0 1.6px, #5a5f67 1.7px 2.3px, transparent 2.6px) center top / 9px var(--u) repeat-y, linear-gradient(90deg, #474b52, #34373d);
   border-radius: 2px;
 }
 .rack-item .face {
+  position: relative;
   flex: 1;
   min-width: 0;
   margin: 0 1px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px;
+  gap: 6px;
+  padding: 0 6px;
   overflow: hidden;
   color: var(--face-text);
   font-size: 11px;
-  border-radius: 3px;
-  border: 1px solid #0e0f11;
-  background: linear-gradient(#30343b, #25282e);
+  border-radius: 2px;
+  border: 1px solid #0b0c0e;
+  background: linear-gradient(#2e3238, #24272c);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .rack-item:hover .face, .rack-item:focus-visible .face { box-shadow: 0 0 0 2px var(--accent); }
 .rack-item.st-critical .face { box-shadow: inset 0 0 0 1px var(--critical); }
@@ -597,51 +603,96 @@ input[type="range"] { padding: 0; accent-color: var(--accent); }
 .fp-label span { font-size: 10px; color: var(--face-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fp-meta { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
 .fp-watts { font-size: 10px; color: var(--face-muted); white-space: nowrap; }
+.fp-fill { flex: 1; }
+.fp-side { display: flex; align-items: center; gap: 5px; flex: none; min-width: 0; max-width: 34%; }
+.fp-body { position: relative; flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; }
+/* the name, like a label-maker sticker on the front */
+.fp-tag { display: block; min-width: 0; max-width: 100%; padding: 0 4px; border-radius: 2px; background: #f3f1e7; color: #17181a; font: 600 9px/13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.45); }
+.fp-body .fp-tag { position: absolute; left: 2px; top: 2px; max-width: 45%; z-index: 1; }
+.fp-body .fp-watts { position: absolute; right: 2px; bottom: 2px; z-index: 1; padding: 0 3px; border-radius: 2px; background: rgba(0, 0, 0, 0.6); color: #d7dbe0; font-size: 9px; }
 .led { width: 7px; height: 7px; border-radius: 50%; background: #4a4e55; flex: none; }
 .led.good { background: var(--good); box-shadow: 0 0 5px var(--good); }
 .led.warning { background: var(--warning); box-shadow: 0 0 5px var(--warning); }
 .led.critical { background: var(--critical); box-shadow: 0 0 5px var(--critical); }
 
-/* switches & gateways: ports from live data (green = link, amber line = PoE, accent = uplink) */
-.fp-ports { display: flex; gap: 6px; flex: 1; min-width: 0; justify-content: center; }
-.port-grid { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* drive bays: 3.5" lie flat, 2.5" stand up; the LED is green while the server is on */
+.drives { flex: 1; min-width: 0; height: calc(100% - 4px); display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); grid-template-rows: repeat(var(--rows), minmax(0, 1fr)); gap: 2px; }
+.drive { position: relative; min-width: 0; border-radius: 2px; background: linear-gradient(#41454c, #2b2e34); border: 1px solid #111316; }
+.drives.lff .drive::before { content: ""; position: absolute; right: 8%; top: 22%; bottom: 22%; width: 22%; border-radius: 1px; background: repeating-linear-gradient(90deg, #17191c 0 1px, #33363c 1px 3px); }
+.drives.sff .drive::before { content: ""; position: absolute; left: 22%; right: 22%; top: 30%; bottom: 8%; border-radius: 1px; background: repeating-linear-gradient(#17191c 0 1px, #33363c 1px 3px); }
+.drive i { position: absolute; left: 3px; bottom: 2px; width: 3px; height: 3px; border-radius: 50%; background: #25282c; }
+.drives.sff .drive i { left: 50%; top: 2px; bottom: auto; transform: translateX(-50%); }
+.drive.on i, .drive.good i { background: #4fd16b; box-shadow: 0 0 3px #4fd16b; }
+.drive.warning i { background: var(--warning); box-shadow: 0 0 3px var(--warning); }
+.drive.critical i { background: var(--critical); box-shadow: 0 0 3px var(--critical); }
+.drive.empty { background: #141619; }
+.drive.empty::before { opacity: 0.3; }
+
+/* Dell PowerEdge: black front, control panels on both ears */
+.front-dell13 .face, .front-dell14 .face, .front-server .face { background: linear-gradient(#202328, #15171a); padding: 0 2px; gap: 3px; }
+.dell-ear { flex: none; width: 8%; min-width: 14px; max-width: 30px; height: calc(100% - 4px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: linear-gradient(#26292e, #17191c); border-radius: 2px; }
+.dell-icons { display: flex; flex-direction: column; gap: 1px; }
+.dell-icons i { display: block; width: 6px; height: 2px; border-radius: 1px; background: #33363b; }
+.h2 .dell-icons i, .h3 .dell-icons i { height: 3px; gap: 2px; }
+.dell-icons i.bad { background: #ffae1a; box-shadow: 0 0 4px #ffae1a; }
+.dell-id { width: 6px; height: 6px; border-radius: 50%; background: #3a3d42; }
+.dell-id.good { background: #3d8bff; box-shadow: 0 0 4px #3d8bff; }
+.dell-id.warning, .dell-id.critical { background: #ffae1a; box-shadow: 0 0 4px #ffae1a; }
+.dell-lcd { width: 88%; height: clamp(6px, calc(var(--u) * 0.32), 11px); border-radius: 1px; background: #11161d; color: #dbe9ff; font-size: 7px; line-height: clamp(6px, calc(var(--u) * 0.32), 11px); text-align: center; overflow: hidden; white-space: nowrap; }
+.st-good .dell-lcd { background: #2f6fd0; }
+.dell-lcd.fault { background: #e39a12; color: #1b1300; }
+.dell-power { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #5a5f67; flex: none; }
+.dell-power.on { border-color: #4fd16b; box-shadow: 0 0 4px #4fd16b; }
+.usb { width: 8px; height: 3px; background: #08090a; border: 1px solid #4b4f56; flex: none; }
+.vga { width: 10px; height: 4px; background: #1f3350; border-radius: 1px 1px 3px 3px; flex: none; }
+.h1 .vga { display: none; }
+
+/* UniFi: silver front, touchscreen on the left, black jacks with link (green) and PoE (amber) LEDs */
+.front-udm-pro .face, .front-usw-24-poe .face, .front-unifi-switch .face { background: linear-gradient(#f2f3f5, #cdd1d6); border-color: #8e949c; color: #1d1f22; gap: 5px; padding: 0 5px; }
+.u-screen { flex: none; width: 8%; max-width: 32px; min-width: 14px; height: 66%; display: grid; place-items: center; border-radius: 3px; background: radial-gradient(circle at 40% 35%, #1d3352, #070b12); color: #9fd0ff; font-size: 8px; box-shadow: inset 0 0 0 1px #000; }
+.port-blocks { display: flex; gap: 4px; min-width: 0; }
+.port-block { display: flex; flex-direction: column; gap: 2px; }
 .port-row { display: flex; gap: 2px; }
-.port {
-  width: clamp(5px, calc(var(--u) * 0.3), 11px);
-  height: clamp(4px, calc(var(--u) * 0.26), 10px);
-  background: #0c0d0f;
-  border: 1px solid #40444b;
-  border-radius: 1px;
-}
-.port.up { background: #1d6b34; border-color: #2ea043; }
-.port.poe { box-shadow: inset 0 -2px 0 #e3b341; }
-.port.uplink { border-color: var(--accent); }
-.port.sfp { width: clamp(7px, calc(var(--u) * 0.42), 15px); }
+.port { width: clamp(5px, calc(var(--u) * 0.3), 11px); height: clamp(4px, calc(var(--u) * 0.27), 10px); background: #0d0e10; border-radius: 1px; border: 1px solid #000; }
+.port.up { box-shadow: inset 0 2px 0 #3ddc6f; }
+.port.poe { box-shadow: inset 0 2px 0 #3ddc6f, inset 0 -2px 0 #f2b13c; }
+.port.uplink { outline: 1px solid var(--accent); }
+.port.sfp { width: clamp(7px, calc(var(--u) * 0.46), 16px); height: clamp(4px, calc(var(--u) * 0.24), 8px); background: #1a1c1f; border-color: #6b7078; }
+.port.sfp.up { box-shadow: inset 0 -2px 0 #3ddc6f; }
+.port-block.wan { margin-left: 2px; }
+.port-block.stack { gap: 3px; }
+.u-bay { flex: 1; min-width: 34px; height: 72%; display: flex; align-items: center; justify-content: center; padding: 0 4px; border-radius: 3px; background: radial-gradient(circle, #a7adb5 0 0.9px, transparent 1.3px) 0 0 / 4px 4px, #e3e6ea; box-shadow: inset 0 0 0 1px #b4b9c0; }
+.front-usw-24-poe .fp-side, .front-unifi-switch .fp-side { margin-left: auto; }
+/* generic switch: dark */
+.front-switch .face { background: linear-gradient(#2c3138, #1f2227); }
+.front-switch .port { border-color: #3a3e45; }
 
-/* drive bays: decorative for servers, live disk health for NAS */
-.fp-bays { display: flex; gap: 2px; flex: 1; min-width: 0; align-items: center; justify-content: center; }
-.h2 .fp-bays, .h3 .fp-bays { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); max-width: 60%; }
-.bay { position: relative; flex: 1; max-width: 30px; height: calc(var(--u) * 0.55); background: #17191c; border: 1px solid #40444b; border-radius: 2px; }
-.h2 .bay, .h3 .bay { max-width: none; height: calc(var(--u) * 0.7); }
-.fp-bays.vertical .bay { height: calc(var(--u) * var(--bay-h, 1.6)); max-width: 26px; }
-.bay.filled { background: linear-gradient(#3a3f47, #2c3036); }
-.bay.filled::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 4px; height: 4px; border-radius: 50%; background: #4a4e55; }
-.bay.good::after { background: var(--good); }
-.bay.warning::after { background: var(--warning); }
-.bay.critical::after { background: var(--critical); }
-.kind-nas.h3 .fp-bays.vertical, .kind-nas.h4 .fp-bays.vertical, .kind-nas.h5 .fp-bays.vertical, .kind-nas.h6 .fp-bays.vertical { display: flex; max-width: none; }
-.kind-nas.h3 { --bay-h: 2.4; }
-.kind-nas.h4, .kind-nas.h5, .kind-nas.h6 { --bay-h: 3.2; }
+/* Synology: black RackStation, or a desktop DiskStation standing on a shelf */
+.front-synology-rs .face { background: linear-gradient(#232528, #17181b); }
+.front-synology-ds .face { background: transparent; border-color: transparent; box-shadow: none; justify-content: center; padding: 0; }
+.ds-box { display: flex; align-items: center; gap: 4px; width: 42%; max-width: 160px; height: 100%; padding: 4px; border-radius: 5px 5px 2px 2px; background: linear-gradient(#2a2c30, #18191c); box-shadow: inset 0 0 0 1px #0a0b0c; }
+.ds-panel { display: flex; flex-direction: column; gap: 5px; align-items: center; flex: none; }
+.drives.syno .drive { background: linear-gradient(#2d2f33, #1d1f22); }
 
-.fp-holes { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; flex: 1; }
-.fp-holes span { height: clamp(4px, calc(var(--u) * 0.28), 9px); background: #0c0d0f; border-radius: 1px; }
+/* PDU outlets */
 .fp-outlets { display: flex; gap: 5px; flex: 1; justify-content: center; }
 .fp-outlets span { width: 12px; height: calc(var(--u) * 0.5); background: #121316; border: 1px solid #40444b; border-radius: 3px; }
-.fp-vent { flex: 1; height: 45%; background: repeating-linear-gradient(90deg, #17191c 0 3px, transparent 3px 7px); border-radius: 2px; }
-.fp-fill { flex: 1; }
-.kind-shelf .face { background: linear-gradient(#3b3f46, #2c2f35); }
-.kind-blank .face { background: linear-gradient(#2a2d33, #222429); }
-.kind-switch .face, .kind-gateway .face { background: linear-gradient(#2c3138, #22262c); }
+
+/* passive items: no name, just the hardware */
+.rack-item.passive { cursor: default; }
+.passive .face { background: linear-gradient(#1d1f23, #131518); border-color: #07080a; padding: 0 4px; justify-content: center; gap: 0; }
+.vent { width: 100%; height: 74%; background: radial-gradient(circle, #040405 0 1.3px, transparent 1.7px) 0 0 / 5px 5px; }
+.brush { width: 94%; height: 42%; border-radius: 3px; background: repeating-linear-gradient(90deg, #08090a 0 1px, #2a2c30 1px 2px); box-shadow: inset 0 0 0 1px #000; }
+.rings { display: flex; justify-content: space-around; align-items: flex-end; width: 100%; height: 100%; }
+.rings i { width: 11%; height: 70%; border: 2px solid #4a4e55; border-bottom: 0; border-radius: 7px 7px 0 0; }
+.patch { display: flex; flex-direction: column; justify-content: center; gap: 3px; width: 100%; height: 100%; }
+.patch-row { display: flex; justify-content: center; gap: 5px; }
+.patch-group { display: flex; flex-direction: column; gap: 1px; flex: 1; max-width: 72px; }
+.patch-label { height: 3px; border-radius: 1px; background: #e8e6dc; opacity: 0.8; }
+.patch-jacks { display: flex; gap: 2px; }
+.patch-jacks i { flex: 1; height: clamp(4px, calc(var(--u) * 0.3), 10px); background: #050607; border: 1px solid #3a3e45; border-radius: 1px; }
+.p-shelf .face { background: transparent; border-color: transparent; box-shadow: none; align-items: flex-end; padding: 0; }
+.lip { width: 100%; height: 24%; min-height: 4px; border-radius: 1px; background: linear-gradient(#61666e, #3a3e45); }
 
 .offrack { margin-top: 14px; }
 .offrack-item {

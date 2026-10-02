@@ -15,8 +15,9 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
   - The dashboard shows one widget per device, with a section per connection.
   - Switches and access points found through a UniFi console appear as devices automatically. Deleting one hides it; it isn't re-created.
-- **Rack**: the right third of the dashboard shows your rack (1–60 U) with live faceplates:
-  - switch ports lit by link and PoE, NAS bays by disk health, and servers with status LEDs and watts;
+- **Rack**: the right third of the dashboard shows your rack (1–60 U), drawn like the real hardware with live data:
+  - fronts chosen from the model each device reports: Dell PowerEdge 13th gen (R630/R730, with the LCD showing watts) and 14th gen (R640/R740, with the fault icons for power and temperature), UniFi Dream Machine Pro and Switch 24 PoE (touchscreen, ports lit by link and PoE), other UniFi and generic switches, Synology RackStation and DiskStation (bays lit by disk health), and generic servers. Each device's front and drive-bay layout can be changed in Admin → Devices;
+  - **passive items** without a name: blank, vented and brush panels, cable management, patch panels (12/24/48 ports) and shelves. Add them from "Add panel" or by double-clicking an empty U. They are not devices, so they don't appear in the docs or as widgets. Blank panels, patch panels and shelves that were devices before are converted automatically;
   - click a device to jump to its widget; devices outside the rack (e.g. access points) are listed below it.
   - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
 - **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down; response time on hover) and up to 4 numbers from the app.
