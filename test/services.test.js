@@ -154,11 +154,22 @@ const CASES = [
   ok(r.status === 200 && r.json.server.custom[0].value === '2.19', 'server notes saved');
   r = await req('PUT', '/api/docs/network', { networks: [{ name: 'LAN', subnet: '192.168.1.0/24' }], reservations: [{ ip: '192.168.1.80', name: 'orion', deviceId: orion.id }], notes: 'x' });
   ok(r.status === 200 && r.json.network.reservations[0].deviceId === orion.id, 'network plan saved');
-  r = await req('POST', '/api/docs/pages', { title: 'Restore from backup', folder: 'Procedures', body: '1. Stop VM\n2. Restore' });
-  ok(r.status === 201, 'page created');
+  r = await req('POST', '/api/docs/pages', { title: 'Restore from backup', body: '1. Stop VM\n2. Restore' });
+  ok(r.status === 201 && r.json.nav.groups.find((g) => g.id === 'pages').items.includes(`page:${r.json.page.id}`), 'page created, in the Pages group');
   const page = r.json.page;
-  r = await req('PUT', `/api/docs/pages/${page.id}`, { title: 'Restore', folder: 'Procedures', body: 'updated' });
-  ok(r.json.page.title === 'Restore', 'page updated');
+  // menu groups
+  r = await req('GET', '/api/docs');
+  ok(r.json.docs.nav.groups.map((g) => g.id).join() === 'devices,network,pages', 'default menu: Servers & devices, Network, Pages');
+  r = await req('PUT', '/api/docs/nav', { groups: [{ id: 'new-1', name: 'Procedures', items: [`page:${page.id}`, `page:${page.id}`, 'evil:x'] }, { id: 'devices', name: 'Servers', items: [`server:${orion.id}`] }] });
+  const proc = r.json.nav?.groups[0];
+  ok(r.status === 200 && /^[0-9a-f-]{36}$/.test(proc.id) && proc.items.join() === `page:${page.id}`, 'new group gets a real id; duplicates and unknown items dropped');
+  ok(r.json.nav.groups.map((g) => g.id).slice(1).join() === 'devices,network,pages' && r.json.nav.groups[1].name === 'Servers', 'renamed group kept; Network and Pages added back');
+  r = await req('PUT', '/api/docs/nav', { groups: [{ id: 'devices', name: 'A', items: [] }, { id: 'devices', name: 'B', items: [] }] });
+  ok(r.status === 400, 'duplicate group ids rejected');
+  r = await req('PUT', '/api/docs/nav', { groups: [{ id: '../x', name: 'A', items: [] }] });
+  ok(r.status === 400, 'invalid group id rejected');
+  r = await req('PUT', `/api/docs/pages/${page.id}`, { title: 'Restore', body: 'updated', group: 'pages' });
+  ok(r.json.page.title === 'Restore' && r.json.nav.groups.find((g) => g.id === 'pages').items.includes(`page:${page.id}`) && !r.json.nav.groups.find((g) => g.id === proc.id).items.length, 'page updated and moved to another group');
   r = await req('POST', '/api/docs/pages', { title: '', body: 'x' });
   ok(r.status === 400, 'page without title rejected');
 
@@ -214,7 +225,7 @@ const CASES = [
   cookie = saved;
 
   r = await req('DELETE', `/api/docs/pages/${page.id}`);
-  ok(r.status === 200, 'page deleted');
+  ok(r.status === 200 && !(await req('GET', '/api/docs')).json.docs.nav.groups.some((g) => g.items?.includes(`page:${page.id}`)), 'page deleted, and removed from the menu');
   r = await req('DELETE', `/api/admin/services/${jf.id}`);
   ok(r.status === 200, 'service deleted');
 

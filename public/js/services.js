@@ -251,61 +251,26 @@ function cardTarget(x, y, placeholder) {
 }
 
 function startDrag(e, node, kind) {
-  if (e.button !== 0 || (kind === 'card' && e.target.closest('button, select, input'))) return;
-  const startX = e.clientX;
-  const startY = e.clientY;
-  let placeholder = null;
-  let rect = null;
-  const begin = () => {
-    rect = node.getBoundingClientRect();
-    placeholder = el('div', { class: kind === 'card' ? 'svc-placeholder' : 'group-placeholder' });
-    placeholder.style.height = `${kind === 'card' ? rect.height : Math.min(rect.height, 120)}px`;
-    node.replaceWith(placeholder);
-    document.body.append(node);
-    node.classList.add('drag-ghost');
-    node.style.width = `${rect.width}px`;
-    if (kind === 'group') node.style.maxHeight = '160px';
-  };
-  const onMove = (ev) => {
-    if (!placeholder) {
-      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
-      begin();
-    }
-    ev.preventDefault();
-    node.style.left = `${rect.left + ev.clientX - startX}px`;
-    node.style.top = `${rect.top + ev.clientY - startY}px`;
-    if (kind === 'card') {
-      const { grid, before } = cardTarget(ev.clientX, ev.clientY, placeholder);
-      if (before) grid.insertBefore(placeholder, before);
-      else if (grid.lastElementChild !== placeholder) grid.append(placeholder);
-    } else {
-      const before = sections().find((s) => {
-        const r = s.getBoundingClientRect();
-        return ev.clientY < r.top + r.height / 2;
-      });
-      if (before) before.before(placeholder);
-      else $('groups').append(placeholder);
-    }
-    if (ev.clientY < 40) scrollBy(0, -12);
-    else if (ev.clientY > innerHeight - 40) scrollBy(0, 12);
-  };
-  const onUp = () => {
-    removeEventListener('pointermove', onMove);
-    removeEventListener('pointerup', onUp);
-    removeEventListener('pointercancel', onUp);
-    if (!placeholder) return;
-    node.classList.remove('drag-ghost');
-    node.style.removeProperty('left');
-    node.style.removeProperty('top');
-    node.style.removeProperty('width');
-    node.style.removeProperty('max-height');
-    placeholder.replaceWith(node);
-    const where = node.closest('section')?.querySelector('.group-name')?.value;
-    announce(kind === 'card' ? `${cards.get(node.dataset.id)?.name} moved${where ? ` to ${where}` : ''}` : 'Group moved');
-  };
-  addEventListener('pointermove', onMove, { passive: false });
-  addEventListener('pointerup', onUp);
-  addEventListener('pointercancel', onUp);
+  if (kind === 'card' && e.target.closest('button, select, input')) return;
+  HD.dragMove(e, node, {
+    placeholderClass: kind === 'card' ? 'svc-placeholder' : 'group-placeholder',
+    maxHeight: kind === 'group' ? 140 : 0,
+    place: (x, y, ph) => {
+      if (kind === 'card') {
+        const { grid, before } = cardTarget(x, y, ph);
+        if (before) grid.insertBefore(ph, before);
+        else if (grid.lastElementChild !== ph) grid.append(ph);
+      } else {
+        const before = sections().find((s) => y < s.getBoundingClientRect().top + s.getBoundingClientRect().height / 2);
+        if (before) before.before(ph);
+        else $('groups').append(ph);
+      }
+    },
+    done: (n) => {
+      const where = n.closest('section')?.querySelector('.group-name')?.value;
+      announce(kind === 'card' ? `${cards.get(n.dataset.id)?.name} moved${where ? ` to ${where}` : ''}` : 'Group moved');
+    },
+  });
 }
 
 function keyMoveCard(e, node) {

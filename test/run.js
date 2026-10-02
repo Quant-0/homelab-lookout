@@ -150,7 +150,7 @@ async function main() {
     } catch {
       playwright = false;
     }
-    const seeds = { 'history.ui.js': require('./history.test.js').seed };
+    const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
       suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], skip: !playwright && 'Playwright not installed' });
   }

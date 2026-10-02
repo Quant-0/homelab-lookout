@@ -44,24 +44,219 @@ function link(hash, text, sub) {
   return el('a', { href: hash, class: active ? 'active' : null, 'aria-current': active ? 'page' : null }, el('span', { text }), sub ? el('span', { class: 'small muted', text: sub }) : null);
 }
 
-function renderNav() {
-  const servers = [...D.auto.devices].sort((a, b) => (a.location === 'rack' ? -a.u : 1000) - (b.location === 'rack' ? -b.u : 1000) || a.name.localeCompare(b.name));
-  const folders = new Map();
-  for (const p of [...D.docs.pages].sort((a, b) => a.title.localeCompare(b.title))) {
-    const f = p.folder || 'Pages';
-    if (!folders.has(f)) folders.set(f, []);
-    folders.get(f).push(p);
+// --- Menu: groups of sheets and pages (collapsible), plus the fixed Network group ---
+
+const FIXED_GROUPS = new Set(['devices', 'pages']); // where ungrouped sheets and pages go; can't be deleted
+let navEditing = false;
+let newGroupSeq = 0;
+
+function readCollapsed() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem('hd.docs.collapsed') || '[]'));
+  } catch {
+    return new Set();
   }
+}
+function writeCollapsed(set) {
+  try {
+    localStorage.setItem('hd.docs.collapsed', JSON.stringify([...set]));
+  } catch {
+    /* only a convenience */
+  }
+}
+
+// Groups with their existing items; sheets and pages in no group land in 'devices' and 'pages'
+function navGroups() {
+  const devs = new Set(D.auto.devices.map((d) => `server:${d.id}`));
+  const pages = new Set(D.docs.pages.map((p) => `page:${p.id}`));
+  const placed = new Set();
+  const groups = D.docs.nav.groups.map((g) => (g.id === 'network'
+    ? { id: 'network', name: 'Network' }
+    : { id: g.id, name: g.name, items: g.items.filter((it) => (devs.has(it) || pages.has(it)) && !placed.has(it) && placed.add(it)) }));
+  const rackFirst = (a, b) => (a.location === 'rack' ? -a.u : 1000) - (b.location === 'rack' ? -b.u : 1000) || a.name.localeCompare(b.name);
+  for (const d of [...D.auto.devices].sort(rackFirst)) if (!placed.has(`server:${d.id}`)) groups.find((g) => g.id === 'devices').items.push(`server:${d.id}`);
+  for (const p of [...D.docs.pages].sort((a, b) => a.title.localeCompare(b.title))) if (!placed.has(`page:${p.id}`)) groups.find((g) => g.id === 'pages').items.push(`page:${p.id}`);
+  return groups;
+}
+
+function itemInfo(it) {
+  const [kind, id] = [it.slice(0, it.indexOf(':')), it.slice(it.indexOf(':') + 1)];
+  if (kind === 'server') {
+    const d = D.auto.devices.find((x) => x.id === id);
+    return { hash: `#server/${id}`, label: d.name, sub: KIND[d.kind] };
+  }
+  const p = D.docs.pages.find((x) => x.id === id);
+  return { hash: `#page/${id}`, label: p.title, sub: null };
+}
+
+function renderNav() {
+  if (navEditing) {
+    if (!$('docs-nav').querySelector('.nav-group.editing')) renderNavEdit(); // keep the draft
+    return;
+  }
+  const collapsed = readCollapsed();
+  const groups = navGroups().filter((g) => g.id === 'network' || g.items.length || !FIXED_GROUPS.has(g.id));
   $('docs-nav').replaceChildren(
     link('#', 'Overview'),
-    el('h4', { text: 'Servers & devices' }),
-    ...servers.map((d) => link(`#server/${d.id}`, d.name, KIND[d.kind])),
-    el('h4', { text: 'Network' }),
-    link('#network', 'Network plan'),
-    link('#ports', 'Switch ports'),
-    link('#topology', 'Topology'),
-    ...[...folders].flatMap(([f, pages]) => [el('h4', { text: f }), ...pages.map((p) => link(`#page/${p.id}`, p.title))]),
-    el('div', { class: 'form-actions' }, el('a', { class: 'button primary', href: '#new-page', text: 'New page' })));
+    ...groups.map((g) => {
+      const links = g.id === 'network'
+        ? [link('#network', 'Network plan'), link('#ports', 'Switch ports'), link('#topology', 'Topology')]
+        : g.items.map((it) => {
+          const x = itemInfo(it);
+          return link(x.hash, x.label, x.sub);
+        });
+      const open = !collapsed.has(g.id) || links.some((a) => a.classList.contains('active'));
+      const list = el('div', { class: 'nav-group-items', id: `nav-${g.id}`, hidden: !open },
+        links.length ? links : el('span', { class: 'small muted nav-empty', text: 'Empty' }));
+      const toggle = el('button', { type: 'button', class: 'nav-group-toggle', 'aria-expanded': String(open), 'aria-controls': `nav-${g.id}` },
+        el('span', { class: 'chev', 'aria-hidden': 'true' }),
+        el('span', { class: 'nav-group-name', text: g.name }),
+        g.items ? el('span', { class: 'count', text: String(g.items.length) }) : null);
+      toggle.addEventListener('click', () => {
+        const now = toggle.getAttribute('aria-expanded') !== 'true';
+        toggle.setAttribute('aria-expanded', String(now));
+        list.hidden = !now;
+        const c = readCollapsed();
+        if (now) c.delete(g.id);
+        else c.add(g.id);
+        writeCollapsed(c);
+      });
+      return el('div', { class: 'nav-group', 'data-id': g.id }, toggle, list);
+    }),
+    el('div', { class: 'form-actions' },
+      el('a', { class: 'button primary', href: '#new-page', text: 'New page' }),
+      el('button', { type: 'button', id: 'nav-edit', text: 'Edit menu', onclick: () => { navEditing = true; renderNav(); } })));
+}
+
+// --- Editing the menu: the DOM is the draft; Save reads it back ---
+
+function navAnnounce(text) {
+  const a = $('nav-announce');
+  if (a) a.textContent = text;
+}
+
+function navEditItem(it) {
+  const x = itemInfo(it);
+  const node = el('div', { class: 'nav-edit-item', tabindex: '0', 'data-item': it, 'aria-label': `${x.label}: drag, or use the arrow keys to move` },
+    el('span', { class: 'grip', 'aria-hidden': 'true', text: '⋮⋮' }), el('span', { text: x.label }));
+  node.addEventListener('pointerdown', (e) => navDrag(e, node, 'item'));
+  node.addEventListener('keydown', (e) => navKeyItem(e, node));
+  return node;
+}
+
+function navGroupNode(g) {
+  const grip = el('button', { type: 'button', class: 'group-grip', title: 'Drag to move the group', 'aria-label': `Move group ${g.name}: drag, or use the up and down arrow keys`, text: '⋮⋮' });
+  const node = el('div', { class: 'nav-group editing', 'data-id': g.id },
+    el('div', { class: 'nav-edit-head' }, grip,
+      g.id === 'network' ? el('strong', { text: 'Network' }) : el('input', { class: 'group-name', value: g.name, maxlength: '48', 'aria-label': 'Group name' }),
+      g.id === 'network' || FIXED_GROUPS.has(g.id) ? null : el('button', { type: 'button', class: 'nav-del', title: `Delete group ${g.name}`, 'aria-label': `Delete group ${g.name}`, text: '×', onclick: () => deleteNavGroup(node) })),
+    el('div', { class: 'nav-edit-items' }, g.id === 'network'
+      ? ['Network plan', 'Switch ports', 'Topology'].map((t) => el('div', { class: 'nav-edit-item fixed', text: t }))
+      : g.items.map(navEditItem)));
+  grip.addEventListener('pointerdown', (e) => navDrag(e, node, 'group'));
+  grip.addEventListener('keydown', (e) => navKeyGroup(e, node, grip));
+  return node;
+}
+
+function renderNavEdit() {
+  const msg = el('span', { class: 'msg', role: 'status' });
+  $('docs-nav').replaceChildren(
+    el('p', { class: 'hint', text: 'Drag sheets and pages between groups, and groups up or down. Keyboard: focus one and use the arrow keys.' }),
+    el('div', { class: 'nav-edit-groups' }, navGroups().map(navGroupNode)),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', text: 'New group', onclick: addNavGroup }),
+      el('button', { type: 'button', class: 'primary', text: 'Save menu', onclick: () => saveNav(msg) }),
+      el('button', { type: 'button', text: 'Cancel', onclick: () => { navEditing = false; renderNav(); } }),
+      msg),
+    el('p', { class: 'sr-only', id: 'nav-announce', 'aria-live': 'polite' }));
+}
+
+const editGroups = () => [...$('docs-nav').querySelectorAll('.nav-edit-groups > .nav-group')];
+const itemLists = () => editGroups().filter((g) => g.dataset.id !== 'network').map((g) => g.querySelector('.nav-edit-items'));
+
+function addNavGroup() {
+  const name = (prompt('Name of the new group') || '').trim().slice(0, 48);
+  if (!name) return;
+  const node = navGroupNode({ id: `new-${++newGroupSeq}`, name, items: [] });
+  $('docs-nav').querySelector('.nav-edit-groups').append(node);
+  node.querySelector('.group-name').focus();
+  navAnnounce(`Group ${name} added. Drag sheets or pages into it.`);
+}
+
+function deleteNavGroup(node) {
+  for (const it of node.querySelectorAll('.nav-edit-item[data-item]')) {
+    editGroups().find((g) => g.dataset.id === (it.dataset.item.startsWith('server:') ? 'devices' : 'pages')).querySelector('.nav-edit-items').append(it);
+  }
+  node.remove();
+  navAnnounce('Group deleted; its sheets and pages went back to their default groups');
+}
+
+function navDrag(e, node, kind) {
+  if (kind === 'item' && e.target.closest('button, input')) return;
+  HD.dragMove(e, node, {
+    placeholderClass: 'nav-placeholder',
+    maxHeight: kind === 'group' ? 90 : 0,
+    place: (x, y, ph) => {
+      if (kind === 'group') {
+        const before = editGroups().find((g) => y < g.getBoundingClientRect().top + g.getBoundingClientRect().height / 2);
+        if (before) before.before(ph);
+        else $('docs-nav').querySelector('.nav-edit-groups').append(ph);
+        return;
+      }
+      const lists = itemLists();
+      const list = lists.find((l) => {
+        const r = l.parentElement.getBoundingClientRect();
+        return y >= r.top && y <= r.bottom;
+      }) || lists.reduce((a, b) => (Math.abs(b.getBoundingClientRect().top - y) < Math.abs(a.getBoundingClientRect().top - y) ? b : a));
+      const before = [...list.children].filter((c) => c !== ph).find((c) => y < c.getBoundingClientRect().top + c.getBoundingClientRect().height / 2);
+      if (before) list.insertBefore(ph, before);
+      else if (list.lastElementChild !== ph) list.append(ph);
+    },
+    done: (n) => navAnnounce(kind === 'group' ? 'Group moved' : `${itemInfo(n.dataset.item).label} moved to ${n.closest('.nav-group').querySelector('.group-name')?.value || ''}`),
+  });
+}
+
+// Up/down within a group; past the top or bottom it moves into the neighbouring group
+function navKeyItem(e, node) {
+  if (e.target !== node || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+  e.preventDefault();
+  const up = e.key === 'ArrowUp';
+  const sib = up ? node.previousElementSibling : node.nextElementSibling;
+  if (sib) {
+    if (up) sib.before(node);
+    else sib.after(node);
+  } else {
+    const lists = itemLists();
+    const next = lists[lists.indexOf(node.parentElement) + (up ? -1 : 1)];
+    if (!next) return;
+    if (up) next.append(node);
+    else next.prepend(node);
+  }
+  node.focus();
+  navAnnounce(`${itemInfo(node.dataset.item).label}: ${node.closest('.nav-group').querySelector('.group-name').value}, position ${[...node.parentElement.children].indexOf(node) + 1}`);
+}
+
+function navKeyGroup(e, node, grip) {
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  if (e.key === 'ArrowUp' && node.previousElementSibling) node.previousElementSibling.before(node);
+  else if (e.key === 'ArrowDown' && node.nextElementSibling) node.nextElementSibling.after(node);
+  grip.focus();
+  navAnnounce(`Group moved to position ${editGroups().indexOf(node) + 1}`);
+}
+
+async function saveNav(msg) {
+  const groups = editGroups().map((g) => (g.dataset.id === 'network'
+    ? { id: 'network' }
+    : { id: g.dataset.id, name: g.querySelector('.group-name').value.trim(), items: [...g.querySelectorAll('.nav-edit-item[data-item]')].map((n) => n.dataset.item) }));
+  try {
+    D.docs.nav = (await api('PUT', '/api/docs/nav', { groups })).nav;
+    navEditing = false;
+    renderNav();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'msg error';
+  }
 }
 
 function route() {
@@ -464,36 +659,38 @@ function pageView(id) {
   if (!page) return show(el('p', { class: 'empty', text: 'Page not found.' }));
   show(
     toolbar(el('h2', { text: page.title }), el('span', { class: 'spacer' }), el('button', { type: 'button', text: 'Edit', onclick: () => pageEdit(page) })),
-    page.folder ? el('p', { class: 'small muted', text: page.folder }) : null,
+    el('p', { class: 'small muted', text: navGroups().find((g) => g.items?.includes(`page:${page.id}`))?.name || '' }),
     MD.render(page.body),
     el('p', { class: 'hint', text: when(page.updatedAt) }));
 }
 
 function pageEdit(page) {
-  const draft = { title: page?.title || '', folder: page?.folder || '', body: page?.body || '' };
-  const folders = [...new Set(D.docs.pages.map((p) => p.folder).filter(Boolean))];
+  const groupList = navGroups().filter((g) => g.items);
+  const draft = { title: page?.title || '', group: (page && groupList.find((g) => g.items.includes(`page:${page.id}`))?.id) || 'pages', body: page?.body || '' };
   const preview = el('div', { class: 'md-preview' });
   const title = el('input', { value: draft.title, placeholder: 'e.g. Restore from backup', required: true });
-  const folder = el('input', { value: draft.folder, placeholder: 'e.g. Procedures', list: 'folder-list' });
+  const folder = el('select', null, groupList.map((g) => el('option', { value: g.id, text: g.name })));
+  folder.value = draft.group;
   const body = el('textarea', { class: 'md-input', rows: 22, value: draft.body, placeholder: '# Heading\n\nSteps, commands in ```code```, - lists, | tables |…' });
   const update = () => {
-    Object.assign(draft, { title: title.value, folder: folder.value, body: body.value });
+    Object.assign(draft, { title: title.value, group: folder.value, body: body.value });
     preview.replaceChildren(MD.render(draft.body));
     dirty = true;
   };
   [title, folder, body].forEach((n) => n.addEventListener('input', update));
+  folder.addEventListener('change', update);
   preview.replaceChildren(MD.render(draft.body));
   const msg = el('span', { class: 'msg', role: 'status' });
   show(
     toolbar(el('h2', { text: page ? `Edit: ${page.title}` : 'New page' })),
-    el('div', { class: 'form-grid two' }, el('label', null, el('span', { text: 'Title' }), title), el('label', null, el('span', { text: 'Folder' }), folder)),
-    el('datalist', { id: 'folder-list' }, folders.map((f) => el('option', { value: f }))),
+    el('div', { class: 'form-grid two' }, el('label', null, el('span', { text: 'Title' }), title), el('label', null, el('span', { text: 'Group in the menu' }), folder)),
     el('div', { class: 'md-editor' }, el('label', null, el('span', { text: 'Markdown' }), body), el('div', null, el('span', { class: 'small muted', text: 'Preview' }), preview)),
     el('div', { class: 'form-actions' },
       el('button', { type: 'button', class: 'primary', text: 'Save', onclick: async () => {
         try {
           const r = page ? await api('PUT', `/api/docs/pages/${page.id}`, draft) : await api('POST', '/api/docs/pages', draft);
           D.docs.pages = [...D.docs.pages.filter((p) => p.id !== r.page.id), r.page];
+          D.docs.nav = r.nav;
           dirty = false;
           location.hash = `#page/${r.page.id}`;
           route();

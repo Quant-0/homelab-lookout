@@ -324,5 +324,51 @@ const HD = (() => {
     })));
   }
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs };
+  // --- Drag to rearrange ---
+  // Moves `node` with the pointer and leaves a placeholder where it would land; `place(x, y, ph)`
+  // moves the placeholder, `done(node)` runs after the drop. A click without movement is not a drag.
+  function dragMove(e, node, { placeholderClass, place, done, maxHeight = 0 }) {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let ph = null;
+    let rect = null;
+    const begin = () => {
+      rect = node.getBoundingClientRect();
+      ph = el('div', { class: placeholderClass });
+      ph.style.height = `${maxHeight ? Math.min(rect.height, maxHeight) : rect.height}px`;
+      node.replaceWith(ph);
+      document.body.append(node);
+      node.classList.add('drag-ghost');
+      node.style.width = `${rect.width}px`;
+      if (maxHeight) node.style.maxHeight = `${maxHeight}px`;
+    };
+    const onMove = (ev) => {
+      if (!ph) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+        begin();
+      }
+      ev.preventDefault();
+      node.style.left = `${rect.left + ev.clientX - startX}px`;
+      node.style.top = `${rect.top + ev.clientY - startY}px`;
+      place(ev.clientX, ev.clientY, ph);
+      if (ev.clientY < 40) scrollBy(0, -12);
+      else if (ev.clientY > innerHeight - 40) scrollBy(0, 12);
+    };
+    const onUp = () => {
+      removeEventListener('pointermove', onMove);
+      removeEventListener('pointerup', onUp);
+      removeEventListener('pointercancel', onUp);
+      if (!ph) return;
+      node.classList.remove('drag-ghost');
+      for (const prop of ['left', 'top', 'width', 'max-height']) node.style.removeProperty(prop);
+      ph.replaceWith(node);
+      if (done) done(node);
+    };
+    addEventListener('pointermove', onMove, { passive: false });
+    addEventListener('pointerup', onUp);
+    addEventListener('pointercancel', onUp);
+  }
+
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove };
 })();

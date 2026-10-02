@@ -106,7 +106,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.screenshot({ path: `${S}/ui6-docs-server.png`, fullPage: true });
 
   await page.click('#docs-nav a:has-text("Network plan")');
-  await page.click('button:has-text("Edit")');
+  await page.click('.docs-toolbar button:has-text("Edit")');
   await page.click('button:has-text("Import networks from UniFi")');
   await page.click('button:has-text("Import fixed IPs from UniFi")');
   await page.click('button:has-text("Save")');
@@ -130,12 +130,11 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
 
   await page.click('#docs-nav a:has-text("New page")');
   await page.fill('input[placeholder="e.g. Restore from backup"]', 'Update Proxmox');
-  await page.fill('input[placeholder="e.g. Procedures"]', 'Procedures');
   await page.fill('.md-editor textarea', '1. Migrate VMs\n2. Run `apt full-upgrade`\n\n```\nreboot\n```');
   check(await page.$eval('.md-preview', (p) => Boolean(p.querySelector('ol') && p.querySelector('pre'))), 'live preview while writing');
   await page.click('button:has-text("Save")');
   await page.waitForFunction(() => location.hash.startsWith('#page/'));
-  check((await page.textContent('#docs-nav')).includes('Update Proxmox') && (await page.textContent('#docs-nav')).includes('Procedures'), 'page saved in its folder');
+  check(/Pages\s*1/.test(await page.textContent('#docs-nav .nav-group[data-id="pages"] .nav-group-toggle')) && (await page.textContent('#docs-nav .nav-group[data-id="pages"]')).includes('Update Proxmox'), 'page saved in the Pages group');
 
   await page.setViewportSize({ width: 390, height: 844 });
   for (const p of ['/services', '/docs']) {

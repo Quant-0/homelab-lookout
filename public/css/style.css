@@ -198,7 +198,7 @@ button, .button {
   gap: 6px;
 }
 button:hover, .button:hover { border-color: var(--muted); }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.danger { color: var(--critical); }
 button:disabled { opacity: 0.55; cursor: default; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; }
@@ -903,7 +903,31 @@ a.svc-card:hover { border-color: var(--accent); }
 .docs-nav a:hover { background: var(--surface-2); }
 .docs-nav a.active { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
 .docs-nav a .small { font-size: 11px; }
-.docs-nav .form-actions { margin-top: 12px; }
+.docs-nav .form-actions { margin-top: 12px; flex-wrap: wrap; }
+.docs-nav .form-actions a.button { flex-direction: row; font-size: inherit; padding: 6px 12px; }
+.docs-nav .hint { margin: 0 4px 4px; }
+.nav-group { margin-top: 6px; }
+.nav-group-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px; border: 0; background: none; border-radius: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); text-align: left; }
+.nav-group-toggle:hover { background: var(--surface-2); color: var(--text); }
+.nav-group-toggle .nav-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-group-toggle .count { font-weight: 500; letter-spacing: 0; }
+.chev { flex: none; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); margin: 0 3px 3px 1px; transition: transform 0.15s; }
+.nav-group-toggle[aria-expanded="false"] .chev { transform: rotate(-45deg); margin: 0 3px 0 0; }
+.nav-group-items { display: flex; flex-direction: column; gap: 2px; }
+.nav-group-items[hidden] { display: none; }
+.nav-empty { padding: 4px 8px; }
+.nav-group.editing { border: 1px dashed var(--border); border-radius: 10px; padding: 6px; margin-top: 8px; background: var(--surface); }
+.nav-edit-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.nav-edit-head strong { flex: 1; font-size: 13px; padding: 4px 6px; }
+.nav-edit-head .group-name { flex: 1; min-width: 0; padding: 4px 6px; font-size: 13px; font-weight: 600; }
+.nav-edit-head .group-grip { padding: 2px 6px; }
+.nav-del { padding: 0 7px; line-height: 22px; }
+.nav-edit-items { display: flex; flex-direction: column; gap: 2px; min-height: 28px; }
+.nav-edit-item { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; background: var(--surface-2); font-size: 13px; cursor: grab; touch-action: none; user-select: none; }
+.nav-edit-item .grip { color: var(--muted); letter-spacing: -2px; font-size: 11px; }
+.nav-edit-item.fixed { cursor: default; opacity: 0.6; background: none; }
+.nav-edit-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav-placeholder { border: 2px dashed var(--accent); background: var(--accent-wash); border-radius: 8px; }
 .docs-content { min-height: 60vh; padding: 20px 24px; }
 .docs-content h2 { font-size: 20px; color: var(--text); text-transform: none; letter-spacing: normal; margin: 0; }
 .docs-content h3 { margin: 22px 0 8px; font-size: 15px; }

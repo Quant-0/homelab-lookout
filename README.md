@@ -29,7 +29,8 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Network plan: networks and IP reservations, importable from UniFi, plus the live UniFi client list.
   - Switch ports: what is connected to each port.
   - Topology diagram drawn from UniFi uplinks.
-  - Your own Markdown pages in folders.
+  - Your own Markdown pages.
+  - The menu has collapsible groups (remembered per browser). With **Edit menu** you create, rename and reorder groups and drag sheets and pages between them (or use the arrow keys). Network stays its own group.
   - Not meant for passwords: link to your password manager instead.
 - **History graphs**: small graphs in the widgets and service cards, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the top bar (remembered per browser).
   - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw.

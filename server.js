@@ -2549,7 +2549,66 @@ const emptyDocs = () => ({ servers: {}, network: { networks: [], reservations: [
 
 function loadDocs() {
   const d = readJson(DOCS_FILE, null);
-  docs = { ...emptyDocs(), ...(d && typeof d === 'object' ? d : {}) };
+  docs = normalizeDocs(d);
+}
+
+function normalizeDocs(d) {
+  const out = { ...emptyDocs(), ...(d && typeof d === 'object' ? d : {}) };
+  try {
+    out.nav = out.nav ? validateDocsNav(out.nav) : defaultDocsNav(out.pages);
+  } catch {
+    out.nav = defaultDocsNav(out.pages);
+  }
+  return out;
+}
+
+// --- Docs menu: groups of server sheets and pages, plus the fixed Network group ---
+// 'devices' and 'pages' are where sheets and pages land when they're in no other group, so they
+// can be renamed and moved but not deleted.
+const DOCS_ITEM = /^(server|page):[0-9a-f-]{36}$/;
+const DOCS_FIXED_GROUPS = { devices: 'Servers & devices', pages: 'Pages' };
+
+function defaultDocsNav(pages = []) {
+  const folders = new Map(); // folders from before groups existed become groups
+  for (const p of pages) if (p.folder) folders.set(p.folder, [...(folders.get(p.folder) || []), `page:${p.id}`]);
+  return {
+    groups: [
+      { id: 'devices', name: DOCS_FIXED_GROUPS.devices, items: [] },
+      { id: 'network' },
+      ...[...folders].map(([name, items]) => ({ id: crypto.randomUUID(), name: name.slice(0, 48), items })),
+      { id: 'pages', name: DOCS_FIXED_GROUPS.pages, items: [] },
+    ],
+  };
+}
+
+function validateDocsNav(b) {
+  if (!Array.isArray(b?.groups) || b.groups.length > 100) throw new UserError('Invalid menu');
+  const ids = new Set();
+  const items = new Set();
+  const groups = b.groups.map((g) => {
+    if (g?.id === 'network') {
+      if (ids.has('network')) throw new UserError('Invalid menu');
+      ids.add('network');
+      return { id: 'network' };
+    }
+    // new groups come with a temporary id from the browser
+    const id = (DOCS_FIXED_GROUPS[g?.id] || UUID.test(g?.id)) ? g.id : /^new-\d{1,6}$/.test(g?.id) ? crypto.randomUUID() : null;
+    if (!id || ids.has(id)) throw new UserError('Invalid menu');
+    ids.add(id);
+    const list = (Array.isArray(g.items) ? g.items : []).filter((it) => typeof it === 'string' && DOCS_ITEM.test(it) && !items.has(it) && items.add(it));
+    return { id, name: str(g.name, 48, 'Group name', { required: true }), items: list.slice(0, 2000) };
+  });
+  if (!ids.has('network')) groups.push({ id: 'network' });
+  for (const [id, name] of Object.entries(DOCS_FIXED_GROUPS)) if (!ids.has(id)) groups.push({ id, name, items: [] });
+  return { groups };
+}
+
+// Puts a sheet or page into a group (or back where unplaced ones go)
+function placeDocsItem(item, groupId) {
+  for (const g of docs.nav.groups) if (g.items) g.items = g.items.filter((x) => x !== item);
+  if (groupId === undefined) return;
+  const target = docs.nav.groups.find((g) => g.items && g.id === groupId);
+  if (target) target.items.push(item);
 }
 function saveDocs() {
   writeJsonAtomic(DOCS_FILE, docs);
@@ -2577,7 +2636,6 @@ function validateNetworkDoc(b) {
 function validatePage(b) {
   return {
     title: str(b.title, 120, 'Title', { required: true }),
-    folder: str(b.folder, 60, 'Folder'),
     body: str(b.body, 200000, 'Page', { multiline: true }),
     updatedAt: Date.now(),
   };
@@ -4030,6 +4088,11 @@ async function handleApi(req, res, url, session) {
     saveDocs();
     return sendJson(res, 200, { server: docs.servers[ds[1]] });
   }
+  if (p === '/api/docs/nav' && m === 'PUT') {
+    docs.nav = validateDocsNav(await readBody(req));
+    saveDocs();
+    return sendJson(res, 200, { nav: docs.nav });
+  }
   if (p === '/api/docs/network' && m === 'PUT') {
     docs.network = validateNetworkDoc(await readBody(req));
     saveDocs();
@@ -4037,22 +4100,28 @@ async function handleApi(req, res, url, session) {
   }
   if (p === '/api/docs/pages' && m === 'POST') {
     if (docs.pages.length >= 500) throw new UserError('Too many pages');
-    const page = { id: crypto.randomUUID(), ...validatePage(await readBody(req)) };
+    const body = await readBody(req);
+    const page = { id: crypto.randomUUID(), ...validatePage(body) };
     docs.pages.push(page);
+    placeDocsItem(`page:${page.id}`, typeof body.group === 'string' ? body.group : 'pages');
     saveDocs();
-    return sendJson(res, 201, { page });
+    return sendJson(res, 201, { page, nav: docs.nav });
   }
   const dp = p.match(/^\/api\/docs\/pages\/([0-9a-f-]{36})$/);
   if (dp) {
     const page = docs.pages.find((x) => x.id === dp[1]);
     if (!page) throw Object.assign(new UserError('Page not found'), { status: 404 });
     if (m === 'PUT') {
-      Object.assign(page, validatePage(await readBody(req)));
+      const body = await readBody(req);
+      Object.assign(page, validatePage(body));
+      delete page.folder; // replaced by menu groups
+      if (typeof body.group === 'string') placeDocsItem(`page:${page.id}`, body.group);
       saveDocs();
-      return sendJson(res, 200, { page });
+      return sendJson(res, 200, { page, nav: docs.nav });
     }
     if (m === 'DELETE') {
       docs.pages = docs.pages.filter((x) => x !== page);
+      placeDocsItem(`page:${page.id}`);
       saveDocs();
       return sendJson(res, 200, { ok: true });
     }
@@ -5098,7 +5167,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     }
   }
   saveConfig();
-  docs = { ...emptyDocs(), ...(bundle.docs || {}) };
+  docs = normalizeDocs(bundle.docs);
   saveDocs();
   energy = bundle.energy?.buckets ? bundle.energy : { buckets: {} };
   energyDirty = true;
