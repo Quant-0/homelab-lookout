@@ -11,8 +11,13 @@
 //   DATA_DIR        state directory (0700)                                      default /var/lib/homelab-dashboard
 //   KEY_FILE        AES-256 key file (0600) when not using systemd LoadCredential=secret_key
 //   ALLOWED_HOSTS   extra comma-separated Host names accepted (e.g. lookout.tailnet.ts.net)
-//   TLS_CERT_FILE / TLS_KEY_FILE   serve HTTPS directly
-//   COOKIE_SECURE   1/0 override for the Secure cookie flag (default: on when serving HTTPS)
+//   PORT            default HTTP port (8080); HTTPS_PORT default HTTPS port (8443). Both can be
+//                   changed in Admin afterwards (Dashboard → Web server)
+//   TLS_CERT_FILE / TLS_KEY_FILE / TLS_CA_FILE   certificate when not using systemd LoadCredential
+//                   (tls_cert, tls_key, ca_cert), e.g. for development
+//   COOKIE_SECURE   1/0 override for the Secure cookie flag (default: on for HTTPS requests)
+//
+//   node server.js reset-network   reset HTTP/HTTPS ports to the defaults (service stopped)
 
 const http = require('node:http');
 const tls = require('node:tls');
@@ -86,6 +91,10 @@ const DEFAULT_SETTINGS = {
     },
     fixed: { gridMonthlyKr: 0, supplierMonthlyKr: 0, include: false },
     includeEstimates: false, // count estimated device power (rack equipment) in cost
+  },
+  server: {
+    https: { enabled: true, port: parseInt(process.env.HTTPS_PORT || '8443', 10) },
+    http: { enabled: true, port: PORT, mode: 'redirect' }, // redirect | serve
   },
   appearance: {
     theme: 'auto',
@@ -546,7 +555,19 @@ function validateSettings(b, current) {
     dashboard: b.dashboard ? validateDashboard(b.dashboard) : current.dashboard,
     power: b.power ? validatePower(b.power) : current.power,
     appearance: b.appearance ? validateAppearance(b.appearance) : current.appearance,
+    server: current.server, // changed only through /api/admin/server
   };
+}
+
+function validateServerSettings(b) {
+  const port = (v, name) => num(v, 1, 65535, `${name} port`, { int: true });
+  const https = { enabled: b.https?.enabled === true, port: port(b.https?.port, 'HTTPS') };
+  const http = { enabled: b.http?.enabled === true, port: port(b.http?.port, 'HTTP'), mode: b.http?.mode === 'serve' ? 'serve' : 'redirect' };
+  if (!https.enabled && !http.enabled) throw new UserError('At least one of HTTP and HTTPS must be on');
+  if (https.enabled && http.enabled && https.port === http.port) throw new UserError('HTTP and HTTPS need different ports');
+  if (https.enabled && !tlsInfo) throw new UserError('No certificate is installed; re-run the installer to create one');
+  if (http.enabled && http.mode === 'redirect' && !https.enabled) throw new UserError('Redirecting to HTTPS needs HTTPS to be on');
+  return { https, http };
 }
 
 // Typical draw from spec sheets, used to pre-fill estimates (W, without PoE output).
@@ -2918,9 +2939,13 @@ function powerSummary() {
 // Sessions, rate limiting
 
 const sessions = new Map(); // id -> { user, csrf, created, seen }
-const COOKIE_SECURE =
-  process.env.COOKIE_SECURE === '1' || (process.env.COOKIE_SECURE !== '0' && Boolean(process.env.TLS_CERT_FILE));
-const COOKIE_NAME = COOKIE_SECURE ? '__Host-hd_session' : 'hd_session';
+
+// HTTPS requests get a __Host- cookie with the Secure flag; plain HTTP a separate cookie, so a
+// session created over HTTPS is never sent over HTTP. COOKIE_SECURE=1 is for TLS-terminating proxies.
+function secureRequest(req) {
+  return process.env.COOKIE_SECURE === '1' || (process.env.COOKIE_SECURE !== '0' && Boolean(req.socket.encrypted));
+}
+const cookieName = (req) => (secureRequest(req) ? '__Host-hd_session' : 'hd_session');
 
 function parseCookies(header) {
   const out = {};
@@ -2932,10 +2957,10 @@ function parseCookies(header) {
 }
 
 function getSession(req) {
-  const id = parseCookies(req.headers.cookie)[COOKIE_NAME];
+  const id = parseCookies(req.headers.cookie)[cookieName(req)];
   if (!id) return null;
   const s = sessions.get(id);
-  if (!s) return null;
+  if (!s || s.secure !== secureRequest(req)) return null; // HTTPS sessions are only valid over HTTPS (and vice versa)
   const now = Date.now();
   if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) {
     sessions.delete(id);
@@ -2946,18 +2971,18 @@ function getSession(req) {
   return s;
 }
 
-function createSession(res, user) {
+function createSession(req, res, user) {
   const id = crypto.randomBytes(32).toString('base64url');
-  const s = { user, csrf: crypto.randomBytes(32).toString('base64url'), created: Date.now(), seen: Date.now() };
+  const s = { user, csrf: crypto.randomBytes(32).toString('base64url'), created: Date.now(), seen: Date.now(), secure: secureRequest(req) };
   sessions.set(id, s);
-  setCookie(res, id, SESSION_MAX_MS / 1000);
+  setCookie(req, res, id, SESSION_MAX_MS / 1000);
   return s;
 }
 
-function setCookie(res, value, maxAge) {
+function setCookie(req, res, value, maxAge) {
   res.setHeader(
     'Set-Cookie',
-    `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${COOKIE_SECURE ? '; Secure' : ''}`
+    `${cookieName(req)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureRequest(req) ? '; Secure' : ''}`
   );
 }
 
@@ -3000,7 +3025,7 @@ const CSP = [
   "object-src 'none'",
 ].join('; ');
 
-function securityHeaders(res) {
+function securityHeaders(req, res) {
   res.setHeader('Content-Security-Policy', CSP);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -3009,7 +3034,7 @@ function securityHeaders(res) {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   res.setHeader('Cache-Control', 'no-store');
-  if (COOKIE_SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  if (req.socket.encrypted) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
 }
 
 function sendJson(res, status, obj) {
@@ -3055,15 +3080,16 @@ function readBody(req) {
 
 const allowedHosts = new Set();
 function initAllowedHosts() {
+  allowedHosts.clear();
+  const ports = [listeners.https?.port, listeners.http?.port].filter(Boolean);
   const names = [HOST.includes(':') ? `[${HOST}]` : HOST];
   if (HOST === '127.0.0.1' || HOST === '::1') names.push('localhost', '127.0.0.1', '[::1]');
   for (const extra of String(process.env.ALLOWED_HOSTS || '').split(',')) if (extra.trim()) names.push(extra.trim().toLowerCase());
   for (const n of names) {
     if (/:\d+$/.test(n) && !n.endsWith(']')) allowedHosts.add(n);
     else {
-      allowedHosts.add(`${n}:${PORT}`);
-      if (PORT === 80 || PORT === 443) allowedHosts.add(n);
-      allowedHosts.add(n.replace(/:\d+$/, '')); // reverse proxies (e.g. tailscale serve) on default port
+      for (const p of ports) allowedHosts.add(`${n}:${p}`);
+      allowedHosts.add(n.replace(/:\d+$/, '')); // default ports and reverse proxies (e.g. tailscale serve)
     }
   }
 }
@@ -3383,7 +3409,7 @@ async function handleLogin(req, res) {
   loginFailures.delete('ip:' + ip);
   const old = getSession(req);
   if (old) sessions.delete(old.id);
-  createSession(res, admin.username);
+  createSession(req, res, admin.username);
   log(`Admin login from ${ip}`);
   sendJson(res, 200, { ok: true });
 }
@@ -3426,7 +3452,7 @@ async function handleApi(req, res, url, session) {
 
   if (p === '/api/logout' && m === 'POST') {
     sessions.delete(session.id);
-    setCookie(res, '', 0);
+    setCookie(req, res, '', 0);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -3522,6 +3548,18 @@ async function handleApi(req, res, url, session) {
       log(`Host removed: ${old.type} ${old.name}`);
       return sendJson(res, 200, { ok: true });
     }
+  }
+
+  if (p === '/api/admin/server' && m === 'GET') return sendJson(res, 200, { ...serverStatus(), current: secureRequest(req) ? 'https' : 'http' });
+  if (p === '/api/admin/server' && m === 'PUT') {
+    const next = validateServerSettings(await readBody(req));
+    const old = await applyServer(next); // throws (and changes nothing) if a port can't be used
+    config.settings.server = next;
+    saveConfig();
+    log(`Web server settings changed: ${JSON.stringify(serverUrls())}`);
+    sendJson(res, 200, serverStatus());
+    closeListeners(old); // after the response, so the browser gets it on the old port
+    return;
   }
 
   if (p === '/api/admin/rack' && m === 'PUT') {
@@ -3849,7 +3887,7 @@ async function handleApi(req, res, url, session) {
 }
 
 async function handle(req, res) {
-  securityHeaders(res);
+  securityHeaders(req, res);
   if (!hostAllowed(req.headers.host)) return sendError(res, 421, 'Unknown host; add it to ALLOWED_HOSTS');
   let url;
   try {
@@ -3905,12 +3943,168 @@ async function handle(req, res) {
       return allowed ? sendStatic(res, p) : sendError(res, 401, 'Login required');
     }
     if (p === '/favicon.ico') return sendStatic(res, '/static/favicon.svg');
+    if (p === '/ca.crt') {
+      // The local CA certificate (public), for importing on phones and PCs
+      if (!tlsInfo?.ca) return sendError(res, 404, 'No local CA');
+      res.writeHead(200, { 'Content-Type': 'application/x-x509-ca-cert', 'Content-Disposition': 'attachment; filename="homelab-dashboard-ca.crt"', 'Content-Length': tlsInfo.ca.length });
+      return res.end(tlsInfo.ca);
+    }
     sendError(res, 404, 'Not found');
   } catch (e) {
     if (e instanceof UserError) return sendError(res, e.status || 400, e.message);
     log('Request error:', e && e.stack ? e.stack : e);
     if (!res.headersSent) sendError(res, 500, 'Internal error');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Web server: HTTPS and/or HTTP listeners, configurable in Admin
+//
+// Port changes bind the new port first and only then close the old one, so a port that can't be
+// used never takes the dashboard offline. HTTP can redirect to HTTPS or serve the dashboard.
+
+const listeners = { https: null, http: null }; // kind -> { server, port }
+let tlsInfo = null;
+
+function loadTls() {
+  const cred = process.env.CREDENTIALS_DIRECTORY;
+  const pick = (credName, envName) => {
+    const p = cred && path.join(cred, credName);
+    return p && fs.existsSync(p) ? p : process.env[envName] || null;
+  };
+  const certFile = pick('tls_cert', 'TLS_CERT_FILE');
+  const keyFile = pick('tls_key', 'TLS_KEY_FILE');
+  if (!certFile || !keyFile) return null;
+  const cert = fs.readFileSync(certFile);
+  const x = new crypto.X509Certificate(cert);
+  const caFile = pick('ca_cert', 'TLS_CA_FILE');
+  const ca = caFile ? fs.readFileSync(caFile) : null;
+  return {
+    cert,
+    key: fs.readFileSync(keyFile),
+    ca,
+    subject: x.subject,
+    names: x.subjectAltName,
+    validTo: Date.parse(x.validTo),
+    fingerprint: x.fingerprint256,
+    caFingerprint: ca ? new crypto.X509Certificate(ca).fingerprint256 : null,
+    caValidTo: ca ? Date.parse(new crypto.X509Certificate(ca).validTo) : null,
+  };
+}
+
+// What actually runs: without a certificate only plain HTTP is possible.
+function effectiveServer(cfg) {
+  const httpsOn = cfg.https.enabled && Boolean(tlsInfo);
+  return {
+    https: httpsOn ? { port: cfg.https.port } : null,
+    http: cfg.http.enabled || !httpsOn ? { port: cfg.http.port, mode: httpsOn ? cfg.http.mode : 'serve' } : null,
+  };
+}
+
+function hostOnly(hostHeader) {
+  const h = String(hostHeader || '');
+  return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.replace(/:\d+$/, '');
+}
+
+function redirectToHttps(req, res) {
+  securityHeaders(req, res);
+  if (!hostAllowed(req.headers.host)) return sendError(res, 421, 'Unknown host; add it to ALLOWED_HOSTS');
+  const port = listeners.https.port;
+  const target = `https://${hostOnly(req.headers.host)}${port === 443 ? '' : `:${port}`}${String(req.url).startsWith('/') ? req.url : '/'}`;
+  res.writeHead(308, { Location: target, 'Content-Length': 0 });
+  res.end();
+}
+
+// The HTTP listener decides per request, so switching between redirect and serve needs no re-bind.
+function httpHandler(req, res) {
+  const mode = effectiveServer(config.settings.server).http?.mode;
+  if (mode === 'redirect' && listeners.https) return redirectToHttps(req, res);
+  return handle(req, res);
+}
+
+function makeServer(kind) {
+  const srv = kind === 'https'
+    ? require('node:https').createServer({ cert: tlsInfo.cert, key: tlsInfo.key, minVersion: 'TLSv1.2' }, handle)
+    : http.createServer(httpHandler);
+  srv.headersTimeout = 15000;
+  srv.requestTimeout = 30000;
+  srv.keepAliveTimeout = 5000;
+  return srv;
+}
+
+function listenOn(srv, port) {
+  return new Promise((resolve, reject) => {
+    srv.once('error', reject);
+    srv.listen(port, HOST, () => {
+      srv.off('error', reject);
+      resolve();
+    });
+  });
+}
+
+// Starts listeners that are new or moved; returns the old ones (closed later by the caller).
+async function applyServer(cfg) {
+  const want = effectiveServer(cfg);
+  const started = [];
+  try {
+    for (const kind of ['https', 'http']) {
+      const w = want[kind];
+      if (!w || listeners[kind]?.port === w.port) continue;
+      const other = listeners[kind === 'https' ? 'http' : 'https'];
+      if (other && other.port === w.port) throw new UserError(`Port ${w.port} is in use by this server's ${kind === 'https' ? 'HTTP' : 'HTTPS'} listener; change one port at a time`);
+      const srv = makeServer(kind);
+      try {
+        await listenOn(srv, w.port);
+      } catch (e) {
+        throw new UserError(e.code === 'EACCES' ? `Port ${w.port} needs extra privileges (ports below 1024): re-run the installer with --low-ports`
+          : e.code === 'EADDRINUSE' ? `Port ${w.port} is already in use by another program` : `Could not listen on port ${w.port} (${e.code || e.message})`);
+      }
+      started.push({ kind, server: srv, port: w.port });
+    }
+  } catch (e) {
+    for (const st of started) st.server.close();
+    throw e;
+  }
+  const old = [];
+  for (const kind of ['https', 'http']) {
+    const st = started.find((x) => x.kind === kind);
+    if (st) {
+      if (listeners[kind]) old.push(listeners[kind]);
+      listeners[kind] = { server: st.server, port: st.port };
+    } else if (!want[kind] && listeners[kind]) {
+      old.push(listeners[kind]);
+      listeners[kind] = null;
+    }
+  }
+  initAllowedHosts();
+  return old;
+}
+
+function closeListeners(old, delayMs = 1500) {
+  if (!old.length) return;
+  setTimeout(() => {
+    for (const l of old) {
+      l.server.close();
+      l.server.closeAllConnections?.();
+    }
+  }, delayMs).unref();
+}
+
+function serverUrls() {
+  const host = HOST.includes(':') ? `[${HOST}]` : HOST;
+  return {
+    https: listeners.https ? `https://${host}${listeners.https.port === 443 ? '' : `:${listeners.https.port}`}` : null,
+    http: listeners.http ? `http://${host}${listeners.http.port === 80 ? '' : `:${listeners.http.port}`}` : null,
+  };
+}
+
+function serverStatus() {
+  return {
+    settings: config.settings.server,
+    urls: serverUrls(),
+    httpMode: effectiveServer(config.settings.server).http?.mode || null,
+    tls: tlsInfo ? { subject: tlsInfo.subject, names: tlsInfo.names, validTo: tlsInfo.validTo, fingerprint: tlsInfo.fingerprint, caFingerprint: tlsInfo.caFingerprint, caValidTo: tlsInfo.caValidTo } : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3990,6 +4184,14 @@ async function cliSetAdmin(username) {
 async function main() {
   const [cmd, arg] = process.argv.slice(2);
   if (cmd === 'set-admin') return cliSetAdmin(arg);
+  if (cmd === 'reset-network') {
+    ensureDataDir();
+    const raw = readJson(CONFIG_FILE, {});
+    raw.settings = { ...(raw.settings || {}), server: structuredClone(DEFAULT_SETTINGS.server) };
+    writeJsonAtomic(CONFIG_FILE, raw);
+    console.log(`Web server reset to HTTPS port ${DEFAULT_SETTINGS.server.https.port} and HTTP port ${DEFAULT_SETTINGS.server.http.port} (redirect). Start the service again.`);
+    return;
+  }
   if (cmd) fatal(`Unknown command: ${cmd}`);
 
   const major = parseInt(process.versions.node, 10);
@@ -4007,18 +4209,15 @@ async function main() {
   DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
   if (!readAdmin()) log('WARNING: no admin account yet. Run: node server.js set-admin <username>');
 
-  let server;
-  if (process.env.TLS_CERT_FILE && process.env.TLS_KEY_FILE) {
-    const https = require('node:https');
-    server = https.createServer(
-      { cert: fs.readFileSync(process.env.TLS_CERT_FILE), key: fs.readFileSync(process.env.TLS_KEY_FILE), minVersion: 'TLSv1.2' },
-      handle
-    );
-  } else server = http.createServer(handle);
-  server.headersTimeout = 15000;
-  server.requestTimeout = 30000;
-  server.keepAliveTimeout = 5000;
-  server.listen(PORT, HOST, () => log(`Listening on ${COOKIE_SECURE ? 'https' : 'http'}://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`));
+  tlsInfo = loadTls();
+  if (!tlsInfo && config.settings.server.https.enabled) log('No TLS certificate found: serving plain HTTP only');
+  try {
+    await applyServer(config.settings.server);
+  } catch (e) {
+    fatal(`${e.message}. To go back to the default ports: node server.js reset-network`);
+  }
+  const urls = serverUrls();
+  log(`Listening on ${[urls.https, urls.http && `${urls.http}${effectiveServer(config.settings.server).http.mode === 'redirect' ? ' (redirects to HTTPS)' : ''}`].filter(Boolean).join(' and ')}`);
 
   schedulePolling();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();

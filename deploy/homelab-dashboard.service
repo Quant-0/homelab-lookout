@@ -16,6 +16,10 @@ RestartSec=5
 # The AES-256 key lives in /etc/homelab-dashboard/secret.key (root:root 0600) and is
 # handed to the service through systemd credentials. Only this unit can read it.
 LoadCredential=secret_key:/etc/homelab-dashboard/secret.key
+# HTTPS certificate from the local CA (created by install.sh). The CA key never leaves root.
+LoadCredential=tls_cert:/etc/homelab-dashboard/tls/server.crt
+LoadCredential=tls_key:/etc/homelab-dashboard/tls/server.key
+LoadCredential=ca_cert:/etc/homelab-dashboard/tls/ca.crt
 
 # State: /var/lib/homelab-dashboard, owned by homelab-dash, mode 0700
 StateDirectory=homelab-dashboard

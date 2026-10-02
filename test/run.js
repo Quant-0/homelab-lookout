@@ -8,7 +8,8 @@
 //
 // Needs: Node 18+, openssl (test certificate). Optional: snmpd from net-snmp (set SNMPD=path if it
 // is not in PATH) for the SNMPv3 suite, which is skipped otherwise.
-// Uses ports 18080 (dashboard), 18443 (device mock), 18090 (service mock), 16161/udp (snmpd).
+// Uses ports 18080 (dashboard), 18444-18446 (HTTPS suite), 18443 (device mock), 18090 (service mock),
+// 16161/udp (snmpd).
 
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -46,6 +47,7 @@ function portFree(port) {
 }
 
 async function waitFor(url, ms = 10000) {
+  // (with HTTPS on, the HTTP port answers with a redirect, which is enough)
   const until = Date.now() + ms;
   while (Date.now() < until) {
     try {
@@ -68,7 +70,7 @@ function which(bin) {
 
 // Fresh data dir + admin account; or reuse the current one (fresh = false)
 let dataDir = null;
-async function startServer(fresh) {
+async function startServer(fresh, extraEnv = {}) {
   if (server) {
     server.kill();
     await new Promise((r) => server.once('exit', r));
@@ -78,7 +80,7 @@ async function startServer(fresh) {
     fs.chmodSync(dataDir, 0o700);
     execFileSync(process.execPath, ['server.js', 'set-admin', 'admin'], { cwd: ROOT, env: { ...process.env, DATA_DIR: dataDir }, input: `${ADMIN_PW}\n${ADMIN_PW}\n`, stdio: ['pipe', 'ignore', 'inherit'] });
   }
-  server = start(process.execPath, ['server.js'], { DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(PORT) }, 'server');
+  server = start(process.execPath, ['server.js'], { DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(PORT), ...extraEnv }, 'server');
   await waitFor(`${BASE_URL}/login`);
 }
 
@@ -97,12 +99,22 @@ function runSuite(file, env) {
 }
 
 async function main() {
-  for (const port of [PORT, 18443, 18090]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use`);
+  for (const port of [PORT, 18443, 18444, 18445, 18446, 18090]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use`);
 
   // Test certificate for the HTTPS device mock (pinned by the tests)
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem'), '-days', '7', '-subj', '/CN=mock-device'], { stdio: 'ignore' });
   const fp = execFileSync('openssl', ['x509', '-in', path.join(tmp, 'cert.pem'), '-noout', '-fingerprint', '-sha256']).toString().split('=')[1].trim();
   start(process.execPath, ['test/mocks/devices.js'], { MOCK_CERT_DIR: tmp }, 'device mock');
+
+  // A local CA + server certificate for 127.0.0.1, like install.sh creates (for the HTTPS suite)
+  const ssl = (...a) => execFileSync('openssl', a, { stdio: 'ignore' });
+  const t = (f) => path.join(tmp, f);
+  ssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', t('ca.key'), '-out', t('ca.crt'), '-days', '2', '-subj', '/CN=Test CA',
+    '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign', '-addext', 'nameConstraints=critical,permitted;IP:127.0.0.1/255.255.255.255');
+  fs.writeFileSync(t('srv.ext'), 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n');
+  ssl('req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', t('srv.key'), '-out', t('srv.csr'), '-subj', '/CN=127.0.0.1');
+  ssl('x509', '-req', '-in', t('srv.csr'), '-CA', t('ca.crt'), '-CAkey', t('ca.key'), '-set_serial', '2', '-days', '825', '-extfile', t('srv.ext'), '-out', t('srv.crt'));
+  const tlsEnv = { TLS_CERT_FILE: t('srv.crt'), TLS_KEY_FILE: t('srv.key'), TLS_CA_FILE: t('ca.crt'), HTTPS_PORT: '18444' };
   start(process.execPath, ['test/mocks/services.js'], {}, 'service mock');
 
   const snmpd = process.env.SNMPD || which('snmpd');
@@ -116,6 +128,7 @@ async function main() {
   const env = { BASE_URL, MOCK_FP: fp };
   const suites = [
     { file: 'test/core.test.js', fresh: true },
+    { file: 'test/https.test.js', fresh: true, env: tlsEnv },
     { file: 'test/appearance.test.js', fresh: false },
     { file: 'test/snmp-unifi.test.js', fresh: true, skip: !snmpd && 'snmpd not found (install net-snmp or set SNMPD)' },
     { file: 'test/devices.test.js', fresh: true },
@@ -140,9 +153,9 @@ async function main() {
       console.log(`SKIP  ${s.file}: ${s.skip}`);
       continue;
     }
-    await startServer(s.fresh);
+    await startServer(s.fresh, s.env);
     console.log(`RUN   ${s.file}`);
-    const r = await runSuite(s.file, { ...env, DATA_DIR: dataDir });
+    const r = await runSuite(s.file, { ...env, ...s.env, DATA_DIR: dataDir });
     passed += r.passed;
     failed += r.failed;
     if (r.code !== 0 && !r.failed) broken++;

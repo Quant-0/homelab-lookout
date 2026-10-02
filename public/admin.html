@@ -223,6 +223,30 @@
         <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
       </form>
     </section>
+    <section class="card" id="web-card">
+      <h3>Web server</h3>
+      <p class="hint">How the dashboard is reached. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.</p>
+      <form id="web-form">
+        <div class="web-grid">
+          <label class="check"><input type="checkbox" name="httpsEnabled"> HTTPS</label>
+          <label><span>HTTPS port</span><input name="httpsPort" type="number" min="1" max="65535" step="1"></label>
+          <span></span>
+          <label class="check"><input type="checkbox" name="httpEnabled"> HTTP</label>
+          <label><span>HTTP port</span><input name="httpPort" type="number" min="1" max="65535" step="1"></label>
+          <label><span>HTTP does</span>
+            <select name="httpMode">
+              <option value="redirect">Redirect to HTTPS</option>
+              <option value="serve">Serve the dashboard (unencrypted)</option>
+            </select>
+          </label>
+        </div>
+        <p class="banner hidden" id="web-warning"></p>
+        <p class="hint">Ports below 1024 (e.g. 443) need: <code>sudo sh deploy/install.sh --low-ports</code>. Locked out? <code>sudo sh deploy/install.sh --reset-network</code></p>
+        <div class="form-actions"><button type="submit" class="primary">Save web server settings</button><span class="msg" id="web-msg" role="status"></span></div>
+      </form>
+      <h4>Certificate</h4>
+      <div id="web-cert"></div>
+    </section>
     </div>
     <div class="tab-panel" role="tabpanel" id="tab-appearance" aria-labelledby="tabbtn-appearance" hidden>
     <section class="card" id="appearance-card">

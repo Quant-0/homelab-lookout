@@ -56,7 +56,7 @@ Multiple hosts of each type are supported. The server polls hosts every *refresh
 | Self-signed certs | Per-host SHA-256 certificate pinning. The TLS handshake completes and the fingerprint is compared before any byte (including credentials) is written. "Fetch certificate" only performs a handshake. |
 | Passwords | scrypt (N=2^15, r=8, p=1). Unknown usernames take the same time as known ones. |
 | Brute force | Per-IP lockout after 5 failures, plus a global lockout after 20. Lockouts grow exponentially up to 1 h. |
-| Sessions | Random 256-bit id, in memory only. Cookie is `HttpOnly; SameSite=Strict` (and `Secure` / `__Host-` when served over HTTPS). 2 h idle and 12 h absolute timeout. Changing the password revokes other sessions. |
+| Sessions | Random 256-bit id, in memory only. Cookie is `HttpOnly; SameSite=Strict`, plus `Secure` and the `__Host-` prefix over HTTPS. A session is bound to the protocol it was created on, so an HTTPS session is never accepted over HTTP. 2 h idle and 12 h absolute timeout. Changing the password revokes other sessions. |
 | CSRF | Per-session token in `X-CSRF-Token` on every state-changing request. `Origin` / `Sec-Fetch-Site` are also checked, and request bodies must be JSON. |
 | CSP | `default-src 'none'; script-src 'self'; style-src 'self'; …`. No inline scripts, no inline styles, DOM built without `innerHTML`. Also sends `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and `Cache-Control: no-store`. |
 | Uploaded images | Accepted only if the content is really JPEG/PNG/WebP (SVG is rejected). EXIF/XMP/IPTC metadata, PNG text chunks and comments are stripped on upload, keeping only JPEG orientation. Files are stored 0600 under random ids and served with `nosniff`, under the same access rules as the dashboard. |
@@ -69,28 +69,42 @@ Multiple hosts of each type are supported. The server polls hosts every *refresh
 ## Install (as root)
 
 ```sh
-sudo sh deploy/install.sh --host 127.0.0.1          # or the VM's internal IP
+sudo sh deploy/install.sh --host 192.168.1.140   # or 127.0.0.1
 ```
 
 The script:
 
-1. Installs Debian's `nodejs` if needed.
+1. Installs Debian's `nodejs` and `openssl` if needed.
 2. Creates the `homelab-dash` user.
 3. Copies the app to `/opt/homelab-dashboard`.
-4. Generates the key.
-5. Writes `/etc/homelab-dashboard/env`.
+4. Generates the encryption key.
+5. Creates a **local CA** and a server certificate.
 6. Asks for the admin password.
 7. Enables `homelab-dashboard.service`.
 
-Re-run the script to deploy updates. Review the diff first: the installed code runs with access to your secrets.
+Re-run it to deploy updates. Review the diff first: the installed code runs with access to your secrets.
 
-- Reset the admin password: `sudo sh deploy/install.sh --reset-admin`
-- Logs: `journalctl -u homelab-dashboard`
+| Option | |
+|---|---|
+| `--reset-admin` | Set a new admin password |
+| `--renew-cert` | Issue a new server certificate now. It is also renewed automatically when it has less than 30 days left, or when `--host` changes. |
+| `--low-ports` / `--no-low-ports` | Allow or disallow ports below 1024 (e.g. 443) |
+| `--reset-network` | Put HTTP/HTTPS back on the default ports if you locked yourself out |
+
+Logs: `journalctl -u homelab-dashboard`
+
+### HTTPS and the local CA
+
+The dashboard listens on **https://HOST:8443** by default, and on **http://HOST:8080** with a redirect to HTTPS. In Admin → Dashboard → Web server you can turn HTTP and HTTPS on or off, change their ports, and choose whether HTTP redirects or serves. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.
+
+The certificates live in `/etc/homelab-dashboard/tls/`. The CA key is readable by root only; the service only gets the server certificate and key, through systemd credentials.
+
+Import the CA certificate once on each device to get rid of browser warnings. Download it from `/ca.crt`, or use the button in Admin, and compare the fingerprint the installer prints. The CA is *name-constrained* to this server's /24 network, 127.0.0.1 and its host names, so it can't vouch for any other website, even if its key leaked.
 
 ### Reaching it over Tailscale / WireGuard
 
-- **Bound to the VM's internal IP** (reached via WireGuard or a subnet router): browse to `http://<ip>:8080/`.
-- **Bound to 127.0.0.1 with Tailscale on the VM**: run `tailscale serve --bg --https=443 http://127.0.0.1:8080`. Then add the MagicDNS name to `ALLOWED_HOSTS` and set `COOKIE_SECURE=1` in `/etc/homelab-dashboard/env`.
+- **Bound to the VM's internal IP** (reached via WireGuard or a subnet router): browse to `https://<ip>:8443/`.
+- **Bound to 127.0.0.1 with Tailscale on the VM**: run `tailscale serve --bg --https=443 http://127.0.0.1:8080` with HTTP set to *serve*. Then add the MagicDNS name to `ALLOWED_HOSTS` and set `COOKIE_SECURE=1` in `/etc/homelab-dashboard/env`.
 
 ## Credentials for the devices (read-only is enough)
 

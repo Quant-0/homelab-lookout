@@ -926,6 +926,90 @@ $('svc-new').addEventListener('click', () => openService(null));
 $('svc-cancel').addEventListener('click', closeService);
 
 // ---------------------------------------------------------------------------
+// Web server (HTTP/HTTPS, ports, certificate)
+
+let web = null;
+
+async function loadWeb() {
+  try {
+    web = await api('GET', '/api/admin/server');
+    const f = $('web-form').elements;
+    const s = web.settings;
+    f.httpsEnabled.checked = s.https.enabled && Boolean(web.tls);
+    f.httpsEnabled.disabled = !web.tls;
+    f.httpsPort.value = s.https.port;
+    f.httpEnabled.checked = s.http.enabled || !web.tls;
+    f.httpPort.value = s.http.port;
+    f.httpMode.value = web.tls ? s.http.mode : 'serve';
+    renderCert();
+    syncWeb();
+  } catch (e) {
+    showMsg('web-msg', e.message, false);
+  }
+}
+
+function syncWeb() {
+  const f = $('web-form').elements;
+  f.httpsPort.disabled = !f.httpsEnabled.checked;
+  f.httpPort.disabled = !f.httpEnabled.checked;
+  f.httpMode.disabled = !f.httpEnabled.checked || !f.httpsEnabled.checked;
+  if (!f.httpsEnabled.checked) f.httpMode.value = 'serve';
+  const warn = $('web-warning');
+  warn.textContent = !web?.tls
+    ? 'No certificate is installed, so only HTTP is possible. Re-run the installer to create the local CA and certificate.'
+    : f.httpEnabled.checked && f.httpMode.value === 'serve'
+      ? 'HTTP serves the dashboard unencrypted: logins and data travel in plain text (fine inside a VPN, not elsewhere). Sessions are separate per protocol, so you log in separately on HTTP and HTTPS.'
+      : '';
+  warn.classList.toggle('hidden', !warn.textContent);
+}
+
+function renderCert() {
+  const t = web.tls;
+  if (!t) return $('web-cert').replaceChildren(el('p', { class: 'small muted', text: 'No certificate installed.' }));
+  const days = Math.round((t.validTo - Date.now()) / 86400000);
+  $('web-cert').replaceChildren(
+    el('table', { class: 'facts' }, el('tbody', null,
+      el('tr', null, el('th', { text: 'Names' }), el('td', { text: (t.names || '').replace(/IP Address:/g, '').replace(/DNS:/g, '') })),
+      el('tr', null, el('th', { text: 'Valid until' }), el('td', null, `${fmt.time(t.validTo)} `, days < 30 ? HD.status(`${days} days left: re-run the installer to renew`, 'warning') : el('span', { class: 'small muted', text: `(${days} days)` }))),
+      el('tr', null, el('th', { text: 'Local CA fingerprint' }), el('td', null, el('code', { class: 'small', text: t.caFingerprint || '–' }))))),
+    t.caFingerprint ? el('div', { class: 'ca-help' },
+      el('p', null, el('a', { class: 'button', href: '/ca.crt', download: 'homelab-dashboard-ca.crt', text: 'Download CA certificate' }),
+        ' Import it once on each device, and check that the fingerprint matches the one above.'),
+      el('details', null, el('summary', { text: 'How to import' }), el('ul', { class: 'small' },
+        el('li', { text: 'iPhone/iPad: open the file → Settings → Profile Downloaded → Install; then Settings → General → About → Certificate Trust Settings → turn it on.' }),
+        el('li', { text: 'Android: Settings → Security → Encryption & credentials → Install a certificate → CA certificate.' }),
+        el('li', { text: 'Windows: double-click → Install Certificate → Local Machine → "Trusted Root Certification Authorities".' }),
+        el('li', { text: 'macOS: double-click → Keychain Access (System) → open the certificate → Trust → "Always Trust".' }),
+        el('li', { text: 'Linux: copy to /usr/local/share/ca-certificates/ and run sudo update-ca-certificates (Firefox: Settings → Certificates → Import).' }),
+        el('li', { text: 'The CA can only vouch for this server (its network and host names), so importing it does not let it impersonate other websites.' })))) : null);
+}
+
+$('web-form').addEventListener('change', syncWeb);
+$('web-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = $('web-form').elements;
+  const body = {
+    https: { enabled: f.httpsEnabled.checked, port: Number(f.httpsPort.value) },
+    http: { enabled: f.httpEnabled.checked, port: Number(f.httpPort.value), mode: f.httpMode.value },
+  };
+  try {
+    const r = await api('PUT', '/api/admin/server', body);
+    web = { ...web, ...r };
+    // If this page's own address went away, continue on the new one
+    const still = [r.urls.https, r.urls.http].some((u) => u && new URL(u).port === location.port && new URL(u).protocol === location.protocol);
+    if (!still) {
+      const next = r.urls.https || r.urls.http;
+      showMsg('web-msg', `Saved. Moving to ${next} …`, true);
+      setTimeout(() => (location.href = `${next.replace(/\/$/, '')}/admin#dashboard`), 1200);
+      return;
+    }
+    showMsg('web-msg', `Saved: ${[r.urls.https, r.urls.http].filter(Boolean).join(' and ')}`, true);
+  } catch (e) {
+    showMsg('web-msg', e.message, false);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Appearance
 
 const THEME_NAMES = {
@@ -1073,6 +1157,7 @@ function showTab(name, focus) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
   if (name === 'services') loadServices();
+  if (name === 'dashboard') loadWeb();
 }
 
 for (const t of TABS) $(`tabbtn-${t}`).addEventListener('click', () => showTab(t));
