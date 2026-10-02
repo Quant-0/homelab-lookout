@@ -185,6 +185,34 @@ const CASES = [
   ok(r.status === 401, 'private dashboard: services need login');
   cookie = saved;
 
+  // --- Customize: group order, columns, moving and hiding services ---
+  let sv = (await req('GET', '/api/services')).json;
+  const anId = sv.groups.find((g) => g.services?.length).services[0].id;
+  const all = sv.groups.filter((g) => g.services).map((g) => ({ key: g.key, columns: 0, services: g.services.map((x) => x.id) }));
+  const moved = { key: 'Favourites', columns: 2, services: [anId] };
+  const rest = all.map((g) => ({ ...g, services: g.services.filter((id) => id !== anId) }));
+  const others = rest.flatMap((g) => g.services);
+  const hideId = others[0];
+  r = await req('PUT', '/api/admin/services/layout', { groups: [moved, ...rest.reverse()], hidden: [hideId] });
+  ok(r.status === 200 && r.json.groups[0].key === 'Favourites' && r.json.groups[0].columns === 2 && r.json.groups[0].services[0].id === anId, 'layout saved: new first group with 2 columns');
+  ok(r.json.hidden.some((h) => h.id === hideId) && !r.json.groups.some((g) => g.services?.some((x) => x.id === hideId)), 'hidden service left out of the page (listed for the admin)');
+  sv = (await req('GET', '/api/services')).json;
+  ok(sv.groups[0].key === 'Favourites' && sv.groups[0].columns === 2 && sv.groups.map((g) => g.key).join() === ['Favourites', ...rest.map((g) => g.key)].filter((k) => sv.groups.some((g) => g.key === k)).join(), `group order kept on the next load (${sv.groups.map((g) => g.key).join(', ')})`);
+  const beforeBad = JSON.stringify((await req('GET', '/api/services')).json.groups.map((g) => [g.key, g.services?.map((x) => x.id)]));
+  r = await req('PUT', '/api/admin/services/layout', { groups: [{ key: 'Moved', services: [anId] }, { key: 'A' }, { key: 'A' }] });
+  ok(r.status === 400 && /twice/.test(r.json.error), 'duplicate group names rejected');
+  ok(JSON.stringify((await req('GET', '/api/services')).json.groups.map((g) => [g.key, g.services?.map((x) => x.id)])) === beforeBad, 'a rejected layout changes nothing');
+  r = await req('PUT', '/api/admin/services/layout', { groups: [{ key: '@evil', services: [] }] });
+  ok(r.status === 400 && /cannot start with @/.test(r.json.error), 'reserved group names rejected');
+  r = await req('PUT', '/api/admin/services/layout', { groups: [{ key: 'X', columns: 9 }] });
+  ok(r.status === 400 && /Columns/.test(r.json.error), 'column count validated');
+  r = await req('PUT', '/api/admin/services/layout', { groups: [moved, ...rest], hidden: [] });
+  ok(r.status === 200 && !r.json.hidden.length, 'service shown again');
+  cookie = '';
+  r = await req('PUT', '/api/admin/services/layout', { groups: [] });
+  ok(r.status === 401, 'layout needs login');
+  cookie = saved;
+
   r = await req('DELETE', `/api/docs/pages/${page.id}`);
   ok(r.status === 200, 'page deleted');
   r = await req('DELETE', `/api/admin/services/${jf.id}`);

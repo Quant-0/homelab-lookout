@@ -311,6 +311,7 @@ function loadConfig() {
     devices: Array.isArray(raw.devices) ? raw.devices : [],
     services: Array.isArray(raw.services) ? raw.services : [],
     icons: Array.isArray(raw.icons) ? raw.icons : [], // [{ id, mime, bytes, source, addedAt }]
+    servicesLayout: raw.servicesLayout?.groups ? raw.servicesLayout : null,
     backup: { ...structuredClone(DEFAULT_BACKUP), ...(raw.backup || {}), schedule: { ...DEFAULT_BACKUP.schedule, ...(raw.backup?.schedule || {}) } },
     alerts: normalizeAlerts(raw.alerts),
   };
@@ -2349,7 +2350,7 @@ function validateServiceInput(b) {
   const name = str(b.name, 48, 'Name', { required: true });
   const out = {
     name,
-    group: str(b.group, 32, 'Group') || 'Services',
+    group: str(b.group, 32, 'Group').replace(/^@+/, '') || 'Services',
     description: str(b.description, 120, 'Description'),
     href: validateLink(b.href),
     deviceId: b.deviceId && config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : null,
@@ -2406,12 +2407,17 @@ function iconUrl(icon) {
   return icon?.kind === 'file' ? `/media/icon/${icon.id}` : null;
 }
 
-function servicesPayload() {
-  const groups = new Map();
+// Services page: groups in the order chosen with Customize ('@vms' = Proxmox VMs and containers),
+// with an optional column count each. Hidden services are only listed for the admin.
+const VMS_GROUP = '@vms';
+
+function servicesPayload(admin = false) {
+  const layout = config.servicesLayout || { groups: [], columns: {} };
+  const byGroup = new Map();
+  const hidden = [];
   for (const svc of [...config.services].sort((a, b) => (a.order || 0) - (b.order || 0))) {
-    if (!groups.has(svc.group)) groups.set(svc.group, []);
     const r = serviceResults.get(svc.id);
-    groups.get(svc.group).push({
+    const card = {
       id: svc.id,
       name: svc.name,
       description: svc.description,
@@ -2423,9 +2429,60 @@ function servicesPayload() {
       stats: r?.stats ?? null,
       error: r?.error ?? null,
       updatedAt: r?.updatedAt ?? null,
-    });
+    };
+    if (svc.hidden) {
+      if (admin) hidden.push({ ...card, group: svc.group });
+      continue;
+    }
+    if (!byGroup.has(svc.group)) byGroup.set(svc.group, []);
+    byGroup.get(svc.group).push(card);
   }
-  return { groups: [...groups].map(([name, services]) => ({ name, services })), vms: vmsPayload(), refreshSeconds: config.settings.dashboard.refreshSeconds };
+  const vms = vmsPayload();
+  const keys = layout.groups.filter((k) => byGroup.has(k) || (k === VMS_GROUP && vms));
+  for (const k of byGroup.keys()) if (!keys.includes(k)) keys.push(k);
+  if (vms && !keys.includes(VMS_GROUP)) keys.push(VMS_GROUP);
+  const cols = (key) => (Number.isInteger(layout.columns?.[key]) && layout.columns[key] >= 1 && layout.columns[key] <= 6 ? layout.columns[key] : 0);
+  return {
+    groups: keys.map((key) => (key === VMS_GROUP
+      ? { key, name: 'Virtual machines & containers', columns: cols(key), vms }
+      : { key, name: key, columns: cols(key), services: byGroup.get(key) })),
+    ...(admin ? { hidden } : {}),
+    refreshSeconds: config.settings.dashboard.refreshSeconds,
+  };
+}
+
+// Validates everything first, then applies, so a rejected layout changes nothing
+function saveServicesLayout(b) {
+  if (!Array.isArray(b.groups) || b.groups.length > 200) throw new UserError('Invalid layout');
+  const plan = [];
+  for (const g of b.groups) {
+    const key = g?.key === VMS_GROUP ? VMS_GROUP : str(g?.key, 32, 'Group name', { required: true });
+    if (key !== VMS_GROUP && key.startsWith('@')) throw new UserError('Group names cannot start with @');
+    if (plan.some((x) => x.key === key)) throw new UserError(`The group ${key} appears twice`);
+    const columns = num(g.columns ?? 0, 0, 6, 'Columns', { int: true });
+    const from = key !== VMS_GROUP && typeof g.from === 'string' && g.from !== key ? g.from : null;
+    plan.push({ key, columns, from, ids: key === VMS_GROUP || !Array.isArray(g.services) ? [] : g.services });
+  }
+  const placed = new Set();
+  let n = 0;
+  for (const g of plan) {
+    for (const id of g.ids) {
+      const svc = config.services.find((x) => x.id === id);
+      if (!svc || placed.has(id)) continue;
+      placed.add(id);
+      Object.assign(svc, { group: g.key, order: ++n });
+    }
+  }
+  // services the layout didn't mention (e.g. hidden ones) keep their group, renamed if it was
+  const renamed = new Map(plan.filter((g) => g.from).map((g) => [g.from, g.key]));
+  for (const svc of [...config.services].sort((x, y) => (x.order || 0) - (y.order || 0))) {
+    if (placed.has(svc.id)) continue;
+    svc.order = ++n;
+    if (renamed.has(svc.group)) svc.group = renamed.get(svc.group);
+  }
+  const hidden = new Set(Array.isArray(b.hidden) ? b.hidden : []);
+  for (const svc of config.services) svc.hidden = hidden.has(svc.id);
+  config.servicesLayout = { groups: plan.map((g) => g.key), columns: Object.fromEntries(plan.filter((g) => g.columns).map((g) => [g.key, g.columns])) };
 }
 
 // Proxmox VMs and containers, shown on the Services page (the Overview keeps the node health)
@@ -3590,7 +3647,7 @@ async function handleApi(req, res, url, session) {
 
   if (p === '/api/services' && m === 'GET') {
     if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
-    return sendJson(res, 200, { ...servicesPayload(), loggedIn: Boolean(session), title: config.settings.dashboard.title });
+    return sendJson(res, 200, { ...servicesPayload(Boolean(session)), loggedIn: Boolean(session), title: config.settings.dashboard.title });
   }
 
   if (!session) return sendError(res, 401, 'Login required');
@@ -3873,6 +3930,12 @@ async function handleApi(req, res, url, session) {
     log(`Service added: ${svc.name}`);
     pollService(svc);
     return sendJson(res, 201, { service: publicService(svc), note });
+  }
+  if (p === '/api/admin/services/layout' && m === 'PUT') {
+    saveServicesLayout(await readBody(req));
+    saveConfig();
+    log('Services layout updated');
+    return sendJson(res, 200, { ...servicesPayload(true), loggedIn: true, title: config.settings.dashboard.title });
   }
   if (p === '/api/admin/services/order' && m === 'PUT') {
     const { ids } = await readBody(req);
@@ -5019,6 +5082,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     devices: arr(c.devices),
     services,
     icons: arr(c.icons),
+    servicesLayout: Array.isArray(c.servicesLayout?.groups) ? { groups: c.servicesLayout.groups.filter((k) => typeof k === 'string').slice(0, 200), columns: c.servicesLayout.columns || {} } : null,
     backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
     alerts: normalizeAlerts(c.alerts, channels),
   };

@@ -21,6 +21,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
 - **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down; response time on hover) and up to 4 numbers from the app.
   - Proxmox **VMs and containers** are listed here too, with CPU, memory and uptime. The Overview keeps each node's health and links here.
+  - **Customize** (as admin): drag services between groups and groups up or down, rename groups, set the number of columns per group, and hide services. Keyboard: focus a service and use the arrow keys.
   - 28 integrations: Jellyfin, Emby, Plex, Tautulli, Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, Overseerr/Jellyseerr, qBittorrent, Transmission, SABnzbd, Pi-hole (v5/v6), AdGuard Home, Nginx Proxy Manager, Traefik, Home Assistant, Nextcloud, Immich, Paperless-ngx, Uptime Kuma, Grafana, Portainer, Speedtest Tracker, Prometheus, authentik, plus **Custom JSON API** for anything else.
   - Icons come from the [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) library (downloaded once by the server and served locally) or are uploaded.
 - **Docs** tab (always requires login, even with a public dashboard), edited in place:

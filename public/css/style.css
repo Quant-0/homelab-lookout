@@ -849,6 +849,26 @@ a.svc-card:hover { border-color: var(--accent); }
 .svc-stat .v { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .svc-stat .l { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .svc-error { color: var(--critical); margin: 0; overflow-wrap: anywhere; }
+/* Customize */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.svc-grid.fixed-cols { grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); }
+.svc-group.editing { padding: 10px 12px 14px; border: 1px dashed var(--border); border-radius: 14px; background: color-mix(in srgb, var(--surface) 40%, transparent); }
+.svc-group-edit { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.svc-group-edit h2 { margin: 0; flex: 1; }
+.svc-group-edit .group-name { flex: 1; max-width: 280px; font-weight: 600; }
+.svc-group-edit select { width: auto; }
+.group-grip { cursor: grab; touch-action: none; padding: 4px 8px; letter-spacing: -2px; font-weight: 700; color: var(--text-2); }
+.svc-card.editable { cursor: grab; touch-action: none; user-select: none; position: relative; }
+.svc-card.editable .svc-head { padding-right: 24px; }
+.svc-card.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.svc-hide { position: absolute; top: 6px; right: 6px; padding: 0 7px; line-height: 22px; font-size: 15px; border-radius: 6px; }
+.svc-group.editing .svc-grid:not(.vm-grid):empty { min-height: 72px; border: 2px dashed var(--border); border-radius: 12px; display: grid; place-items: center; }
+.svc-group.editing .svc-grid:not(.vm-grid):empty::before { content: 'Drop services here'; color: var(--muted); font-size: 13px; }
+.svc-group.editing .vm-grid { opacity: 0.6; }
+.drag-ghost { position: fixed !important; z-index: 60; pointer-events: none; margin: 0; opacity: 0.95; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); overflow: hidden; }
+.svc-placeholder, .group-placeholder { border: 2px dashed var(--accent); background: var(--accent-wash); border-radius: 12px; }
+.group-placeholder { margin-bottom: 26px; }
+@media (max-width: 720px) { .svc-grid.fixed-cols { grid-template-columns: 1fr; } }
 .svc-group > h2 .count { font-size: 13px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
 .vm-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .vm-card { gap: 6px; padding: 10px 12px; }
