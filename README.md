@@ -33,7 +33,13 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw; service response times.
   - Stored in `history.json` in the data directory: 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. That's roughly 75 kB per graph once full. Graphs for removed devices are dropped after 30 days.
   - Only numbers are kept (no names or addresses). The graphs follow the dashboard's visibility: they need login unless the dashboard is public.
-- **Admin** is organised in tabs: Devices, Services, Power & cost, Dashboard, Appearance, Backup, Account.
+- **Alerts** (Admin → Alerts): messages to **ntfy**, **Telegram**, **Discord** and **e-mail (SMTP)**. You can add several channels of each kind and tick which alerts go to which channel.
+  - Alerts: device offline, service down, hardware fault (PSUs, fans, system health), storage problem (degraded pools, failing disks), high temperature, storage almost full, TrueNAS alerts, high power draw (off by default), and failed automatic backups.
+  - Each alert has a *wait* time, so short blips stay quiet. A message is also sent when the problem clears, and optionally a reminder while it lasts. Several alerts at once go out as one message per channel, with at most 30 messages per channel per hour.
+  - When a host stops answering, its other alerts (e.g. a degraded pool) are kept as they are, not reported as resolved. Deleting a device drops its alerts without a "resolved" message.
+  - Tokens, passwords and webhook URLs are encrypted and write-only, like device credentials, and bound to where they are sent: changing the server or user without retyping deletes them.
+  - E-mail uses TLS or STARTTLS before logging in (refused if the server doesn't offer it). ntfy and SMTP can pin a certificate fingerprint. Discord messages can't mention anyone.
+- **Admin** is organised in tabs: Devices, Services, Alerts, Power & cost, Dashboard, Appearance, Backup, Account.
 - **Power cost**:
   - Price plans: spot price per price area (NO1–NO5, from [hvakosterstrommen.no](https://www.hvakosterstrommen.no/strompris-api)), or Norgespris (40 øre/kWh excl. VAT, 50 incl.).
   - Optional supplier markup and strømstøtte.
@@ -114,7 +120,7 @@ Import the CA certificate once on each device to get rid of browser warnings. Do
 
 In Admin → Backup:
 
-- **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, docs, energy and graph history, and uploaded images.
+- **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, alert channels, docs, energy and graph history, and uploaded images.
 - **Restore** from such a file, or from a local copy. The current state is first saved as a local copy. The admin login and port settings are only restored if you tick them.
 - **Automatic backups:** daily at a time you choose, keeping the last N copies on this server plus on each destination:
   - **Folder:** mount a NAS share (NFS/SMB) on `/var/backups/homelab-dashboard`, the only path outside the data directory the service can write. Admin shows example `/etc/fstab` lines.
@@ -148,7 +154,7 @@ DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js
 ## Tests
 
 ```sh
-node test/run.js              # end-to-end API suites (~350 checks)
+node test/run.js              # end-to-end API suites (~400 checks)
 node test/run.js --ui         # also browser tests (needs Playwright)
 node test/run.js --verbose    # print every check
 ```

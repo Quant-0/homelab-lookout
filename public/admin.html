@@ -25,6 +25,7 @@
     <nav class="page-tabs" role="tablist" aria-label="Admin sections">
       <button type="button" role="tab" id="tabbtn-devices" aria-controls="tab-devices" aria-selected="false" tabindex="-1">Devices</button>
       <button type="button" role="tab" id="tabbtn-services" aria-controls="tab-services" aria-selected="false" tabindex="-1">Services</button>
+      <button type="button" role="tab" id="tabbtn-alerts" aria-controls="tab-alerts" aria-selected="false" tabindex="-1">Alerts</button>
       <button type="button" role="tab" id="tabbtn-power" aria-controls="tab-power" aria-selected="false" tabindex="-1">Power &amp; cost</button>
       <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard</button>
       <button type="button" role="tab" id="tabbtn-appearance" aria-controls="tab-appearance" aria-selected="false" tabindex="-1">Appearance</button>
@@ -148,6 +149,37 @@
       </div>
       <div class="svc-list" id="svc-list"></div>
       <p class="msg" id="svc-list-msg" role="status"></p>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-alerts" aria-labelledby="tabbtn-alerts" hidden>
+    <section class="card">
+      <div class="card-head">
+        <div class="title"><h3>Channels</h3><p class="hint">Where alerts are sent. Tokens, passwords and webhook URLs are stored encrypted and can't be read back.</p></div>
+        <label class="add-dest"><select id="al-add" aria-label="Add channel"></select></label>
+      </div>
+      <div id="al-channels"></div>
+      <div class="dest-editor hidden" id="al-editor"></div>
+    </section>
+    <section class="card">
+      <h3>What to send where</h3>
+      <p class="hint">Tick the channels each kind of alert goes to. "Wait" is how long a problem must last before it is sent, so short blips stay quiet.</p>
+      <form id="al-rules" autocomplete="off">
+        <div id="al-rules-table"></div>
+        <div class="form-grid">
+          <label class="check"><input type="checkbox" name="resolved"> Also send a message when an alert clears</label>
+          <label><span>Remind while still active</span><select name="repeatHours"></select></label>
+        </div>
+        <div class="form-actions"><button type="submit" class="primary">Save</button><span class="msg" id="al-rules-msg" role="status"></span></div>
+      </form>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <div class="title"><h3>Active now</h3></div>
+        <button type="button" id="al-refresh">Refresh</button>
+      </div>
+      <div id="al-active"></div>
+      <h4>Recent notifications</h4>
+      <div id="al-log"></div>
     </section>
     </div>
     <div class="tab-panel" role="tabpanel" id="tab-power" aria-labelledby="tabbtn-power" hidden>

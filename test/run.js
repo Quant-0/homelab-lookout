@@ -10,7 +10,8 @@
 // Needs: Node 18+, openssl (test certificate). Optional: snmpd from net-snmp (set SNMPD=path if it
 // is not in PATH) for the SNMPv3 suite, which is skipped otherwise.
 // Uses ports 18080 (dashboard), 18444-18448 (HTTPS/backup suites), 18443 (device mock), 18090 (service
-// mock), 18022 (sshd for the rsync test), 16161/udp (snmpd). rsync tests need rsync and sshd.
+// mock), 18022 (sshd for the rsync test), 16161/udp (snmpd), 18449-18452, 18025, 18026 and 18465 (alert
+// mocks). rsync tests need rsync and sshd.
 
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -101,10 +102,10 @@ function runSuite(file, env) {
 }
 
 async function main() {
-  for (const port of [PORT, 18022, 18443, 18444, 18445, 18446, 18447, 18448, 18090]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use (a leftover test process?)`);
+  for (const port of [PORT, 18022, 18443, 18444, 18445, 18446, 18447, 18448, 18449, 18450, 18451, 18452, 18090, 18025, 18026, 18465]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use (a leftover test process?)`);
 
   // Test certificate for the HTTPS device mock (pinned by the tests)
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem'), '-days', '7', '-subj', '/CN=mock-device'], { stdio: 'ignore' });
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem'), '-days', '7', '-subj', '/CN=mock-device', '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
   const fp = execFileSync('openssl', ['x509', '-in', path.join(tmp, 'cert.pem'), '-noout', '-fingerprint', '-sha256']).toString().split('=')[1].trim();
   start(process.execPath, ['test/mocks/devices.js'], { MOCK_CERT_DIR: tmp }, 'device mock');
 
@@ -127,7 +128,7 @@ async function main() {
   }
   await sleep(1200);
 
-  const env = { BASE_URL, MOCK_FP: fp };
+  const env = { BASE_URL, MOCK_FP: fp, MOCK_CERT_DIR: tmp };
   const backupBase = path.join(tmp, 'backup-base'); // stands in for /var/backups/homelab-dashboard
   fs.mkdirSync(backupBase, { mode: 0o700 });
   const suites = [
@@ -139,6 +140,8 @@ async function main() {
     { file: 'test/services.test.js', fresh: true },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
+    // the alert mocks use the device mock's certificate, trusted here like a public CA would be
+    { file: 'test/alerts.test.js', fresh: true, env: { NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), TELEGRAM_API_URL: 'https://127.0.0.1:18449', DISCORD_WEBHOOK_HOSTS: '127.0.0.1:18449' } },
   ];
   if (args.has('--ui')) {
     let playwright = true;

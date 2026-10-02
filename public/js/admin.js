@@ -1010,6 +1010,299 @@ $('web-form').addEventListener('submit', async (ev) => {
 });
 
 // ---------------------------------------------------------------------------
+// Alerts
+
+let al = null; // status from the server
+let chanDraft = null; // channel being edited
+let rulesDraft = null;
+
+async function loadAlerts() {
+  try {
+    al = await api('GET', '/api/admin/alerts');
+    renderAlerts();
+  } catch (e) {
+    showMsg('al-rules-msg', e.message, false);
+  }
+}
+
+const chanSummary = (c) => (c.type === 'ntfy' ? `${c.url.replace(/^https:\/\//, '')}/${c.topic}`
+  : c.type === 'telegram' ? `chat ${c.chatId}`
+    : c.type === 'discord' ? (c.hasSecret ? 'webhook set' : 'no webhook')
+      : `to ${c.to.join(', ')} via ${c.host}`);
+
+function renderAlerts() {
+  $('al-add').replaceChildren(el('option', { value: '', text: 'Add channel…' }), ...Object.entries(al.channelTypes).map(([k, label]) => el('option', { value: k, text: label })));
+  $('al-channels').replaceChildren(...(al.channels.length ? al.channels.map((c) => {
+    const result = el('span', { class: 'small' });
+    const last = c.last;
+    return el('div', { class: `svc-row${chanDraft?.id === c.id ? ' selected' : ''}` },
+      el('span', { class: `led ${!c.enabled ? 'off' : last ? (last.ok ? 'good' : 'critical') : 'off'}`, 'aria-hidden': 'true' }),
+      el('div', { class: 'device-main' },
+        el('strong', { text: c.name }),
+        el('span', { class: 'small muted', text: `${al.channelTypes[c.type]} · ${chanSummary(c)}${c.enabled ? '' : ' · paused'}` }),
+        last && !last.ok ? el('span', { class: 'small msg error', text: `Last send failed: ${last.error}` }) : null,
+        result),
+      el('span'),
+      el('span', { class: 'svc-row-actions' },
+        el('button', { type: 'button', text: 'Test', onclick: () => testChannel(c, result) }),
+        el('button', { type: 'button', text: 'Edit', onclick: () => openChannel(c) })));
+  }) : [el('p', { class: 'small muted', text: 'No channels yet: alerts are only listed on this page.' })]));
+  renderRules();
+  renderAlertLists();
+}
+
+function numField(label, unit, value, min, max, onChange, aria) {
+  const n = el('input', { type: 'number', min, max, step: 1, value, 'aria-label': aria });
+  n.addEventListener('input', () => onChange(Number(n.value)));
+  return el('label', { class: 'inline-num' }, el('span', { text: label }), n, unit ? el('span', { class: 'muted', text: unit }) : null);
+}
+
+function renderRules() {
+  rulesDraft = structuredClone(al.rules);
+  const f = $('al-rules').elements;
+  f.resolved.checked = al.settings.resolved;
+  f.repeatHours.replaceChildren(...al.repeatOptions.map((h) => el('option', { value: h, text: h ? `Every ${h} h` : 'Never' })));
+  f.repeatHours.value = String(al.settings.repeatHours);
+  const chans = al.channels;
+  const rows = Object.entries(al.types).map(([k, t]) => {
+    const r = rulesDraft[k];
+    const on = el('input', { type: 'checkbox', checked: r.enabled, 'aria-label': `${t.label}: on` });
+    on.addEventListener('change', () => (r.enabled = on.checked));
+    const settings = [];
+    if (!t.event) settings.push(numField('Wait', 'min', r.delay, 0, 1440, (v) => (r.delay = v), `${t.label}: minutes to wait`));
+    for (const [p, d] of Object.entries(t.params)) {
+      if (d.type === 'bool') {
+        const cb = el('input', { type: 'checkbox', checked: r[p] });
+        cb.addEventListener('change', () => (r[p] = cb.checked));
+        settings.push(el('label', { class: 'check' }, cb, ` ${d.label}`));
+      } else settings.push(numField(d.label, d.unit, r[p], d.min, d.max, (v) => (r[p] = v), `${t.label}: ${d.label}`));
+    }
+    return el('tr', null,
+      el('td', null, el('strong', { text: t.label }), el('div', { class: 'small muted', text: t.hint })),
+      el('td', { class: 'c', 'data-label': 'On' }, on),
+      el('td', null, el('div', { class: 'rule-settings' }, settings.length ? settings : el('span', { class: 'muted', text: '–' }))),
+      chans.length
+        ? chans.map((c) => {
+          const cb = el('input', { type: 'checkbox', checked: r.channels.includes(c.id), 'aria-label': `Send “${t.label}” to ${c.name}` });
+          cb.addEventListener('change', () => (r.channels = cb.checked ? [...r.channels, c.id] : r.channels.filter((x) => x !== c.id)));
+          return el('td', { class: 'c', 'data-label': c.name }, cb);
+        })
+        : k === 'offline' ? el('td', { class: 'small muted', rowspan: Object.keys(al.types).length, text: 'Add a channel first' }) : null);
+  });
+  $('al-rules-table').replaceChildren(el('div', { class: 'table-wrap' }, el('table', { class: 'rules' },
+    el('thead', null, el('tr', null, el('th', { text: 'Alert' }), el('th', { class: 'c', text: 'On' }), el('th', { text: 'Settings' }),
+      chans.length ? chans.map((c) => el('th', { class: 'c', text: c.name })) : el('th', { text: 'Send to' }))),
+    el('tbody', null, rows))));
+}
+
+const sevChip = (severity, event) => (event === 'resolved' ? status('Resolved', 'good')
+  : event === 'reminder' ? status('Reminder', severity === 'critical' ? 'critical' : 'warning')
+    : status(severity === 'critical' ? 'Critical' : 'Warning', severity === 'critical' ? 'critical' : 'warning'));
+
+function renderAlertLists() {
+  $('al-active').replaceChildren(al.active.length
+    ? el('ul', { class: 'alert-list' }, al.active.map((a) => el('li', null,
+      sevChip(a.severity), ' ', el('strong', { text: a.title }),
+      el('div', { class: 'small muted', text: [a.detail, a.firedAt ? `since ${fmt.time(a.since)}` : `waiting before sending (started ${fmt.ago(a.since)})`].filter(Boolean).join(' · ') }))))
+    : el('p', { class: 'small' }, status('Nothing wrong right now', 'good')));
+  $('al-log').replaceChildren(al.log.length
+    ? el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, ['When', 'Alert', 'Sent to'].map((t) => el('th', { text: t })))),
+      el('tbody', null, al.log.slice(0, 30).map((e) => el('tr', null,
+        el('td', { class: 'small nowrap', text: fmt.time(e.at) }),
+        el('td', null, sevChip(e.severity, e.event), ' ', el('span', { text: e.title }), e.detail && e.event !== 'resolved' ? el('div', { class: 'small muted', text: e.detail }) : null),
+        el('td', null, e.sent.length ? e.sent.map((x) => [status(x.ok ? x.name : `${x.name}: ${x.error}`, x.ok ? 'good' : 'critical'), ' ']) : el('span', { class: 'small muted', text: 'No channel' })))))))
+    : el('p', { class: 'small muted', text: 'Nothing sent yet.' }));
+}
+
+async function testChannel(c, out) {
+  out.textContent = ' Sending…';
+  out.className = 'small muted';
+  try {
+    const r = await api('POST', `/api/admin/alerts/channels/${c.id}/test`, {});
+    out.textContent = r.ok ? 'Sent: check that it arrived' : r.error;
+    out.className = `small msg ${r.ok ? 'ok' : 'error'}`;
+  } catch (e) {
+    out.textContent = e.message;
+    out.className = 'small msg error';
+  }
+}
+
+$('al-rules').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  try {
+    al = await api('PUT', '/api/admin/alerts', { rules: rulesDraft, settings: { resolved: f.resolved.checked, repeatHours: Number(f.repeatHours.value) } });
+    renderAlerts();
+    showMsg('al-rules-msg', 'Saved', true);
+  } catch (e) {
+    showMsg('al-rules-msg', e.message, false);
+  }
+});
+
+$('al-refresh').addEventListener('click', loadAlerts);
+
+// --- channel editor ---
+
+$('al-add').addEventListener('change', (e) => {
+  const type = e.target.value;
+  e.target.value = '';
+  if (type) openChannel({ id: null, type, name: '', enabled: true, url: 'https://ntfy.sh', topic: '', auth: 'none', security: 'starttls', port: 587, tlsMode: 'verify', to: [] });
+});
+
+const randomTopic = () => `homelab-${Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 20)}`;
+
+function openChannel(c) {
+  chanDraft = { ...c, to: Array.isArray(c.to) ? c.to.join(', ') : c.to || '', secret: '' };
+  const box = $('al-editor');
+  box.classList.remove('hidden');
+  const fieldsBox = el('div', { class: 'form-grid two' });
+  const extra = el('div');
+  const fpBox = el('div', { class: 'fp-box hidden' });
+  const renderFields = () => {
+    const fields = [];
+    const input = (key, label, attrs = {}, hint = null, cls = null) => {
+      const n = el('input', { value: chanDraft[key] ?? '', spellcheck: 'false', autocomplete: 'off', ...attrs });
+      n.addEventListener('input', () => {
+        chanDraft[key] = attrs.type === 'number' ? Number(n.value) : n.value;
+        if (key === 'url') renderWarnings();
+      });
+      fields.push(el('label', { class: cls }, el('span', { text: label }), n, hint ? el('span', { class: 'hint', text: hint }) : null));
+      return n;
+    };
+    const select = (key, label, options, onChange) => {
+      const n = el('select', null, options.map(([v, t]) => el('option', { value: v, text: t })));
+      n.value = chanDraft[key];
+      n.addEventListener('change', () => {
+        chanDraft[key] = n.value;
+        if (onChange) onChange(n.value);
+        renderFields();
+      });
+      fields.push(el('label', null, el('span', { text: label }), n));
+    };
+    const secret = (label) => input('secret', label, { type: 'password', autocomplete: 'new-password', placeholder: c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set' }, null, c.type === 'discord' ? 'wide' : null);
+    const tlsFields = (fetchable) => {
+      select('tlsMode', 'TLS certificate check', [['verify', 'Verify with trusted CAs'], ['pin', 'Pin SHA-256 fingerprint']]);
+      if (chanDraft.tlsMode === 'pin') {
+        input('fingerprint', 'Fingerprint', { placeholder: 'AB:CD:…' });
+        if (fetchable) {
+          fields.push(el('div', { class: 'form-actions' }, el('button', { type: 'button', text: 'Fetch certificate', onclick: fetchFp })));
+        }
+      }
+    };
+    input('name', 'Name', { placeholder: { ntfy: 'Phone (ntfy)', telegram: 'Telegram', discord: 'Discord #homelab', email: 'E-mail' }[c.type] });
+    const en = el('input', { type: 'checkbox', checked: chanDraft.enabled });
+    en.addEventListener('change', () => (chanDraft.enabled = en.checked));
+    fields.push(el('label', { class: 'check' }, en, ' Enabled'));
+    if (c.type === 'ntfy') {
+      input('url', 'Server', { placeholder: 'https://ntfy.sh' }, 'ntfy.sh or your own server');
+      const topic = input('topic', 'Topic', { placeholder: 'homelab-…' });
+      fields.push(el('div', { class: 'form-actions' }, el('button', { type: 'button', text: 'Random topic name', onclick: () => { chanDraft.topic = randomTopic(); topic.value = chanDraft.topic; } })));
+      select('auth', 'Login', [['none', 'None'], ['token', 'Access token'], ['basic', 'User name and password']]);
+      if (chanDraft.auth === 'basic') input('username', 'User name');
+      if (chanDraft.auth !== 'none') secret(chanDraft.auth === 'basic' ? 'Password' : 'Access token');
+      if (/^https:/i.test(chanDraft.url || 'https:')) tlsFields(true);
+    }
+    if (c.type === 'telegram') {
+      secret('Bot token');
+      input('chatId', 'Chat ID', { placeholder: '123456789' });
+    }
+    if (c.type === 'discord') secret('Webhook URL');
+    if (c.type === 'email') {
+      input('host', 'SMTP server', { placeholder: 'smtp.gmail.com' });
+      select('security', 'Encryption', [['starttls', 'STARTTLS (usually port 587)'], ['tls', 'TLS (usually port 465)'], ['none', 'None (port 25, local relay without login)']], (v) => {
+        chanDraft.port = { starttls: 587, tls: 465, none: 25 }[v];
+        if (v === 'none') chanDraft.username = '';
+      });
+      input('port', 'Port', { type: 'number', min: 1, max: 65535 });
+      if (chanDraft.security !== 'none') {
+        input('username', 'User name', { placeholder: 'you@gmail.com' });
+        secret('Password');
+      }
+      input('from', 'From', { placeholder: 'homelab@example.com' });
+      input('to', 'To', { placeholder: 'you@example.com, other@example.com' }, 'Up to 10, separated by commas');
+      if (chanDraft.security !== 'none') tlsFields(chanDraft.security === 'tls');
+    }
+    fieldsBox.replaceChildren(...fields);
+    renderWarnings();
+  };
+  const renderWarnings = () => {
+    const notes = [];
+    if (c.type === 'ntfy') {
+      if (/^http:/i.test(chanDraft.url || '') && chanDraft.auth !== 'none') notes.push(el('p', { class: 'banner', text: 'This server uses http://, so the token or password is sent unencrypted. Use https:// if you can.' }));
+      if (/ntfy\.sh/i.test(chanDraft.url || '') && chanDraft.auth === 'none') notes.push(el('p', { class: 'hint', text: 'Anyone who knows a topic on ntfy.sh can read it: use a long random name (button above). Then subscribe to the same topic in the ntfy app.' }));
+    }
+    if (c.type === 'telegram') notes.push(el('details', { class: 'small' }, el('summary', { text: 'How to get a bot token and chat ID' }), el('ol', null,
+      el('li', { text: 'In Telegram, message @BotFather, send /newbot and copy the token it gives you.' }),
+      el('li', { text: 'Send any message to your new bot (or add it to a group).' }),
+      el('li', { text: 'Open https://api.telegram.org/bot<token>/getUpdates in your browser and copy "chat":{"id": …}. Group IDs start with -100.' }))));
+    if (c.type === 'discord') notes.push(el('p', { class: 'hint', text: 'In Discord: Server settings → Integrations → Webhooks → New webhook → Copy webhook URL. The URL is the secret.' }));
+    if (c.type === 'email') notes.push(el('p', { class: 'hint', text: 'Gmail: smtp.gmail.com, STARTTLS, port 587, with an app password (Google account → Security → App passwords).' }));
+    extra.replaceChildren(...notes);
+  };
+  const fetchFp = async () => {
+    fpBox.classList.remove('hidden');
+    fpBox.replaceChildren('Connecting…');
+    try {
+      const address = c.type === 'ntfy' ? (() => { const u = new URL(chanDraft.url); return `${u.hostname}:${u.port || 443}`; })() : `${chanDraft.host}:${chanDraft.port}`;
+      const r = await api('POST', '/api/admin/fingerprint', { type: 'idrac', address });
+      fpBox.replaceChildren(
+        el('div', null, el('strong', { text: 'SHA-256: ' }), el('code', { text: r.fingerprint })),
+        el('div', { class: 'small', text: `${r.subject || '–'} · issued by ${r.issuer || '–'}${r.caTrusted ? ' · trusted by system CAs' : ' · self-signed'}` }),
+        el('div', { class: 'form-actions' }, el('button', { type: 'button', text: 'Use this fingerprint', onclick: () => { chanDraft.fingerprint = r.fingerprint; renderFields(); fpBox.classList.add('hidden'); } })));
+    } catch (e) {
+      fpBox.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+    }
+  };
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const body = () => ({ ...chanDraft, to: String(chanDraft.to || '').split(/[\s,;]+/).filter(Boolean) });
+  box.replaceChildren(
+    el('h4', { text: `${c.id ? 'Edit' : 'New'} channel: ${al.channelTypes[c.type]}` }),
+    fieldsBox, fpBox, extra,
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: 'Save channel', onclick: async () => {
+        try {
+          const r = c.id ? await api('PUT', `/api/admin/alerts/channels/${c.id}`, body()) : await api('POST', '/api/admin/alerts/channels', body());
+          al = r.status;
+          if (r.note) alert(r.note);
+          closeChannel();
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      el('button', { type: 'button', text: 'Send test', onclick: async () => {
+        msg.textContent = 'Sending…';
+        msg.className = 'msg';
+        try {
+          const r = await api('POST', '/api/admin/alerts/test', { ...body(), id: c.id || undefined, type: c.type });
+          msg.textContent = r.ok ? 'Sent: check that it arrived' : r.error;
+          msg.className = `msg ${r.ok ? 'ok' : 'error'}`;
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      el('button', { type: 'button', text: 'Close', onclick: closeChannel }),
+      c.id ? el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: async () => {
+        if (!confirm(`Delete the channel ${c.name}? Alerts stop going there.`)) return;
+        al = await api('DELETE', `/api/admin/alerts/channels/${c.id}`);
+        closeChannel();
+      } }) : null,
+      msg));
+  renderFields();
+  renderAlerts();
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function closeChannel() {
+  chanDraft = null;
+  $('al-editor').classList.add('hidden');
+  $('al-editor').replaceChildren();
+  renderAlerts();
+}
+
+// ---------------------------------------------------------------------------
 // Backup
 
 let bk = null; // status from the server
@@ -1430,7 +1723,7 @@ $('ap-revert').addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // Tabs (remembered in the URL, e.g. /admin#devices)
 
-const TABS = ['devices', 'services', 'power', 'dashboard', 'appearance', 'backup', 'account'];
+const TABS = ['devices', 'services', 'alerts', 'power', 'dashboard', 'appearance', 'backup', 'account'];
 
 function showTab(name, focus) {
   if (name === 'hosts' || name === 'rack') name = 'devices'; // old links
@@ -1447,6 +1740,7 @@ function showTab(name, focus) {
   if (name === 'services') loadServices();
   if (name === 'dashboard') loadWeb();
   if (name === 'backup') loadBackup();
+  if (name === 'alerts') loadAlerts();
 }
 
 for (const t of TABS) $(`tabbtn-${t}`).addEventListener('click', () => showTab(t));

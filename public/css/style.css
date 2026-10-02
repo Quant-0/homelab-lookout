@@ -781,6 +781,32 @@ input[type="range"] { padding: 0; accent-color: var(--accent); }
   .view-tabs { order: 5; width: 100%; justify-content: center; }
 }
 
+/* ---------- Alerts ---------- */
+
+table.rules td { vertical-align: top; }
+table.rules .c { text-align: center; }
+table.rules td.c input { width: 18px; height: 18px; margin-top: 2px; }
+table.rules th.c { white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+table.rules td:first-child { min-width: 220px; }
+.rule-settings { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.inline-num { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; margin: 0; }
+.inline-num span { font-size: 12px; color: var(--text-2); }
+.inline-num input { width: 76px; padding: 4px 6px; }
+.alert-list { list-style: none; margin: 0; padding: 0; }
+.alert-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.alert-list li:last-child { border-bottom: 0; }
+.nowrap { white-space: nowrap; }
+@media (max-width: 720px) {
+  /* one block per alert, with the channel names next to their boxes */
+  table.rules thead { display: none; }
+  table.rules, table.rules tbody, table.rules tr, table.rules td { display: block; }
+  table.rules tr { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  table.rules td { padding: 3px 0; border: 0; min-width: 0; }
+  table.rules td:first-child { min-width: 0; }
+  table.rules td.c { display: inline-flex; flex-direction: row-reverse; align-items: center; gap: 6px; margin-right: 16px; text-align: left; }
+  table.rules td.c::before { content: attr(data-label); font-size: 13px; color: var(--text-2); }
+}
+
 /* ---------- History sparklines ---------- */
 
 .range-tabs { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); }

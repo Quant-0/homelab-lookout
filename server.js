@@ -312,6 +312,7 @@ function loadConfig() {
     services: Array.isArray(raw.services) ? raw.services : [],
     icons: Array.isArray(raw.icons) ? raw.icons : [], // [{ id, mime, bytes, source, addedAt }]
     backup: { ...structuredClone(DEFAULT_BACKUP), ...(raw.backup || {}), schedule: { ...DEFAULT_BACKUP.schedule, ...(raw.backup?.schedule || {}) } },
+    alerts: normalizeAlerts(raw.alerts),
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   // Every connection belongs to a device
@@ -749,10 +750,11 @@ function friendlyNetError(e) {
   return new UserError(map[e.code] || 'Connection failed' + (e.code ? ` (${e.code})` : ''));
 }
 
-function tlsConnect(target, { timeoutMs = 15000, pin = null, verify = true, alpn = ['http/1.1'] } = {}) {
+// With `socket`, upgrades an existing connection (SMTP STARTTLS) instead of opening one.
+function tlsConnect(target, { timeoutMs = 15000, pin = null, verify = true, alpn = ['http/1.1'], socket = null } = {}) {
   const { host, port } = splitAddress(target);
   return new Promise((resolve, reject) => {
-    const opts = { host, port, minVersion: 'TLSv1.2', rejectUnauthorized: verify && !pin, ALPNProtocols: alpn };
+    const opts = { host, port, minVersion: 'TLSv1.2', rejectUnauthorized: verify && !pin, ...(alpn ? { ALPNProtocols: alpn } : {}), ...(socket ? { socket } : {}) };
     if (!net.isIP(host)) opts.servername = host;
     const sock = tls.connect(opts);
     const timer = setTimeout(() => {
@@ -2307,6 +2309,7 @@ async function pollService(svc) {
     error: integ.error,
     updatedAt: Date.now(),
   });
+  evaluateAlerts().catch((e) => log('Alert check failed:', e.message));
 }
 
 function forgetService(id) {
@@ -2740,6 +2743,7 @@ async function pollHost(h) {
   } else {
     results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null });
   }
+  evaluateAlerts().catch((e) => log('Alert check failed:', e.message));
 }
 
 async function pollAll() {
@@ -3676,6 +3680,7 @@ async function handleApi(req, res, url, session) {
       if (dev && !dev.discovered && dev.location === 'none' && !deviceHosts(dev).length) config.devices = config.devices.filter((d) => d !== dev);
       saveConfig();
       forgetHost(old.id);
+      recheckAlerts();
       log(`Host removed: ${old.type} ${old.name}`);
       return sendJson(res, 200, { ok: true });
     }
@@ -3751,6 +3756,7 @@ async function handleApi(req, res, url, session) {
         // Would be re-created by the next UniFi update, so it is hidden instead
         dev.hidden = true;
         saveConfig();
+        recheckAlerts();
         return sendJson(res, 200, { hidden: true });
       }
       const removed = deviceHosts(dev);
@@ -3758,6 +3764,7 @@ async function handleApi(req, res, url, session) {
       config.devices = config.devices.filter((d) => d !== dev);
       saveConfig();
       removed.forEach((h) => forgetHost(h.id));
+      recheckAlerts();
       log(`Device removed: ${dev.name}`);
       return sendJson(res, 200, { ok: true });
     }
@@ -3894,6 +3901,7 @@ async function handleApi(req, res, url, session) {
       pruneIcons();
       saveConfig();
       forgetService(old.id);
+      recheckAlerts();
       log(`Service removed: ${old.name}`);
       return sendJson(res, 200, { ok: true });
     }
@@ -3973,6 +3981,84 @@ async function handleApi(req, res, url, session) {
   }
 
   // --- Backup ---
+  // --- Alerts ---
+  if (p === '/api/admin/alerts' && m === 'GET') return sendJson(res, 200, alertsStatus());
+  if (p === '/api/admin/alerts' && m === 'PUT') {
+    const b = await readBody(req);
+    const ids = new Set(config.alerts.channels.map((c) => c.id));
+    const rules = Object.fromEntries(Object.keys(ALERT_TYPES).map((k) => [k, validateRule(k, b.rules?.[k] ?? config.alerts.rules[k], ids)]));
+    const repeatHours = Number(b.settings?.repeatHours ?? 0);
+    if (!REPEAT_HOURS.includes(repeatHours)) throw new UserError('Invalid reminder interval');
+    config.alerts = { ...config.alerts, rules, settings: { resolved: b.settings?.resolved !== false, repeatHours } };
+    saveConfig();
+    recheckAlerts();
+    log('Alert rules updated');
+    return sendJson(res, 200, alertsStatus());
+  }
+  if (p === '/api/admin/alerts/test' && m === 'POST') {
+    // Test before saving: with a newly typed secret, or the stored one if it would go to the same place
+    const b = await readBody(req);
+    const old = b.id ? config.alerts.channels.find((c) => c.id === b.id) : null;
+    if (b.id && !old) throw Object.assign(new UserError('Channel not found'), { status: 404 });
+    const c = { id: old?.id || 'new', ...validateChannel({ ...b, type: old?.type || b.type }) };
+    let secret = channelSecret(c, b.secret);
+    if (!secret && channelNeedsSecret(c)) {
+      if (!old?.secret) throw new UserError('Enter the token, password or webhook URL to test');
+      if (!sameChannelIdentity(old, c)) throw new UserError('The server, user or certificate changed: enter the password or token again to test');
+      secret = decryptSecret(channelHost(old));
+    }
+    return sendJson(res, 200, await sendToChannel({ ...c, id: null }, testMessage(), { secret, rateLimit: false }));
+  }
+  if (p === '/api/admin/alerts/channels' && m === 'POST') {
+    const b = await readBody(req);
+    if (config.alerts.channels.length >= MAX_CHANNELS) throw new UserError(`At most ${MAX_CHANNELS} channels`);
+    const c = { id: crypto.randomUUID(), ...validateChannel(b), secret: null };
+    const secret = channelSecret(c, b.secret);
+    if (channelNeedsSecret(c) && !secret) throw new UserError('Enter the token, password or webhook URL');
+    if (secret) c.secret = encryptSecret(channelHost(c), secret);
+    config.alerts.channels.push(c);
+    for (const r of Object.values(config.alerts.rules)) if (r.enabled) r.channels.push(c.id); // adjust per alert in the table
+    saveConfig();
+    log(`Alert channel added: ${c.name} (${c.type})`);
+    return sendJson(res, 201, { channel: publicChannel(c), status: alertsStatus() });
+  }
+  const ac = p.match(/^\/api\/admin\/alerts\/channels\/([0-9a-f-]{36})(\/test)?$/);
+  if (ac) {
+    const old = config.alerts.channels.find((c) => c.id === ac[1]);
+    if (!old) throw Object.assign(new UserError('Channel not found'), { status: 404 });
+    if (ac[2] && m === 'POST') {
+      const r = await sendToChannel(old, testMessage(), { rateLimit: false });
+      saveAlertState();
+      return sendJson(res, 200, r);
+    }
+    if (!ac[2] && m === 'PUT') {
+      const b = await readBody(req);
+      const next = { ...old, ...validateChannel({ ...b, type: old.type }) };
+      const secret = channelSecret(next, b.secret);
+      let note = null;
+      if (secret) next.secret = encryptSecret(channelHost(next), secret);
+      else if (!channelNeedsSecret(next)) next.secret = null;
+      else if (old.secret && !sameChannelIdentity(old, next)) {
+        next.secret = null;
+        note = 'The server, user or certificate changed, so the stored password or token was deleted. Enter it again.';
+      }
+      config.alerts.channels = config.alerts.channels.map((c) => (c.id === old.id ? next : c));
+      saveConfig();
+      log(`Alert channel updated: ${next.name}`);
+      return sendJson(res, 200, { channel: publicChannel(next), note, status: alertsStatus() });
+    }
+    if (!ac[2] && m === 'DELETE') {
+      config.alerts.channels = config.alerts.channels.filter((c) => c.id !== old.id);
+      for (const r of Object.values(config.alerts.rules)) r.channels = r.channels.filter((id) => id !== old.id);
+      delete alertState.channels[old.id];
+      alertsDirty = true;
+      saveConfig();
+      saveAlertState();
+      log(`Alert channel deleted: ${old.name}`);
+      return sendJson(res, 200, alertsStatus());
+    }
+  }
+
   if (p === '/api/admin/backup' && m === 'GET') return sendJson(res, 200, backupStatus());
   if (p === '/api/admin/backup/settings' && m === 'PUT') {
     const b = await readBody(req);
@@ -4238,6 +4324,549 @@ async function handle(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Alerts
+//
+// After each poll the current problems ("conditions") are compared with the active alerts. A
+// condition that lasts longer than its rule's delay is sent to the channels chosen for that rule,
+// and again when it clears. Channels: ntfy, Telegram, Discord webhooks and e-mail (SMTP). Their
+// tokens and passwords are encrypted like device credentials, bound to where they are sent, and
+// never returned by the API. Hosts without fresh data keep their alerts as they are, so a NAS that
+// stops answering doesn't "resolve" its degraded pool.
+
+const ALERTS_FILE = path.join(DATA_DIR, 'alerts.json');
+const TELEGRAM_API = process.env.TELEGRAM_API_URL || 'https://api.telegram.org'; // overridable for the tests
+const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com', ...String(process.env.DISCORD_WEBHOOK_HOSTS || '').split(',').filter(Boolean)];
+const CHANNEL_TYPES = { ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)' };
+const ALERT_TYPES = {
+  offline: { label: 'Device offline', hint: 'A connection stops answering, a Proxmox node goes offline or a UniFi device disconnects.', delay: 5 },
+  service: { label: 'Service down', hint: 'A service status check fails.', delay: 5 },
+  hardware: { label: 'Hardware fault', hint: 'Power supplies, fans and system health (iDRAC, Synology).', delay: 0 },
+  storage: { label: 'Storage problem', hint: 'Degraded or crashed pools and failing disks.', delay: 0 },
+  temperature: {
+    label: 'High temperature',
+    hint: 'iDRAC sensors use their own warning limits; other sensors use these.',
+    delay: 5,
+    params: { diskC: { label: 'Disks at', unit: '°C', min: 30, max: 90, def: 55 }, otherC: { label: 'Other sensors at', unit: '°C', min: 30, max: 120, def: 80 } },
+  },
+  space: { label: 'Storage almost full', hint: 'A pool or volume is fuller than the limit.', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
+  nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
+  power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
+  backup: { label: 'Backup failed', hint: 'An automatic backup or one of its destinations failed.', delay: null },
+};
+const SEVERITY_RANK = { warning: 1, critical: 2 };
+const REPEAT_HOURS = [0, 1, 4, 12, 24];
+const MAX_CHANNELS = 20;
+const CHANNEL_RATE = 30; // messages per channel per hour
+const EMAIL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+
+function validateRule(type, b, channelIds) {
+  const t = ALERT_TYPES[type];
+  const out = {
+    enabled: b?.enabled === true,
+    delay: t.delay === null ? null : num(b?.delay ?? t.delay, 0, 1440, `${t.label}: delay`, { int: true }),
+    channels: [...new Set((Array.isArray(b?.channels) ? b.channels : []).filter((id) => channelIds.has(id)))],
+  };
+  for (const [k, d] of Object.entries(t.params || {})) out[k] = d.type === 'bool' ? b?.[k] === true : num(b?.[k] ?? d.def, d.min, d.max, `${t.label}: ${d.label.toLowerCase()}`, { int: true });
+  return out;
+}
+
+function defaultRule(type) {
+  const t = ALERT_TYPES[type];
+  return validateRule(type, { enabled: !t.off }, new Set());
+}
+
+// From the config file or a backup: unknown or broken entries fall back to the defaults
+function normalizeAlerts(raw, channels = Array.isArray(raw?.channels) ? raw.channels.filter((c) => UUID.test(c?.id) && CHANNEL_TYPES[c.type]) : []) {
+  const ids = new Set(channels.map((c) => c.id));
+  const rules = {};
+  for (const k of Object.keys(ALERT_TYPES)) {
+    try {
+      rules[k] = raw?.rules?.[k] ? validateRule(k, raw.rules[k], ids) : defaultRule(k);
+    } catch {
+      rules[k] = defaultRule(k);
+    }
+  }
+  const rh = Number(raw?.settings?.repeatHours);
+  return { channels, rules, settings: { resolved: raw?.settings?.resolved !== false, repeatHours: REPEAT_HOURS.includes(rh) ? rh : 0 } };
+}
+
+function validateChannel(b) {
+  const type = b.type;
+  if (!CHANNEL_TYPES[type]) throw new UserError('Unknown channel type');
+  const out = { type, name: str(b.name, 48, 'Name') || CHANNEL_TYPES[type], enabled: b.enabled !== false };
+  if (type === 'ntfy') {
+    const u = parseServiceUrl(str(b.url, 300, 'Server') || 'https://ntfy.sh');
+    out.url = u.href;
+    out.topic = str(b.topic, 64, 'Topic', { required: true });
+    if (!/^[A-Za-z0-9_-]+$/.test(out.topic)) throw new UserError('Topic: letters, digits, - and _ only');
+    out.auth = ['token', 'basic'].includes(b.auth) ? b.auth : 'none';
+    out.username = out.auth === 'basic' ? str(b.username, 64, 'User name', { required: true }) : '';
+    out.tlsMode = u.https && b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+  }
+  if (type === 'telegram') {
+    out.chatId = str(b.chatId, 40, 'Chat ID', { required: true });
+    if (!/^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/.test(out.chatId)) throw new UserError('Chat ID: a number (e.g. 123456789 or -100…) or @channelname');
+  }
+  if (type === 'email') {
+    out.host = str(b.host, 253, 'SMTP server', { required: true });
+    if (!net.isIP(out.host) && !/^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(out.host)) throw new UserError('Invalid SMTP server');
+    out.security = ['tls', 'starttls', 'none'].includes(b.security) ? b.security : 'starttls';
+    out.port = num(b.port || { tls: 465, starttls: 587, none: 25 }[out.security], 1, 65535, 'Port', { int: true });
+    out.username = str(b.username, 254, 'User name');
+    if (out.security === 'none' && out.username) throw new UserError('Logging in needs TLS or STARTTLS, so the password is never sent unencrypted');
+    out.from = str(b.from, 254, 'From', { required: true });
+    out.to = [...new Set((Array.isArray(b.to) ? b.to : String(b.to ?? '').split(/[\s,;]+/)).map((x) => String(x).trim()).filter(Boolean))];
+    if (!out.to.length || out.to.length > 10) throw new UserError('Enter 1 to 10 recipients');
+    for (const a of [out.from, ...out.to]) if (a.length > 254 || !EMAIL_RE.test(a)) throw new UserError(`Invalid e-mail address: ${a.slice(0, 80)}`);
+    out.tlsMode = out.security !== 'none' && b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+  }
+  return out;
+}
+
+function parseDiscordWebhook(s) {
+  let u = null;
+  try {
+    u = new URL(s);
+  } catch {
+    /* handled below */
+  }
+  if (!u || u.protocol !== 'https:' || !DISCORD_HOSTS.includes(u.host) || u.username || u.password || u.search || !/^\/api\/webhooks\/\d{5,25}\/[A-Za-z0-9_-]{20,100}$/.test(u.pathname))
+    throw new UserError('Paste the whole webhook URL (https://discord.com/api/webhooks/…)');
+  return { url: `https://${u.host}`, path: u.pathname };
+}
+
+const channelNeedsSecret = (c) => (c.type === 'ntfy' ? c.auth !== 'none' : c.type === 'email' ? Boolean(c.username) : true);
+
+function channelSecret(c, s) {
+  const v = validateSecret(s);
+  if (!v || !channelNeedsSecret(c)) return null;
+  if (c.type === 'telegram' && !/^\d{3,20}:[A-Za-z0-9_-]{20,100}$/.test(v)) throw new UserError('That does not look like a bot token (123456789:AA…)');
+  if (c.type === 'discord') parseDiscordWebhook(v);
+  return v;
+}
+
+// Where the secret is sent: changing any of this without re-entering it deletes the stored one
+function channelIdentity(c) {
+  const address = c.type === 'ntfy' ? c.url : c.type === 'email' ? `${c.security}://${c.host}:${c.port}` : c.type === 'telegram' ? TELEGRAM_API : 'discord';
+  const username = c.type === 'ntfy' ? `${c.auth}:${c.username || ''}` : c.type === 'email' ? c.username : '';
+  return { id: c.id, type: `alert:${c.type}`, address, username, tlsMode: c.tlsMode || '', fingerprint: c.fingerprint || '' };
+}
+const channelHost = (c) => ({ ...channelIdentity(c), secret: c.secret });
+const sameChannelIdentity = (a, b) => JSON.stringify(channelIdentity(a)) === JSON.stringify(channelIdentity(b));
+
+// --- Sending ---
+
+async function checkedSend(request, label, errorOf) {
+  const r = await request;
+  if (r.status >= 200 && r.status < 300) return;
+  const why = errorOf(r);
+  throw new UserError(`${label}: HTTP ${r.status}${why ? ` (${String(why).slice(0, 160)})` : ''}`);
+}
+
+const SEVERITY_ICON = { critical: '🔴', warning: '🟠', resolved: '✅', test: '🔔' };
+
+function sendNtfy(c, secret, m) {
+  const headers = {};
+  if (c.auth === 'token') headers.Authorization = `Bearer ${secret}`;
+  if (c.auth === 'basic') headers.Authorization = `Basic ${Buffer.from(`${c.username}:${secret}`).toString('base64')}`;
+  const body = JSON.stringify({
+    topic: c.topic,
+    title: `${m.site}: ${m.title}`.slice(0, 250),
+    message: m.text || m.title,
+    priority: { critical: 5, warning: 4 }[m.severity] || 3,
+    tags: [{ critical: 'rotating_light', warning: 'warning', resolved: 'white_check_mark' }[m.severity] || 'bell'],
+  });
+  return checkedSend(connRequest({ url: c.url, tlsMode: c.tlsMode, fingerprint: c.fingerprint }, '/', { method: 'POST', headers, body, full: true }), 'ntfy', (r) => r.json?.error);
+}
+
+function sendTelegram(c, token, m) {
+  const text = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}\n— ${m.site}`.trim().slice(0, 4000);
+  return checkedSend(connRequest({ url: TELEGRAM_API, tlsMode: 'verify' }, `/bot${token}/sendMessage`, {
+    method: 'POST', body: JSON.stringify({ chat_id: c.chatId, text, disable_web_page_preview: true }), full: true,
+  }), 'Telegram', (r) => r.json?.description);
+}
+
+function sendDiscord(c, webhook, m) {
+  const hook = parseDiscordWebhook(webhook);
+  const body = JSON.stringify({
+    username: m.site.slice(0, 80),
+    allowed_mentions: { parse: [] }, // names and messages from devices can't ping anyone
+    embeds: [{ title: m.title.slice(0, 256), description: m.text ? m.text.slice(0, 4000) : undefined, color: { critical: 0xd03b3b, warning: 0xfab219, resolved: 0x0ca30c }[m.severity] ?? 0x2a78d6, timestamp: new Date().toISOString() }],
+  });
+  return checkedSend(connRequest({ url: hook.url, tlsMode: 'verify' }, hook.path, { method: 'POST', body, full: true }), 'Discord', (r) => r.json?.message);
+}
+
+// RFC 2047 encoded words for non-ASCII header text, folded so each stays short
+function mimeHeader(s) {
+  const clean = String(s).replace(/[\r\n\t]+/g, ' ');
+  if (/^[\x20-\x7e]*$/.test(clean) && clean.length < 900) return clean;
+  const words = [];
+  let cur = '';
+  for (const ch of clean) {
+    if (Buffer.byteLength(cur + ch) > 45) {
+      words.push(cur);
+      cur = '';
+    }
+    cur += ch;
+  }
+  if (cur) words.push(cur);
+  return words.map((w) => `=?UTF-8?B?${Buffer.from(w).toString('base64')}?=`).join('\r\n ');
+}
+
+function emailMessage(c, m) {
+  const body = `${m.title}\n\n${m.text ? `${m.text}\n\n` : ''}— ${m.site}\n`.replace(/\r?\n/g, '\r\n');
+  return [
+    `From: ${mimeHeader(m.site)} <${c.from}>`,
+    `To: ${c.to.join(', ')}`,
+    `Subject: ${mimeHeader(`[${m.site}] ${m.title}`.slice(0, 200))}`,
+    `Date: ${new Date().toUTCString().replace(/GMT$/, '+0000')}`,
+    `Message-ID: <${crypto.randomUUID()}@homelab-dashboard>`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    'Auto-Submitted: auto-generated',
+    '',
+    Buffer.from(body).toString('base64').replace(/.{76}/g, '$&\r\n'),
+  ].join('\r\n');
+}
+
+// Minimal SMTP client: implicit TLS or STARTTLS (required, never downgraded), AUTH PLAIN/LOGIN.
+// The certificate (CA or pinned fingerprint) is checked before the login is sent.
+async function sendEmail(c, password, m) {
+  const address = net.isIPv6(c.host) ? `[${c.host}]:${c.port}` : `${c.host}:${c.port}`;
+  const pin = c.tlsMode === 'pin' ? c.fingerprint : null;
+  let sock = c.security === 'tls' ? await tlsConnect(address, { pin, verify: true, alpn: null }) : await plainConnect(c.host, c.port, 15000);
+  const lines = [];
+  let buf = '';
+  let failed = null;
+  let wake = null;
+  const onData = (d) => {
+    buf += d.toString('latin1');
+    for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+      lines.push(buf.slice(0, i).replace(/\r$/, ''));
+      buf = buf.slice(i + 1);
+    }
+    if (buf.length > 65536 || lines.length > 500) failed ||= new UserError('SMTP: reply too long');
+    wake?.();
+  };
+  const onError = (e) => {
+    failed ||= friendlyNetError(e);
+    wake?.();
+  };
+  const onClose = () => {
+    failed ||= new UserError('SMTP: the server closed the connection');
+    wake?.();
+  };
+  const attach = (s) => s.on('data', onData).on('error', onError).on('close', onClose);
+  const detach = (s) => s.off('data', onData).off('error', onError).off('close', onClose);
+  const reply = () => new Promise((resolve, reject) => {
+    wake = () => {
+      const end = lines.findIndex((l) => /^\d{3}( |$)/.test(l));
+      if (end >= 0) {
+        wake = null;
+        const all = lines.splice(0, end + 1);
+        return resolve({ code: Number(all[end].slice(0, 3)), text: all.map((l) => l.slice(4)).join('\n') });
+      }
+      if (failed) {
+        wake = null;
+        reject(failed);
+      }
+    };
+    wake();
+  });
+  const expect = async (prefix) => {
+    const r = await reply();
+    if (!String(r.code).startsWith(prefix)) throw new UserError(`SMTP: ${r.code} ${r.text.split('\n')[0].slice(0, 160)}`);
+    return r;
+  };
+  const cmd = (line, prefix) => {
+    sock.write(`${line}\r\n`);
+    return expect(prefix);
+  };
+  const helo = /^[A-Za-z0-9.-]{1,253}$/.test(os.hostname()) ? os.hostname() : 'homelab-dashboard';
+  try {
+    attach(sock);
+    await expect('2');
+    let ehlo = await cmd(`EHLO ${helo}`, '250');
+    if (c.security === 'starttls') {
+      if (!/^STARTTLS$/im.test(ehlo.text)) throw new UserError('The server does not offer STARTTLS; nothing was sent');
+      await cmd('STARTTLS', '220');
+      detach(sock);
+      sock = await tlsConnect(address, { pin, verify: true, alpn: null, socket: sock });
+      attach(sock);
+      ehlo = await cmd(`EHLO ${helo}`, '250');
+    }
+    if (c.username) {
+      const methods = (/^AUTH[ =](.*)$/im.exec(ehlo.text)?.[1] || '').toUpperCase().split(/\s+/);
+      if (methods.includes('PLAIN')) await cmd(`AUTH PLAIN ${Buffer.from(`\0${c.username}\0${password}`).toString('base64')}`, '235');
+      else if (methods.includes('LOGIN')) {
+        await cmd('AUTH LOGIN', '334');
+        await cmd(Buffer.from(c.username).toString('base64'), '334');
+        await cmd(Buffer.from(password).toString('base64'), '235');
+      } else throw new UserError('The server offers no supported login method (PLAIN or LOGIN)');
+    }
+    await cmd(`MAIL FROM:<${c.from}>`, '250');
+    for (const to of c.to) await cmd(`RCPT TO:<${to}>`, '25');
+    await cmd('DATA', '354');
+    await cmd(`${emailMessage(c, m).replace(/^\./gm, '..')}\r\n.`, '250');
+    sock.write('QUIT\r\n');
+  } finally {
+    detach(sock);
+    sock.on('error', () => {});
+    sock.end();
+    setTimeout(() => sock.destroy(), 2000).unref();
+  }
+}
+
+const CHANNEL_SENDERS = { ntfy: sendNtfy, telegram: sendTelegram, discord: sendDiscord, email: sendEmail };
+const channelSends = new Map(); // channel id -> send times in the last hour (rate limit)
+
+// `secret` overrides the stored one (testing a channel before it is saved)
+async function sendToChannel(c, m, { secret, rateLimit = true } = {}) {
+  const now = Date.now();
+  const recent = (channelSends.get(c.id) || []).filter((t) => now - t < 3600e3);
+  let plain = secret ?? null;
+  let res;
+  try {
+    if (rateLimit && recent.length >= CHANNEL_RATE) throw new UserError(`Skipped: more than ${CHANNEL_RATE} messages in the last hour`);
+    if (secret === undefined && channelNeedsSecret(c)) plain = c.secret ? decryptSecret(channelHost(c)) : null;
+    if (channelNeedsSecret(c) && !plain) throw new UserError('No token or password stored; edit the channel');
+    await withTimeout(CHANNEL_SENDERS[c.type](c, plain, m), 30000, 'Sending');
+    recent.push(now);
+    res = { ok: true };
+  } catch (e) {
+    res = { ok: false, error: safeErrorMessage(e instanceof UserError ? e : new UserError('Sending failed'), plain) };
+  }
+  if (c.id) {
+    channelSends.set(c.id, recent);
+    alertState.channels[c.id] = { at: now, ...res };
+    alertsDirty = true;
+  }
+  return res;
+}
+
+function duration(ms) {
+  const min = Math.max(1, Math.round(ms / 60000));
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 48 ? `${h} h${min % 60 ? ` ${min % 60} min` : ''}` : `${Math.floor(h / 24)} days`;
+}
+
+function alertMessage(events) {
+  const site = config.settings.dashboard.title;
+  const head = (e) => `${{ reminder: 'Still active: ', resolved: 'Resolved: ' }[e.event] || ''}${e.title}`;
+  if (events.length === 1) {
+    const e = events[0];
+    const text = e.event === 'resolved' ? `Cleared after ${duration(Date.now() - e.since)}.` : e.event === 'reminder' ? `Active for ${duration(Date.now() - e.since)}. ${e.detail || ''}` : e.detail || '';
+    return { site, severity: e.event === 'resolved' ? 'resolved' : e.severity, title: head(e), text: text.trim() };
+  }
+  const open = events.filter((e) => e.event !== 'resolved');
+  const resolved = events.length - open.length;
+  return {
+    site,
+    severity: open.some((e) => e.severity === 'critical') ? 'critical' : open.length ? 'warning' : 'resolved',
+    title: [open.length && `${open.length} alert${open.length === 1 ? '' : 's'}`, resolved && `${resolved} resolved`].filter(Boolean).join(', '),
+    text: events.slice(0, 20).map((e) => `• ${e.event === 'resolved' ? '' : `[${e.severity === 'critical' ? 'Critical' : 'Warning'}] `}${head(e)}${e.detail && e.event !== 'resolved' ? ` (${e.detail})` : ''}`).join('\n')
+      + (events.length > 20 ? `\n…and ${events.length - 20} more` : ''),
+  };
+}
+
+const testMessage = () => ({ site: config.settings.dashboard.title, severity: 'test', title: 'Test notification', text: `Alerts from ${config.settings.dashboard.title} will arrive here.` });
+
+// --- State and evaluation ---
+
+let alertState = { active: {}, log: [], channels: {} };
+let alertsDirty = false;
+let alertsRunning = false;
+
+function loadAlertState() {
+  const s = readJson(ALERTS_FILE, null);
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels) };
+}
+
+function saveAlertState() {
+  if (!alertsDirty) return;
+  writeJsonAtomic(ALERTS_FILE, alertState);
+  alertsDirty = false;
+}
+
+// Everything that is wrong right now: Map of key -> { type, severity, title, detail, owner, fromData }
+function alertConditions() {
+  const rules = config.alerts.rules;
+  const out = new Map();
+  const add = (type, id, severity, title, detail, owner, fromData = true, device = null) => {
+    if (rules[type]?.enabled) out.set(`${type}:${id}`, { type, severity, title: String(title).slice(0, 200), detail: String(detail || '').slice(0, 300), owner, fromData, device });
+  };
+  // Over a limit; once active it only clears below the limit minus a margin, so it doesn't flap
+  const over = (type, id, value, limit, margin) => typeof value === 'number' && (value >= limit || (Boolean(alertState.active[`${type}:${id}`]) && value > limit - margin));
+  const { temperature: temp, space } = rules;
+  const pct = (used, size) => (size ? (100 * used) / size : null);
+  for (const h of config.hosts) {
+    const r = results.get(h.id);
+    const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+    if (r?.ok === false) add('offline', h.id, 'critical', `${name}: ${HOST_TYPES[h.type].label} not answering`, r.error, h.id, false);
+    if (!r?.ok) continue;
+    const d = r.data;
+    const own = h.id;
+    if (h.type === 'idrac') {
+      let specific = false;
+      for (const p of d.psus) {
+        if (p.state === 'Absent' || !['Critical', 'Warning'].includes(p.health)) continue;
+        specific = true;
+        add('hardware', `${h.id}:psu:${p.name}`, p.health === 'Critical' ? 'critical' : 'warning', `${name}: ${p.name} ${p.health.toLowerCase()}`, 'Power supply', own);
+      }
+      for (const f of d.fans) {
+        if (!['Critical', 'Warning'].includes(f.health)) continue;
+        specific = true;
+        add('hardware', `${h.id}:fan:${f.name}`, f.health === 'Critical' ? 'critical' : 'warning', `${name}: ${f.name} ${f.health.toLowerCase()}`, f.rpm != null ? `${f.rpm} rpm` : 'Fan', own);
+      }
+      if (d.health === 'Critical' && !specific) add('hardware', `${h.id}:system`, 'critical', `${name}: iDRAC reports critical health`, '', own);
+      for (const t of d.temps) {
+        const limit = t.warn ?? temp.otherC;
+        if (over('temperature', `${h.id}:${t.name}`, t.celsius, limit, 3))
+          add('temperature', `${h.id}:${t.name}`, t.crit && t.celsius >= t.crit ? 'critical' : 'warning', `${name}: ${t.name} at ${t.celsius} °C`, `Limit ${limit} °C${t.crit ? `, critical at ${t.crit} °C` : ''}`, own);
+      }
+    } else if (h.type === 'proxmox') {
+      for (const n of d.nodes) if (n.status !== 'online') add('offline', `${h.id}:node:${n.name}`, 'critical', `Proxmox node ${n.name} is ${n.status || 'offline'}`, name, own);
+    } else if (h.type === 'truenas') {
+      for (const p of d.pools) {
+        if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, 'critical', `${name}: pool ${p.name} is ${p.status}`, p.detail || '', own);
+        const f = pct(p.allocated, p.size);
+        if (over('space', `${h.id}:${p.name}`, f, space.pct, 2)) add('space', `${h.id}:${p.name}`, 'warning', `${name}: pool ${p.name} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+      }
+      for (const a of d.alerts) {
+        const crit = ['CRITICAL', 'ERROR', 'ALERT', 'EMERGENCY'].includes(a.level);
+        if (crit || (rules.nas.warnings && a.level === 'WARNING')) add('nas', `${h.id}:${sha256hex(a.text).slice(0, 16)}`, crit ? 'critical' : 'warning', `${name}: TrueNAS ${a.level.toLowerCase()}`, a.text, own);
+      }
+    } else if (h.type === 'synology') {
+      const s = d.system;
+      if (s.status === 'Failed') add('hardware', `${h.id}:system`, 'critical', `${name}: system status failed`, '', own);
+      if (s.systemFan === 'Failed') add('hardware', `${h.id}:fan:system`, 'critical', `${name}: system fan failed`, '', own);
+      if (s.cpuFan === 'Failed') add('hardware', `${h.id}:fan:cpu`, 'critical', `${name}: CPU fan failed`, '', own);
+      if (s.powerStatus === 'Failed') add('hardware', `${h.id}:power`, 'critical', `${name}: power supply failed`, '', own);
+      if (over('temperature', `${h.id}:system`, s.temp, temp.otherC, 3)) add('temperature', `${h.id}:system`, 'warning', `${name}: system at ${s.temp} °C`, `Limit ${temp.otherC} °C`, own);
+      for (const x of d.disks) {
+        const crit = ['Critical', 'Failing'].includes(x.health) || x.status === 'Crashed';
+        if (crit || x.health === 'Warning') add('storage', `${h.id}:disk:${x.id}`, crit ? 'critical' : 'warning', `${name}: ${x.id} ${x.status === 'Crashed' ? 'crashed' : x.health.toLowerCase()}`, x.model || '', own);
+        if (over('temperature', `${h.id}:disk:${x.id}`, x.temp, temp.diskC, 3)) add('temperature', `${h.id}:disk:${x.id}`, 'warning', `${name}: ${x.id} at ${x.temp} °C`, `Limit ${temp.diskC} °C`, own);
+      }
+      for (const p of d.pools) if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, /Crashed/.test(p.status) ? 'critical' : 'warning', `${name}: ${p.name} is ${p.status}`, '', own);
+      for (const v of d.volumes) {
+        const f = pct(v.used, v.size);
+        if (over('space', `${h.id}:${v.name}`, f, space.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name.replace('/', '')} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+      }
+    } else if (h.type === 'unifi') {
+      for (const x of d.devices) {
+        const dev = config.devices.find((v) => v.unifi?.hostId === h.id && v.unifi.mac === x.mac);
+        if (dev?.hidden) continue; // deleted in Admin
+        const dn = dev?.name || x.name;
+        if (!x.online) add('offline', `${h.id}:${x.mac}`, 'critical', `${dn} is ${String(x.state || 'offline').toLowerCase()}`, 'Reported by UniFi', own, true, dev?.id);
+        const t = x.temps.length ? Math.max(...x.temps.map((v) => v.value)) : null;
+        if (over('temperature', `${h.id}:${x.mac}`, t, temp.otherC, 3)) add('temperature', `${h.id}:${x.mac}`, 'warning', `${dn} at ${t} °C`, `Limit ${temp.otherC} °C`, own, true, dev?.id);
+      }
+    }
+  }
+  for (const svc of config.services) {
+    const c = serviceResults.get(svc.id)?.check;
+    if (c && !c.up) add('service', svc.id, 'critical', `${svc.name} is down`, c.error || (c.code ? `HTTP ${c.code}` : ''), svc.id, false);
+  }
+  const w = measuredWatts().total;
+  if (over('power', 'total', w, rules.power.watts, rules.power.watts * 0.05)) add('power', 'total', 'warning', `Power draw ${Math.round(w)} W`, `Limit ${rules.power.watts} W`, null, false);
+  return out;
+}
+
+async function evaluateAlerts(now = Date.now()) {
+  if (alertsRunning) return; // the next poll catches up
+  alertsRunning = true;
+  try {
+    const cond = alertConditions();
+    const { rules, settings } = config.alerts;
+    const events = [];
+    for (const [key, a] of Object.entries(alertState.active)) {
+      if (cond.has(key)) continue;
+      // deleted (or hidden) things go away quietly instead of "resolving"
+      const exists = (!a.owner || config.hosts.some((h) => h.id === a.owner) || config.services.some((s) => s.id === a.owner))
+        && !(a.device && config.devices.find((d) => d.id === a.device)?.hidden);
+      if (exists && rules[a.type]?.enabled && a.fromData && !results.get(a.owner)?.ok) continue; // no fresh data: unknown
+      delete alertState.active[key];
+      alertsDirty = true;
+      if (exists && a.firedAt && rules[a.type]?.enabled && settings.resolved) events.push({ ...a, key, event: 'resolved' });
+    }
+    for (const [key, c] of cond) {
+      let a = alertState.active[key];
+      if (!a) {
+        a = alertState.active[key] = { ...c, since: now, firedAt: null, notifiedAt: null };
+        alertsDirty = true;
+      }
+      const escalated = a.firedAt && SEVERITY_RANK[c.severity] > SEVERITY_RANK[a.severity];
+      Object.assign(a, { severity: c.severity, detail: c.detail, owner: c.owner, fromData: c.fromData, device: c.device }, a.firedAt && !escalated ? {} : { title: c.title });
+      let event = null;
+      if (!a.firedAt && now - a.since >= (rules[c.type].delay || 0) * 60e3) event = 'fired';
+      else if (escalated) event = 'escalated';
+      else if (a.firedAt && settings.repeatHours && now - a.notifiedAt >= settings.repeatHours * 3600e3) event = 'reminder';
+      if (!event) continue;
+      if (event === 'fired') a.firedAt = now;
+      a.notifiedAt = now;
+      alertsDirty = true;
+      events.push({ ...a, key, event });
+    }
+    if (events.length) await deliverAlerts(events, now);
+  } finally {
+    alertsRunning = false;
+    saveAlertState();
+  }
+}
+
+const recheckAlerts = () => setImmediate(() => evaluateAlerts().catch((e) => log('Alert check failed:', e.message)));
+
+// One-off events (a failed backup): sent right away, nothing to resolve
+async function alertEvent(type, severity, title, detail) {
+  if (!config.alerts.rules[type]?.enabled) return;
+  const now = Date.now();
+  await deliverAlerts([{ type, key: `${type}:${now}`, severity, title, detail, since: now, event: 'fired' }], now);
+  saveAlertState();
+}
+
+// Several alerts for the same channel in one round go out as one message
+async function deliverAlerts(events, now) {
+  const entries = events.map((e) => ({ at: now, type: e.type, event: e.event, severity: e.severity, title: e.title, detail: e.detail || '', sent: [] }));
+  const groups = new Map();
+  events.forEach((e, i) => {
+    for (const id of config.alerts.rules[e.type]?.channels || []) {
+      const ch = config.alerts.channels.find((c) => c.id === id && c.enabled);
+      if (ch) groups.set(ch, [...(groups.get(ch) || []), i]);
+    }
+  });
+  await Promise.all([...groups].map(async ([ch, idx]) => {
+    const r = await sendToChannel(ch, alertMessage(idx.map((i) => events[i])));
+    for (const i of idx) entries[i].sent.push({ id: ch.id, name: ch.name, ok: r.ok, ...(r.ok ? {} : { error: r.error }) });
+  }));
+  for (const e of entries) log(`Alert ${e.event}: ${e.title}${e.sent.length ? ` → ${e.sent.map((s) => `${s.name} ${s.ok ? 'ok' : 'FAILED'}`).join(', ')}` : ' (no channel)'}`);
+  alertState.log = [...entries.reverse(), ...alertState.log].slice(0, 200);
+  alertsDirty = true;
+}
+
+const publicChannel = (c) => ({ ...c, secret: undefined, hasSecret: Boolean(c.secret), last: alertState.channels[c.id] || null });
+
+function alertsStatus() {
+  return {
+    types: Object.fromEntries(Object.entries(ALERT_TYPES).map(([k, t]) => [k, { label: t.label, hint: t.hint, event: t.delay === null, params: t.params || {} }])),
+    channelTypes: CHANNEL_TYPES,
+    channels: config.alerts.channels.map(publicChannel),
+    rules: config.alerts.rules,
+    settings: config.alerts.settings,
+    repeatOptions: REPEAT_HOURS,
+    active: Object.entries(alertState.active)
+      .map(([key, a]) => ({ key, type: a.type, severity: a.severity, title: a.title, detail: a.detail, since: a.since, firedAt: a.firedAt }))
+      .sort((a, b) => b.since - a.since),
+    log: alertState.log.slice(0, 100),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Backup and restore
 //
 // A backup is one file: settings, devices, connections, services, docs, energy history and
@@ -4302,6 +4931,7 @@ function backupBundle() {
         passphrasePlain: config.backup.passphrase ? secretOrNull(passHost()) : null,
         destinations: config.backup.destinations.map((d) => ({ ...d, secret: undefined, secretPlain: d.secret ? secretOrNull(destHost(d)) : null })),
       },
+      alerts: { ...config.alerts, channels: config.alerts.channels.map((c) => ({ ...c, secret: undefined, secretPlain: c.secret ? secretOrNull(channelHost(c)) : null })) },
     },
     docs,
     energy,
@@ -4354,6 +4984,15 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     if (secretPlain) out.secret = encryptSecret(destHost(out), secretPlain);
     return out;
   });
+  const channels = arr(c.alerts?.channels).filter((x) => UUID.test(x?.id)).flatMap(({ secretPlain, ...x }) => {
+    try {
+      const out = { id: x.id, ...validateChannel(x), secret: null };
+      if (secretPlain && channelNeedsSecret(out)) out.secret = encryptSecret(channelHost(out), secretPlain);
+      return [out];
+    } catch {
+      return []; // not valid in this version
+    }
+  });
   const keepServer = config.settings.server;
   config = {
     version: 2,
@@ -4366,6 +5005,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     services,
     icons: arr(c.icons),
     backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
+    alerts: normalizeAlerts(c.alerts, channels),
   };
   if (b.passphrasePlain) config.backup.passphrase = encryptSecret(passHost(), b.passphrasePlain);
   if (!server) config.settings.server = keepServer;
@@ -4633,6 +5273,11 @@ async function runBackup(trigger) {
     backupRunning = false;
     config.backup.history = [entry, ...config.backup.history].slice(0, 30);
     saveConfig();
+  }
+  const failed = entry.results.filter((x) => !x.ok);
+  if (trigger === 'scheduled' && (entry.error || failed.length)) {
+    alertEvent('backup', 'critical', entry.error ? 'Automatic backup failed' : 'Backup upload failed', entry.error || failed.map((x) => `${x.name}: ${x.error}`).join('; '))
+      .catch((e) => log('Alert failed:', e.message));
   }
   return entry;
 }
@@ -4917,6 +5562,7 @@ async function main() {
   loadConfig();
   loadEnergy();
   loadHistory();
+  loadAlertState();
   loadDocs();
   loadStatic();
   initAllowedHosts();
@@ -4941,6 +5587,7 @@ async function main() {
     try {
       saveEnergy();
       saveHistory();
+      saveAlertState();
     } finally {
       process.exit(0);
     }
