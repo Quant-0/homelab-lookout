@@ -92,7 +92,7 @@ The script:
 6. Asks for the admin password.
 7. Enables `homelab-dashboard.service`.
 
-Re-run it to deploy updates. Review the diff first: the installed code runs with access to your secrets.
+Re-run it to deploy updates (or allow deploys, below). Review the diff first: the installed code runs with access to your secrets.
 
 | Option | |
 |---|---|
@@ -100,8 +100,25 @@ Re-run it to deploy updates. Review the diff first: the installed code runs with
 | `--renew-cert` | Issue a new server certificate now. It is also renewed automatically when it has less than 30 days left, or when `--host` changes. |
 | `--low-ports` / `--no-low-ports` | Allow or disallow ports below 1024 (e.g. 443) |
 | `--reset-network` | Put HTTP/HTTPS back on the default ports if you locked yourself out |
+| `--allow-deploy USER` / `--no-allow-deploy` | Let USER deploy updates without you (see below), or remove that again |
 
 Logs: `journalctl -u homelab-dashboard`
+
+### Deploying updates without re-running the installer
+
+```sh
+sudo sh deploy/install.sh --host 192.168.1.140 --allow-deploy claude   # once
+sudo -n /usr/local/sbin/homelab-dashboard-deploy                       # then, as claude
+```
+
+`--allow-deploy` installs a root-owned deploy command and one sudoers line that lets that user run only this command, with no arguments. The command:
+
+- takes the **committed `main` branch** of the repository, never uncommitted files. git runs as the repository owner and only file contents are copied: symlinks and unusual paths abort the deploy;
+- replaces only `server.js` and `public/` in `/opt/homelab-dashboard`, and syntax-checks `server.js` as the service user first;
+- restarts the service and waits for it to listen. If it doesn't come up, the previous version is put back;
+- logs the commit to the journal (`journalctl -t homelab-dashboard-deploy`) and writes it to `/opt/homelab-dashboard/VERSION`.
+
+The systemd unit, config, key and certificates are never changed by it: the command says when `install.sh` is needed. Note what this permission means: whoever can deploy can change the code that holds your credentials. Today that's also true in practice whenever you run `install.sh` with new code.
 
 ### HTTPS and the local CA
 

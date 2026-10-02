@@ -4,12 +4,19 @@
 #
 #   sudo sh deploy/install.sh [--host IP] [--port N] [--allowed-hosts a,b] [--reset-admin]
 #                             [--renew-cert] [--low-ports | --no-low-ports] [--reset-network]
+#                             [--allow-deploy USER | --no-allow-deploy]
 #
 #   --port N         default HTTP port (8080). HTTPS defaults to 8443. Both can be changed in Admin.
 #   --renew-cert     issue a new server certificate now (it is also renewed automatically
 #                    30 days before it expires, and when --host changes)
 #   --low-ports      allow ports below 1024 (e.g. 443/80) by granting CAP_NET_BIND_SERVICE
 #   --reset-network  set HTTP/HTTPS back to the default ports (if you locked yourself out)
+#   --allow-deploy USER  let USER (who owns this repository) deploy updates without you:
+#                    installs /usr/local/sbin/homelab-dashboard-deploy and one sudoers line that
+#                    allows only that command. It deploys the committed main branch (server.js and
+#                    public/), restarts, and rolls back if the service doesn't start. Changes to the
+#                    unit, config or certificates still need install.sh.
+#   --no-allow-deploy    remove that permission again
 #
 # Review the code before running: whatever is installed runs with access to your secrets.
 set -eu
@@ -30,6 +37,8 @@ RESET_ADMIN=0
 RENEW_CERT=0
 LOW_PORTS=""
 RESET_NETWORK=0
+ALLOW_DEPLOY=""
+NO_ALLOW_DEPLOY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST=$2; shift 2 ;;
@@ -40,6 +49,8 @@ while [ $# -gt 0 ]; do
     --low-ports) LOW_PORTS=on; shift ;;
     --no-low-ports) LOW_PORTS=off; shift ;;
     --reset-network) RESET_NETWORK=1; shift ;;
+    --allow-deploy) ALLOW_DEPLOY=$2; shift 2 ;;
+    --no-allow-deploy) NO_ALLOW_DEPLOY=1; shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -65,11 +76,18 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
 fi
 
 # --- Application code: owned by root, read-only for the service ------------
-install -d -o root -g root -m 0755 "$APP_DIR" "$APP_DIR/public" "$APP_DIR/public/css" "$APP_DIR/public/js"
-install -o root -g root -m 0644 "$SRC_DIR/server.js" "$APP_DIR/server.js"
-for f in login.html dashboard.html admin.html services.html docs.html favicon.svg css/style.css js/common.js js/login.js js/layout.js js/rack.js js/dashboard.js js/admin.js js/services.js js/docs.js js/markdown.js; do
-  install -o root -g root -m 0644 "$SRC_DIR/public/$f" "$APP_DIR/public/$f"
+# Built next to the old version and swapped in, so removed files disappear too
+rm -rf "$APP_DIR.new"
+install -d -o root -g root -m 0755 "$APP_DIR.new"
+install -o root -g root -m 0644 "$SRC_DIR/server.js" "$APP_DIR.new/server.js"
+(cd "$SRC_DIR" && find public -type f) | while IFS= read -r f; do
+  install -D -o root -g root -m 0644 "$SRC_DIR/$f" "$APP_DIR.new/$f"
 done
+find "$APP_DIR.new" -type d -exec chmod 0755 {} +
+printf '%s (working tree)\n%s\n' "$(git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$APP_DIR.new/VERSION"
+rm -rf "$APP_DIR.prev"
+[ -d "$APP_DIR" ] && mv "$APP_DIR" "$APP_DIR.prev"
+mv "$APP_DIR.new" "$APP_DIR"
 
 # --- Config and key: root only. The key reaches the service via LoadCredential=
 install -d -o root -g root -m 0700 "$ETC_DIR"
@@ -183,6 +201,36 @@ elif [ "$LOW_PORTS" = off ]; then
   rm -f "$DROPIN_DIR/low-ports.conf"
 fi
 systemctl daemon-reload
+
+# --- Deploy permission (optional) --------------------------------------------
+DEPLOY_BIN=/usr/local/sbin/$SERVICE-deploy
+DEPLOY_SUDOERS=/etc/sudoers.d/$SERVICE-deploy
+DEPLOY_REPO=$SRC_DIR
+if [ "$NO_ALLOW_DEPLOY" = 1 ]; then
+  rm -f "$DEPLOY_SUDOERS" "$DEPLOY_BIN"
+  echo "Deploy permission removed"
+elif [ -z "$ALLOW_DEPLOY" ] && [ -f "$DEPLOY_BIN" ]; then
+  # refresh the installed script, keeping its user and repository
+  ALLOW_DEPLOY=$(sed -n 's/^DEPLOY_USER=//p' "$DEPLOY_BIN")
+  DEPLOY_REPO=$(sed -n 's/^REPO=//p' "$DEPLOY_BIN")
+fi
+if [ -n "$ALLOW_DEPLOY" ] && [ "$NO_ALLOW_DEPLOY" = 0 ]; then
+  echo "$ALLOW_DEPLOY" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' && id "$ALLOW_DEPLOY" >/dev/null 2>&1 || { echo "--allow-deploy: no such user: $ALLOW_DEPLOY" >&2; exit 1; }
+  { [ "$ALLOW_DEPLOY" != root ] && [ "$ALLOW_DEPLOY" != "$SVC_USER" ]; } || { echo "--allow-deploy: choose a normal user" >&2; exit 1; }
+  echo "$DEPLOY_REPO" | grep -Eq '^/[A-Za-z0-9._/-]+$' || { echo "--allow-deploy: unusual characters in $DEPLOY_REPO" >&2; exit 1; }
+  [ "$(stat -c %U "$DEPLOY_REPO")" = "$ALLOW_DEPLOY" ] || { echo "--allow-deploy: $DEPLOY_REPO must belong to $ALLOW_DEPLOY" >&2; exit 1; }
+  for pkg in sudo git; do
+    command -v "$pkg" >/dev/null 2>&1 || { apt-get update -qq; apt-get install -y -qq "$pkg"; }
+  done
+  sed -e "s|@REPO@|$DEPLOY_REPO|" -e "s|@DEPLOY_USER@|$ALLOW_DEPLOY|" "$SRC_DIR/deploy/deploy.sh" > "$DEPLOY_BIN.tmp"
+  install -o root -g root -m 0755 "$DEPLOY_BIN.tmp" "$DEPLOY_BIN"
+  rm -f "$DEPLOY_BIN.tmp"
+  printf '# Added by install.sh --allow-deploy: %s may run the dashboard deploy, nothing else, no arguments\n%s ALL=(root) NOPASSWD: %s ""\n' "$ALLOW_DEPLOY" "$ALLOW_DEPLOY" "$DEPLOY_BIN" > "$DEPLOY_SUDOERS.tmp"
+  chmod 0440 "$DEPLOY_SUDOERS.tmp"
+  visudo -cqf "$DEPLOY_SUDOERS.tmp" || { rm -f "$DEPLOY_SUDOERS.tmp"; echo "sudoers check failed" >&2; exit 1; }
+  mv "$DEPLOY_SUDOERS.tmp" "$DEPLOY_SUDOERS"
+  echo "$ALLOW_DEPLOY may deploy the main branch of $DEPLOY_REPO with: sudo -n $DEPLOY_BIN"
+fi
 
 # --- Admin account ----------------------------------------------------------
 if [ ! -f "$DATA_DIR/admin.json" ] || [ "$RESET_ADMIN" = 1 ]; then
