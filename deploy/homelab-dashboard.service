@@ -1,0 +1,53 @@
+[Unit]
+Description=Homelab dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=homelab-dash
+Group=homelab-dash
+EnvironmentFile=/etc/homelab-dashboard/env
+Environment=DATA_DIR=/var/lib/homelab-dashboard NODE_ENV=production
+ExecStart=/usr/bin/node /opt/homelab-dashboard/server.js
+Restart=on-failure
+RestartSec=5
+
+# The AES-256 key lives in /etc/homelab-dashboard/secret.key (root:root 0600) and is
+# handed to the service through systemd credentials. Only this unit can read it.
+LoadCredential=secret_key:/etc/homelab-dashboard/secret.key
+
+# State: /var/lib/homelab-dashboard, owned by homelab-dash, mode 0700
+StateDirectory=homelab-dashboard
+StateDirectoryMode=0700
+UMask=0077
+
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Not set: MemoryDenyWriteExecute (incompatible with the V8 JIT)
+
+[Install]
+WantedBy=multi-user.target

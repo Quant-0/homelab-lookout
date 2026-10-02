@@ -1,0 +1,4036 @@
+#!/usr/bin/env node
+'use strict';
+// Homelab dashboard: single-file server, no external dependencies. Requires Node.js >= 18.
+//
+//   node server.js                    start the server
+//   node server.js set-admin [user]   create/replace the admin account (prompts for password)
+//
+// Environment:
+//   HOST            address to bind (loopback or private IP only; never 0.0.0.0)   default 127.0.0.1
+//   PORT            default 8080
+//   DATA_DIR        state directory (0700)                                      default /var/lib/homelab-dashboard
+//   KEY_FILE        AES-256 key file (0600) when not using systemd LoadCredential=secret_key
+//   ALLOWED_HOSTS   extra comma-separated Host names accepted (e.g. lookout.tailnet.ts.net)
+//   TLS_CERT_FILE / TLS_KEY_FILE   serve HTTPS directly
+//   COOKIE_SECURE   1/0 override for the Secure cookie flag (default: on when serving HTTPS)
+
+const http = require('node:http');
+const tls = require('node:tls');
+const net = require('node:net');
+const dgram = require('node:dgram');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { EventEmitter } = require('node:events');
+
+const ROOT = __dirname;
+const PUBLIC_DIR = path.join(ROOT, 'public');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || '/var/lib/homelab-dashboard');
+const HOST = (process.env.HOST || '127.0.0.1').trim();
+const PORT = parseInt(process.env.PORT || '8080', 10);
+const TZ = 'Europe/Oslo';
+
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+const ENERGY_FILE = path.join(DATA_DIR, 'energy.json');
+
+const SESSION_IDLE_MS = 2 * 3600 * 1000;
+const SESSION_MAX_MS = 12 * 3600 * 1000;
+const MAX_BODY = 64 * 1024;
+const COLLECT_TIMEOUT_MS = 45000; // iDRAC8 can be slow to answer
+
+const HOST_TYPES = {
+  idrac: { label: 'iDRAC', port: 443 },
+  proxmox: { label: 'Proxmox', port: 8006 },
+  truenas: { label: 'TrueNAS', port: 443 },
+  synology: { label: 'Synology', port: 161 }, // SNMPv3 over UDP
+  unifi: { label: 'UniFi', port: 443 },
+};
+const AREAS = ['NO1', 'NO2', 'NO3', 'NO4', 'NO5'];
+const THEMES = [
+  'auto', 'light', 'dark', 'nord', 'dracula', 'catppuccin-mocha', 'catppuccin-latte',
+  'solarized-dark', 'solarized-light', 'gruvbox-dark', 'tokyo-night',
+];
+const BUILTIN_BACKGROUNDS = ['aurora', 'sunset', 'ocean', 'forest', 'nebula', 'graphite'];
+const MAX_BACKGROUNDS = 20;
+const MAX_BACKGROUND_BYTES = 10 << 20;
+const RACK_KINDS = ['server', 'storage', 'nas', 'switch', 'gateway', 'patch-panel', 'shelf', 'pdu', 'ups', 'blank', 'ap', 'other'];
+// host:<host id> | unifi:<host id>:<device mac> | pve:<host id>:<node name>
+const RACK_LINK = /^(host:[0-9a-f-]{36}|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}|pve:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+const DEFAULT_RACK = { enabled: true, units: 24, numbering: 'bottom' };
+const DEVICE_LOCATIONS = ['rack', 'outside', 'none']; // none = not placed
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway' };
+const WIDGET_ID = /^(power-summary|power-chart|device:[0-9a-f-]{36})$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const NORGESPRIS_ORE_EX_VAT = 40; // 50 øre/kWh incl. 25 % VAT
+
+const DEFAULT_SETTINGS = {
+  dashboard: { title: 'Homelab', refreshSeconds: 30, public: false, showStoppedGuests: true },
+  power: {
+    plan: 'spot',
+    area: 'NO1',
+    vat: true,
+    markupOre: 0,
+    support: { enabled: true, thresholdOre: 77, percent: 90 },
+    grid: {
+      dayOre: 0,
+      nightOre: 0,
+      ratesInclVat: true, // entered day/night rates already include 25 % VAT
+      ratesInclFees: true, // ...and already include elavgift + Enova fee
+      elavgiftOre: 7.13, // excl. VAT (2026 standard rate)
+      enovaOre: 1.0, // excl. VAT
+      dayStartHour: 6,
+      dayEndHour: 22,
+      weekendNight: true,
+      holidayNight: true,
+    },
+    fixed: { gridMonthlyKr: 0, supplierMonthlyKr: 0, include: false },
+    includeEstimates: false, // count estimated device power (rack equipment) in cost
+  },
+  appearance: {
+    theme: 'auto',
+    background: { type: 'none', builtin: 'aurora', imageId: null },
+    blur: 12, // px
+    dim: 35, // % scrim over the background
+    cardOpacity: 85, // % (below 100 gives frosted-glass cards)
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Utilities
+
+class UserError extends Error {} // message is safe to show to the admin
+
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
+}
+
+function fatal(msg) {
+  console.error('FATAL:', msg);
+  process.exit(1);
+}
+
+function isInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    if (e.code === 'ENOENT') return fallback;
+    throw e;
+  }
+}
+
+function writeJsonAtomic(file, obj) {
+  const tmp = `${file}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify(obj, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+}
+
+function deepMerge(base, over) {
+  if (!over || typeof over !== 'object' || Array.isArray(over)) return structuredClone(base);
+  const out = {};
+  for (const [k, v] of Object.entries(base)) {
+    out[k] = v && typeof v === 'object' && !Array.isArray(v) ? deepMerge(v, over[k]) : k in over ? over[k] : v;
+  }
+  return out;
+}
+
+function withTimeout(promise, ms, what = 'Request') {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new UserError(`${what} timed out`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function hasControlChars(s) {
+  return /[\u0000-\u001f\u007f]/.test(s);
+}
+
+// ---------------------------------------------------------------------------
+// Data directory and encryption key
+
+function ensureDataDir() {
+  if (isInside(DATA_DIR, ROOT)) fatal(`DATA_DIR (${DATA_DIR}) must be outside the application directory`);
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const st = fs.statSync(DATA_DIR);
+  if (st.uid !== process.getuid()) fatal(`DATA_DIR ${DATA_DIR} is not owned by the user running the server`);
+  if ((st.mode & 0o777) !== 0o700) {
+    fs.chmodSync(DATA_DIR, 0o700);
+    log(`Fixed permissions on ${DATA_DIR} to 0700`);
+  }
+}
+
+function loadKey() {
+  const credDir = process.env.CREDENTIALS_DIRECTORY;
+  let file;
+  let fromCredential = false;
+  if (credDir && fs.existsSync(path.join(credDir, 'secret_key'))) {
+    file = path.join(credDir, 'secret_key');
+    fromCredential = true;
+  } else {
+    file = path.resolve(process.env.KEY_FILE || path.join(DATA_DIR, 'secret.key'));
+  }
+  if (isInside(file, ROOT)) fatal('The encryption key file must be outside the application directory');
+  if (!fromCredential) {
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, crypto.randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
+      log(`Generated new encryption key at ${file}`);
+    }
+    const st = fs.statSync(file);
+    if (st.mode & 0o077) fatal(`Key file ${file} is accessible by other users; run: chmod 600 ${file}`);
+  }
+  const raw = fs.readFileSync(file);
+  let key;
+  if (raw.length === 32) key = raw;
+  else {
+    const text = raw.toString('utf8').trim();
+    if (/^[0-9a-fA-F]{64}$/.test(text)) key = Buffer.from(text, 'hex');
+    else if (/^[A-Za-z0-9+/]{43}=$/.test(text)) key = Buffer.from(text, 'base64');
+  }
+  if (!key || key.length !== 32) fatal('Encryption key must be 32 bytes (raw, 64 hex chars or base64)');
+  return key;
+}
+
+let KEY = null;
+
+// The secret is bound to the host's identity: changing type/address/username/TLS pin
+// makes old ciphertext undecryptable, on top of being deleted explicitly.
+function secretAad(h) {
+  return Buffer.from(JSON.stringify(['v1', h.id, h.type, h.address, h.username, h.tlsMode, h.fingerprint || '']));
+}
+
+function encryptSecret(h, plaintext) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', KEY, iv);
+  c.setAAD(secretAad(h));
+  const ct = Buffer.concat([c.update(plaintext, 'utf8'), c.final()]);
+  return 'v1.' + Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64');
+}
+
+function decryptSecret(h) {
+  try {
+    if (typeof h.secret !== 'string' || !h.secret.startsWith('v1.')) throw new Error('format');
+    const buf = Buffer.from(h.secret.slice(3), 'base64');
+    const d = crypto.createDecipheriv('aes-256-gcm', KEY, buf.subarray(0, 12));
+    d.setAAD(secretAad(h));
+    d.setAuthTag(buf.subarray(12, 28));
+    return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8');
+  } catch {
+    throw new UserError('Stored credential could not be decrypted (key changed?); please re-enter it');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin account (scrypt)
+
+const SCRYPT = { N: 32768, r: 8, p: 1, keylen: 64 };
+
+function scryptAsync(password, salt, p) {
+  return new Promise((resolve, reject) =>
+    crypto.scrypt(password, salt, p.keylen, { N: p.N, r: p.r, p: p.p, maxmem: 128 * p.N * p.r * 2 }, (e, k) =>
+      e ? reject(e) : resolve(k)
+    )
+  );
+}
+
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = await scryptAsync(password, salt, SCRYPT);
+  return ['scrypt', SCRYPT.N, SCRYPT.r, SCRYPT.p, salt.toString('base64'), hash.toString('base64')].join('$');
+}
+
+async function verifyPassword(password, stored) {
+  const parts = String(stored || '').split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+  const p = { N: +parts[1], r: +parts[2], p: +parts[3] };
+  const expected = Buffer.from(parts[5], 'base64');
+  const actual = await scryptAsync(password, Buffer.from(parts[4], 'base64'), { ...p, keylen: expected.length });
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+// Used so unknown usernames cost the same time as known ones.
+let DUMMY_HASH = null;
+
+function passwordProblem(pw) {
+  if (typeof pw !== 'string' || pw.length < 12) return 'Password must be at least 12 characters';
+  if (pw.length > 1024) return 'Password is too long';
+  return null;
+}
+
+function readAdmin() {
+  return readJson(ADMIN_FILE, null);
+}
+
+// ---------------------------------------------------------------------------
+// Config
+
+let config = null;
+
+// A device is a physical box (server, NAS, switch, patch panel, ...). Monitoring connections
+// (`hosts`: iDRAC, Proxmox, TrueNAS, Synology, UniFi) belong to a device via `deviceId`.
+// Devices found through a UniFi console are created automatically (`discovered`, `unifi`).
+function newDevice(fields) {
+  return { id: crypto.randomUUID(), name: 'Device', kind: 'other', location: 'none', u: null, height: 1, estimateW: null, unifi: null, discovered: false, hidden: false, ...fields };
+}
+
+function loadConfig() {
+  const raw = readJson(CONFIG_FILE, {});
+  config = {
+    version: 2,
+    settings: deepMerge(DEFAULT_SETTINGS, raw.settings),
+    hosts: Array.isArray(raw.hosts) ? raw.hosts : [],
+    backgrounds: Array.isArray(raw.backgrounds) ? raw.backgrounds : [], // [{ id, mime, bytes, name, uploadedAt }]
+    layout: raw.layout && Array.isArray(raw.layout.items) ? raw.layout : null,
+    rack: {
+      enabled: raw.rack?.enabled !== false,
+      units: Number.isInteger(raw.rack?.units) ? raw.rack.units : DEFAULT_RACK.units,
+      numbering: raw.rack?.numbering === 'top' ? 'top' : 'bottom',
+    },
+    devices: Array.isArray(raw.devices) ? raw.devices : [],
+    services: Array.isArray(raw.services) ? raw.services : [],
+    icons: Array.isArray(raw.icons) ? raw.icons : [], // [{ id, mime, bytes, source, addedAt }]
+  };
+  if (!Array.isArray(raw.devices)) migrateToDevices(raw);
+  // Every connection belongs to a device
+  for (const h of config.hosts) {
+    if (config.devices.some((d) => d.id === h.deviceId)) continue;
+    const d = newDevice({ name: h.name, kind: KIND_FOR_TYPE[h.type] || 'other' });
+    config.devices.push(d);
+    h.deviceId = d.id;
+  }
+}
+
+// Version 1 had hosts plus rack items that linked to them; turn that into devices.
+function migrateToDevices(raw) {
+  const hostById = new Map(config.hosts.map((h) => [h.id, h]));
+  for (const it of Array.isArray(raw.rack?.items) ? raw.rack.items : []) {
+    const d = newDevice({
+      id: typeof it.id === 'string' && UUID.test(it.id) ? it.id : crypto.randomUUID(),
+      name: String(it.name || 'Device').slice(0, 48),
+      kind: RACK_KINDS.includes(it.kind) ? it.kind : 'other',
+      location: it.location || (it.u === null || it.u === undefined ? 'outside' : 'rack'),
+      u: it.u ?? null,
+      height: it.height || 1,
+      estimateW: it.estimateW ?? null,
+    });
+    for (const l of it.links || []) {
+      const [kind, hostId, ...rest] = String(l).split(':');
+      const h = hostById.get(hostId);
+      if (kind === 'host' && h && !h.deviceId) h.deviceId = d.id;
+      if (kind === 'pve' && h && !h.deviceId) {
+        h.deviceId = d.id;
+        h.options = { ...(h.options || {}), node: rest.join(':') };
+      }
+      if (kind === 'unifi' && !d.unifi) d.unifi = { hostId, mac: rest.join(':') };
+    }
+    config.devices.push(d);
+  }
+  // A UniFi console's own device is the gateway it reports (e.g. the UDM Pro rack item)
+  for (const h of config.hosts) {
+    if (h.type !== 'unifi' || h.deviceId) continue;
+    const gw = config.devices.find((d) => d.unifi?.hostId === h.id && ['gateway', 'other'].includes(d.kind));
+    if (gw) h.deviceId = gw.id;
+  }
+  for (const h of config.hosts) {
+    if (h.deviceId) continue;
+    const d = newDevice({ name: h.name, kind: KIND_FOR_TYPE[h.type] || 'other' });
+    config.devices.push(d);
+    h.deviceId = d.id;
+  }
+  // Dashboard layout: one widget per device instead of per host
+  if (config.layout) {
+    const toDevice = (id) => {
+      const m = /^(idrac|proxmox|truenas|synology|unifi):(.+)$/.exec(id);
+      if (!m) return id;
+      const h = hostById.get(m[2]);
+      return h ? `device:${h.deviceId}` : null;
+    };
+    const seen = new Set();
+    config.layout.items = config.layout.items
+      .map((i) => ({ ...i, id: toDevice(i.id) }))
+      .filter((i) => i.id && !seen.has(i.id) && seen.add(i.id));
+    config.layout.hidden = [...new Set((config.layout.hidden || []).map(toDevice).filter(Boolean))];
+  }
+  if (raw.rack?.items) log(`Converted ${config.devices.length} devices from the old rack/host setup`);
+}
+
+function saveConfig() {
+  writeJsonAtomic(CONFIG_FILE, config);
+}
+
+// Only these fields ever leave the server for a host. `secret` never does.
+function publicHost(h) {
+  return {
+    id: h.id,
+    type: h.type,
+    name: h.name,
+    address: h.address,
+    username: h.username,
+    tlsMode: h.tlsMode,
+    fingerprint: h.fingerprint ? formatFingerprint(h.fingerprint) : '',
+    options: h.options || {},
+    hasSecret: Boolean(h.secret),
+  };
+}
+
+function normalizeAddress(input, type) {
+  let s = String(input || '').trim();
+  s = s.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  let host;
+  let port;
+  const v6 = s.match(/^\[([0-9a-fA-F:.]+)\](?::(\d{1,5}))?$/);
+  if (v6) [, host, port] = v6;
+  else if (net.isIPv6(s)) host = s;
+  else {
+    const m = s.match(/^([A-Za-z0-9.-]{1,253})(?::(\d{1,5}))?$/);
+    if (!m) throw new UserError('Address must be a hostname or IP, optionally with :port (no path)');
+    [, host, port] = m;
+    if (!net.isIPv4(host) && !host.split('.').every((l) => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(l)))
+      throw new UserError('Invalid hostname');
+  }
+  if (net.isIPv6(host) === false && v6) throw new UserError('Invalid IPv6 address');
+  const portNum = port ? parseInt(port, 10) : HOST_TYPES[type].port;
+  if (!(portNum >= 1 && portNum <= 65535)) throw new UserError('Invalid port');
+  return net.isIPv6(host) ? `[${host}]:${portNum}` : `${host.toLowerCase()}:${portNum}`;
+}
+
+function splitAddress(address) {
+  const m = address.match(/^\[(.+)\]:(\d+)$/) || address.match(/^(.+):(\d+)$/);
+  return { host: m[1], port: parseInt(m[2], 10) };
+}
+
+function normalizeFingerprint(fp) {
+  const hex = String(fp || '')
+    .replace(/^sha256[:/ ]*/i, '')
+    .replace(/[\s:]/g, '')
+    .toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw new UserError('Fingerprint must be a SHA-256 hash (64 hex characters)');
+  return hex;
+}
+
+function formatFingerprint(hex) {
+  return hex.toUpperCase().match(/../g).join(':');
+}
+
+function validateHostInput(body, type) {
+  const name = String(body.name ?? '').trim();
+  if (!name || name.length > 64 || hasControlChars(name)) throw new UserError('Name is required (max 64 characters)');
+  const address = normalizeAddress(body.address, type);
+  const username = String(body.username ?? '').trim();
+  if (username.length > 128 || hasControlChars(username) || /\s/.test(username)) throw new UserError('Invalid username');
+  if (type === 'idrac' && username.includes(':')) throw new UserError('iDRAC username cannot contain ":"');
+  if (type === 'idrac' && !username) throw new UserError('Username is required for iDRAC');
+  if (type === 'proxmox' && !/^[^\s@!=]+@[^\s@!=]+![A-Za-z][A-Za-z0-9._-]*$/.test(username))
+    throw new UserError('Proxmox username must be the full token ID, e.g. root@pam!dashboard');
+  if ((type === 'unifi' || type === 'synology') && !username) throw new UserError('Username is required');
+  if (type === 'synology') {
+    // SNMP has no TLS; the agent's engine ID is pinned instead
+    const engineId = String(body.fingerprint || '').replace(/[\s:]/g, '').toLowerCase();
+    if (!/^([0-9a-f]{2}){5,32}$/.test(engineId)) throw new UserError('SNMP engine ID is required (fetch it from the device)');
+    const snmpAuth = body.options?.snmpAuth === 'sha256' ? 'sha256' : 'sha';
+    return { name, address, username, tlsMode: 'pin', fingerprint: engineId, options: { snmpAuth } };
+  }
+  const tlsMode = body.tlsMode === 'pin' ? 'pin' : 'verify';
+  const fingerprint = tlsMode === 'pin' ? normalizeFingerprint(body.fingerprint) : '';
+  return { name, address, username, tlsMode, fingerprint, options: {} };
+}
+
+// Synology stores two SNMPv3 passwords; they are set together as one encrypted secret.
+function secretFromBody(type, body) {
+  if (type !== 'synology') return validateSecret(body.secret);
+  const auth = validateSecret(body.secret);
+  const priv = validateSecret(body.secret2);
+  if (!auth && !priv) return null;
+  if (!auth || !priv) throw new UserError('Enter both the authentication and the privacy password');
+  if (auth.length < 8 || priv.length < 8) throw new UserError('SNMPv3 passwords must be at least 8 characters');
+  return JSON.stringify({ auth, priv });
+}
+
+function validateSecret(s) {
+  if (typeof s !== 'string') return null;
+  if (s.length === 0) return null;
+  if (s.length > 4096 || hasControlChars(s)) throw new UserError('Invalid password/token/key');
+  return s;
+}
+
+function num(v, min, max, name, { int = false } = {}) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min || n > max || (int && !Number.isInteger(n)))
+    throw new UserError(`${name} must be ${int ? 'a whole number' : 'a number'} between ${min} and ${max}`);
+  return n;
+}
+
+function validateDashboard(d) {
+  const title = String(d.title ?? '').trim() || 'Homelab';
+  if (title.length > 60 || hasControlChars(title)) throw new UserError('Title is too long');
+  return {
+    title,
+    refreshSeconds: num(d.refreshSeconds, 10, 3600, 'Refresh interval', { int: true }),
+    public: d.public === true,
+    showStoppedGuests: d.showStoppedGuests !== false,
+  };
+}
+
+function validatePower(p) {
+  const g = p.grid || {};
+  const s = p.support || {};
+  const fx = p.fixed || {};
+  if (!['spot', 'norgespris'].includes(p.plan)) throw new UserError('Invalid plan');
+  if (!AREAS.includes(p.area)) throw new UserError('Invalid price area');
+  const dayStartHour = num(g.dayStartHour, 0, 23, 'Day start hour', { int: true });
+  const dayEndHour = num(g.dayEndHour, 1, 24, 'Day end hour', { int: true });
+  if (dayEndHour <= dayStartHour) throw new UserError('Day end hour must be after day start hour');
+  return {
+    plan: p.plan,
+    area: p.area,
+    vat: p.vat !== false,
+    markupOre: num(p.markupOre ?? 0, -100, 1000, 'Supplier markup'),
+    support: {
+      enabled: s.enabled === true,
+      thresholdOre: num(s.thresholdOre, 0, 1000, 'Subsidy threshold'),
+      percent: num(s.percent, 0, 100, 'Subsidy percentage'),
+    },
+    grid: {
+      dayOre: num(g.dayOre, 0, 1000, 'Day rate'),
+      nightOre: num(g.nightOre, 0, 1000, 'Night rate'),
+      ratesInclVat: g.ratesInclVat === true,
+      ratesInclFees: g.ratesInclFees === true,
+      elavgiftOre: num(g.elavgiftOre, 0, 100, 'Elavgift'),
+      enovaOre: num(g.enovaOre, 0, 100, 'Enova fee'),
+      dayStartHour,
+      dayEndHour,
+      weekendNight: g.weekendNight === true,
+      holidayNight: g.holidayNight === true,
+    },
+    fixed: {
+      gridMonthlyKr: num(fx.gridMonthlyKr ?? 0, 0, 100000, 'Fixed grid fee'),
+      supplierMonthlyKr: num(fx.supplierMonthlyKr ?? 0, 0, 100000, 'Supplier monthly fee'),
+      include: fx.include === true,
+    },
+    includeEstimates: p.includeEstimates === true,
+  };
+}
+
+function validateAppearance(a) {
+  const bg = a.background || {};
+  if (!THEMES.includes(a.theme)) throw new UserError('Unknown theme');
+  if (!['none', 'builtin', 'image'].includes(bg.type)) throw new UserError('Invalid background type');
+  const builtin = BUILTIN_BACKGROUNDS.includes(bg.builtin) ? bg.builtin : 'aurora';
+  const imageId = typeof bg.imageId === 'string' && config.backgrounds.some((b) => b.id === bg.imageId) ? bg.imageId : null;
+  if (bg.type === 'image' && !imageId) throw new UserError('Choose an uploaded image');
+  return {
+    theme: a.theme,
+    background: { type: bg.type, builtin, imageId },
+    blur: num(a.blur, 0, 40, 'Blur', { int: true }),
+    dim: num(a.dim, 0, 90, 'Background dimming', { int: true }),
+    cardOpacity: num(a.cardOpacity, 30, 100, 'Card opacity', { int: true }),
+  };
+}
+
+// Sections not present in the request keep their current values.
+function validateSettings(b, current) {
+  return {
+    dashboard: b.dashboard ? validateDashboard(b.dashboard) : current.dashboard,
+    power: b.power ? validatePower(b.power) : current.power,
+    appearance: b.appearance ? validateAppearance(b.appearance) : current.appearance,
+  };
+}
+
+// Typical draw from spec sheets, used to pre-fill estimates (W, without PoE output).
+const POWER_HINTS = { DS418: 26, DS418play: 26, DS420: 24, DS918: 28, DS920: 32, DS923: 35, DS220: 17, DS224: 15, UDMPRO: 25, UDMPROSE: 30, UDM: 15, UCGMAX: 12 };
+const TYPE_HINTS = { usw: 20, udm: 25, ugw: 15, uxg: 15 };
+
+// Normalized names, used to pick the Proxmox node matching a device ("Orion" = node "orion").
+const matchName = (n) => String(n || '').toLowerCase().split('.')[0].replace(/[^a-z0-9]/g, '');
+const PVE_NODE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function validateRackSettings(b) {
+  const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+  if (!int(b.units, 1, 60)) throw new UserError('Rack size must be 1–60 U');
+  const tooHigh = config.devices.find((d) => !d.hidden && d.location === 'rack' && d.u + d.height - 1 > b.units);
+  if (tooHigh) throw new UserError(`${tooHigh.name} sits at U${tooHigh.u + tooHigh.height - 1}; move it before shrinking the rack`);
+  return { enabled: b.enabled !== false, units: b.units, numbering: b.numbering === 'top' ? 'top' : 'bottom' };
+}
+
+function rackClash(dev, selfId) {
+  return config.devices.find((o) => o.id !== selfId && !o.hidden && o.location === 'rack' && o.u <= dev.u + dev.height - 1 && dev.u <= o.u + o.height - 1);
+}
+
+function validatePlacement(b, selfId, name) {
+  const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+  const location = DEVICE_LOCATIONS.includes(b.location) ? b.location : 'none';
+  const height = b.height ?? 1;
+  if (!int(height, 1, 12)) throw new UserError('Height must be 1–12 U');
+  const u = location === 'rack' ? b.u : null;
+  if (location === 'rack') {
+    if (!int(u, 1, config.rack.units) || u + height - 1 > config.rack.units) throw new UserError(`${name} does not fit in the rack at U${u ?? '?'} (the rack has ${config.rack.units} U)`);
+    const clash = rackClash({ u, height }, selfId);
+    if (clash) throw new UserError(`${name} overlaps ${clash.name}`);
+  }
+  return { location, u, height };
+}
+
+function validateDeviceFields(b, selfId) {
+  const name = String(b.name ?? '').trim();
+  if (!name || name.length > 48 || hasControlChars(name)) throw new UserError('Name is required (max 48 characters)');
+  if (!RACK_KINDS.includes(b.kind)) throw new UserError('Invalid device type');
+  const estimateW = b.estimateW === null || b.estimateW === undefined || b.estimateW === '' ? null : num(b.estimateW, 0, 5000, 'Estimated power');
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW };
+}
+
+// Creates or updates a connection from request data. A changed address, user name or pinned
+// identity without a newly entered secret deletes the stored secret.
+function buildConnection(old, body, device) {
+  const type = old ? old.type : body.type;
+  if (!HOST_TYPES[type]) throw new UserError('Invalid connection type');
+  const fields = validateHostInput({ ...body, name: device.name }, type);
+  const next = old ? { ...old, ...fields, deviceId: device.id } : { id: crypto.randomUUID(), type, ...fields, deviceId: device.id, secret: null };
+  if (type === 'proxmox') {
+    const node = String(body.options?.node ?? '').trim();
+    if (node && !PVE_NODE.test(node)) throw new UserError('Invalid Proxmox node name');
+    next.options = { ...next.options, node };
+  }
+  const secret = secretFromBody(type, body);
+  let note = null;
+  if (secret) next.secret = encryptSecret(next, secret);
+  else if (old && body.clearSecret === true) next.secret = null;
+  else if (old && old.secret && ['address', 'username', 'tlsMode', 'fingerprint'].some((k) => next[k] !== old[k])) {
+    next.secret = null; // never send an old secret to a different endpoint/identity
+    note = `${HOST_TYPES[type].label}: the address, user name or pinned identity changed, so the stored secret was deleted. Enter it again.`;
+  }
+  return { host: next, note };
+}
+
+function validateConnections(list) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list) || list.length > Object.keys(HOST_TYPES).length) throw new UserError('Invalid connections');
+  const types = list.map((c) => c?.type);
+  if (new Set(types).size !== types.length) throw new UserError('A device can have only one connection of each type');
+  return list;
+}
+
+function findDevice(id) {
+  const d = config.devices.find((x) => x.id === id);
+  if (!d) throw Object.assign(new UserError('Device not found'), { status: 404 });
+  return d;
+}
+
+function deviceHosts(d) {
+  return config.hosts.filter((h) => h.deviceId === d.id);
+}
+
+// The Proxmox node a device represents: chosen, the only node, or the one named like the device.
+function effectiveNode(h, d) {
+  if (h.options?.node) return h.options.node;
+  const nodes = results.get(h.id)?.data?.nodes || [];
+  if (nodes.length === 1) return nodes[0].name;
+  return nodes.find((n) => matchName(n.name) === matchName(d.name))?.name || null;
+}
+
+// Rack/status links for the dashboard (derived from the device's connections)
+function deviceLinks(d) {
+  const links = [];
+  for (const h of deviceHosts(d)) {
+    if (h.type === 'proxmox') {
+      const node = effectiveNode(h, d);
+      links.push(node ? `pve:${h.id}:${node}` : `host:${h.id}`);
+    } else if (h.type !== 'unifi') links.push(`host:${h.id}`);
+  }
+  if (d.unifi) links.push(`unifi:${d.unifi.hostId}:${d.unifi.mac}`);
+  return links;
+}
+
+// Devices reported by a UniFi console appear automatically; the console's own gateway
+// (e.g. the UDM Pro) is attached to the device that holds the connection.
+function syncUnifiDevices(h, devices) {
+  const owner = config.devices.find((d) => d.id === h.deviceId);
+  let added = 0;
+  for (const ud of devices) {
+    if (!ud.mac || config.devices.some((d) => d.unifi?.hostId === h.id && d.unifi.mac === ud.mac)) continue;
+    const gateway = ['udm', 'uxg', 'ugw'].includes(ud.type);
+    const hint = ud.type === 'uap' ? null : POWER_HINTS[ud.model] ?? TYPE_HINTS[ud.type] ?? null;
+    if (gateway && owner && !owner.unifi) {
+      owner.unifi = { hostId: h.id, mac: ud.mac };
+      if (owner.estimateW === null && hint !== null) owner.estimateW = hint;
+      added++;
+      continue;
+    }
+    config.devices.push(newDevice({
+      name: String(ud.name || ud.model || ud.mac).slice(0, 48),
+      kind: ud.type === 'usw' ? 'switch' : ud.type === 'uap' ? 'ap' : gateway ? 'gateway' : 'other',
+      location: ud.type === 'uap' ? 'outside' : 'none',
+      estimateW: hint,
+      unifi: { hostId: h.id, mac: ud.mac },
+      discovered: true,
+    }));
+    added++;
+  }
+  if (added) {
+    saveConfig();
+    log(`UniFi: ${added} device(s) found through ${h.name}`);
+  }
+}
+
+function validateLayout(b) {
+  if (b === null || b.items === null) return null;
+  const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+  if (!Array.isArray(b.items) || b.items.length > 300) throw new UserError('Invalid layout');
+  const seen = new Set();
+  const items = b.items.map((i) => {
+    if (!i || typeof i.id !== 'string' || !WIDGET_ID.test(i.id) || seen.has(i.id)) throw new UserError('Invalid layout item');
+    seen.add(i.id);
+    if (!int(i.x, 0, 11) || !int(i.w, 1, 12) || i.x + i.w > 12 || !int(i.y, 0, 2000) || !int(i.h, 1, 300))
+      throw new UserError('Invalid layout position');
+    return { id: i.id, x: i.x, y: i.y, w: i.w, h: i.h };
+  });
+  const hidden = Array.isArray(b.hidden) ? b.hidden.filter((id) => typeof id === 'string' && WIDGET_ID.test(id)).slice(0, 300) : [];
+  return { items, hidden: [...new Set(hidden)] };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound TLS with optional certificate pinning
+//
+// The TLS handshake is completed and the peer certificate verified (CA chain + hostname,
+// or SHA-256 pin) before a single byte of application data, and thus any credential,
+// is written to the socket.
+
+function friendlyNetError(e) {
+  const map = {
+    ECONNREFUSED: 'Connection refused',
+    EHOSTUNREACH: 'Host unreachable',
+    ENETUNREACH: 'Network unreachable',
+    ENOTFOUND: 'Hostname not found',
+    EAI_AGAIN: 'DNS lookup failed',
+    ETIMEDOUT: 'Connection timed out',
+    ECONNRESET: 'Connection reset',
+    DEPTH_ZERO_SELF_SIGNED_CERT: 'Self-signed certificate; use fingerprint pinning',
+    SELF_SIGNED_CERT_IN_CHAIN: 'Certificate not trusted (self-signed CA); use fingerprint pinning',
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'Certificate not trusted; use fingerprint pinning',
+    UNABLE_TO_GET_ISSUER_CERT_LOCALLY: 'Certificate not trusted; use fingerprint pinning',
+    CERT_HAS_EXPIRED: 'Certificate has expired',
+    ERR_TLS_CERT_ALTNAME_INVALID: 'Certificate does not match hostname',
+  };
+  if (e instanceof UserError) return e;
+  return new UserError(map[e.code] || 'Connection failed' + (e.code ? ` (${e.code})` : ''));
+}
+
+function tlsConnect(target, { timeoutMs = 15000, pin = null, verify = true, alpn = ['http/1.1'] } = {}) {
+  const { host, port } = splitAddress(target);
+  return new Promise((resolve, reject) => {
+    const opts = { host, port, minVersion: 'TLSv1.2', rejectUnauthorized: verify && !pin, ALPNProtocols: alpn };
+    if (!net.isIP(host)) opts.servername = host;
+    const sock = tls.connect(opts);
+    const timer = setTimeout(() => {
+      sock.destroy();
+      reject(new UserError('Connection timed out'));
+    }, timeoutMs);
+    sock.once('secureConnect', () => {
+      clearTimeout(timer);
+      if (pin) {
+        const cert = sock.getPeerCertificate();
+        const actual = cert && cert.raw ? crypto.createHash('sha256').update(cert.raw).digest() : Buffer.alloc(32);
+        if (!crypto.timingSafeEqual(actual, Buffer.from(pin, 'hex'))) {
+          sock.destroy();
+          return reject(new UserError('TLS fingerprint mismatch; nothing was sent. Verify the certificate and update the pin'));
+        }
+      }
+      resolve(sock);
+    });
+    sock.once('error', (e) => {
+      clearTimeout(timer);
+      reject(friendlyNetError(e));
+    });
+  });
+}
+
+function connectHost(h, opts = {}) {
+  return tlsConnect(h.address, { ...opts, pin: h.tlsMode === 'pin' ? h.fingerprint : null, verify: true });
+}
+
+function hostHeader(address) {
+  const { host, port } = splitAddress(address);
+  const name = net.isIPv6(host) ? `[${host}]` : host;
+  return port === 443 ? name : `${name}:${port}`;
+}
+
+// With `full`, resolves { status, headers, json, text } for any status instead of rejecting non-2xx.
+// With `headOnly`, resolves { status, headers } as soon as the response starts (status checks).
+async function httpsRequest(sockPromise, address, { method = 'GET', path: reqPath, headers = {}, body = null, full = false, headOnly = false, binary = false, timeoutMs = 15000, maxBytes = 8 << 20 }) {
+  const sock = await sockPromise;
+  return new Promise((resolve, reject) => {
+    if (body !== null) headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers };
+    const req = http.request({
+      method,
+      path: reqPath,
+      createConnection: () => sock,
+      headers: { Host: hostHeader(address), Accept: 'application/json', Connection: 'close', ...headers },
+      timeout: timeoutMs,
+    });
+    req.on('timeout', () => req.destroy(new UserError('Request timed out')));
+    req.on('error', (e) => reject(e instanceof UserError ? e : friendlyNetError(e)));
+    req.on('response', (res) => {
+      if (headOnly) {
+        resolve({ status: res.statusCode, headers: res.headers });
+        res.destroy();
+        sock.destroy();
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', (c) => {
+        size += c.length;
+        if (size > maxBytes) req.destroy(new UserError('Response too large'));
+        else chunks.push(c);
+      });
+      res.on('end', () => {
+        sock.destroy();
+        if (binary) return resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) });
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (full) {
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            /* not JSON */
+          }
+          return resolve({ status: res.statusCode, headers: res.headers, json, text });
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          const hint = res.statusCode === 401 ? ' (authentication failed)' : res.statusCode === 403 ? ' (permission denied)' : '';
+          const err = new UserError(`HTTP ${res.statusCode}${hint}`);
+          err.status = res.statusCode;
+          return reject(err);
+        }
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          reject(new UserError('Invalid JSON response'));
+        }
+      });
+      res.on('error', (e) => reject(friendlyNetError(e)));
+    });
+    req.end(body ?? undefined);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Minimal WebSocket client (RFC 6455), used for TrueNAS JSON-RPC
+
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const WS_MAX_MESSAGE = 32 << 20;
+
+class WsClient extends EventEmitter {
+  constructor(sock, initial) {
+    super();
+    this.sock = sock;
+    this.buf = initial;
+    this.fragments = [];
+    this.fragSize = 0;
+    this.closed = false;
+    sock.on('data', (d) => {
+      this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
+      try {
+        this.parse();
+      } catch (e) {
+        this.fail(e);
+      }
+    });
+    sock.on('close', () => this.fail(new UserError('Connection closed')));
+    sock.on('error', (e) => this.fail(friendlyNetError(e)));
+    if (this.buf.length) setImmediate(() => this.parse());
+  }
+
+  fail(err) {
+    if (this.closed) return;
+    this.closed = true;
+    this.sock.destroy();
+    this.emit('close', err);
+  }
+
+  parse() {
+    while (this.buf.length >= 2) {
+      const b0 = this.buf[0];
+      const b1 = this.buf[1];
+      let len = b1 & 0x7f;
+      let off = 2;
+      if (len === 126) {
+        if (this.buf.length < 4) return;
+        len = this.buf.readUInt16BE(2);
+        off = 4;
+      } else if (len === 127) {
+        if (this.buf.length < 10) return;
+        const big = this.buf.readBigUInt64BE(2);
+        if (big > BigInt(WS_MAX_MESSAGE)) throw new UserError('WebSocket message too large');
+        len = Number(big);
+        off = 10;
+      }
+      const masked = b1 & 0x80;
+      const maskOff = off;
+      if (masked) off += 4;
+      if (this.buf.length < off + len) return;
+      let payload = this.buf.subarray(off, off + len);
+      if (masked) {
+        payload = Buffer.from(payload);
+        for (let i = 0; i < payload.length; i++) payload[i] ^= this.buf[maskOff + (i & 3)];
+      }
+      this.buf = this.buf.subarray(off + len);
+      this.onFrame(Boolean(b0 & 0x80), b0 & 0x0f, payload);
+    }
+  }
+
+  onFrame(fin, opcode, payload) {
+    if (opcode === 0x8) {
+      this.send(0x8, Buffer.alloc(0));
+      return this.fail(new UserError('Connection closed by server'));
+    }
+    if (opcode === 0x9) return this.send(0xa, payload);
+    if (opcode === 0xa) return;
+    if (opcode === 0x1 || opcode === 0x2) this.fragments = [];
+    else if (opcode !== 0x0) throw new UserError('Unexpected WebSocket frame');
+    this.fragments.push(payload);
+    this.fragSize += payload.length;
+    if (this.fragSize > WS_MAX_MESSAGE) throw new UserError('WebSocket message too large');
+    if (fin) {
+      const msg = Buffer.concat(this.fragments).toString('utf8');
+      this.fragments = [];
+      this.fragSize = 0;
+      this.emit('message', msg);
+    }
+  }
+
+  send(opcode, data) {
+    if (this.closed) return;
+    const payload = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+    const len = payload.length;
+    const header = len < 126 ? Buffer.alloc(2) : len < 65536 ? Buffer.alloc(4) : Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    if (len < 126) header[1] = 0x80 | len;
+    else if (len < 65536) {
+      header[1] = 0x80 | 126;
+      header.writeUInt16BE(len, 2);
+    } else {
+      header[1] = 0x80 | 127;
+      header.writeBigUInt64BE(BigInt(len), 2);
+    }
+    const mask = crypto.randomBytes(4);
+    const masked = Buffer.alloc(len);
+    for (let i = 0; i < len; i++) masked[i] = payload[i] ^ mask[i & 3];
+    this.sock.write(Buffer.concat([header, mask, masked]));
+  }
+
+  close() {
+    if (this.closed) return;
+    this.send(0x8, Buffer.from([0x03, 0xe8]));
+    this.closed = true;
+    this.sock.end();
+    setTimeout(() => this.sock.destroy(), 1000).unref();
+  }
+}
+
+async function wsConnect(h, wsPath, timeoutMs = 15000) {
+  const sock = await connectHost(h, { timeoutMs });
+  const key = crypto.randomBytes(16).toString('base64');
+  const expectedAccept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+  return new Promise((resolve, reject) => {
+    let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => done(new UserError('WebSocket handshake timed out')), timeoutMs);
+    const onData = (d) => {
+      buf = Buffer.concat([buf, d]);
+      const end = buf.indexOf('\r\n\r\n');
+      if (end === -1) {
+        if (buf.length > 16384) done(new UserError('Invalid WebSocket handshake'));
+        return;
+      }
+      const lines = buf.subarray(0, end).toString('latin1').split('\r\n');
+      const status = lines[0].match(/^HTTP\/1\.1 (\d{3})/);
+      const hdrs = {};
+      for (const l of lines.slice(1)) {
+        const i = l.indexOf(':');
+        if (i > 0) hdrs[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
+      }
+      if (!status || status[1] !== '101')
+        return done(new UserError(`WebSocket upgrade failed (HTTP ${status ? status[1] : '?'}); is this TrueNAS 25.04 or newer?`));
+      if (hdrs['sec-websocket-accept'] !== expectedAccept) return done(new UserError('Invalid WebSocket handshake'));
+      done(null, buf.subarray(end + 4));
+    };
+    const onErr = (e) => done(friendlyNetError(e));
+    const onClose = () => done(new UserError('Connection closed during handshake'));
+    function done(err, rest) {
+      clearTimeout(timer);
+      sock.off('data', onData);
+      sock.off('error', onErr);
+      sock.off('close', onClose);
+      if (err) {
+        sock.destroy();
+        reject(err);
+      } else resolve(new WsClient(sock, rest));
+    }
+    sock.on('data', onData);
+    sock.on('error', onErr);
+    sock.on('close', onClose);
+    sock.write(
+      `GET ${wsPath} HTTP/1.1\r\nHost: ${hostHeader(h.address)}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+    );
+  });
+}
+
+class JsonRpc {
+  constructor(ws, timeoutMs = 20000) {
+    this.ws = ws;
+    this.timeoutMs = timeoutMs;
+    this.nextId = 1;
+    this.pending = new Map();
+    ws.on('message', (text) => {
+      let msg;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+      const p = msg && msg.id != null ? this.pending.get(msg.id) : null;
+      if (!p) return; // notifications (e.g. collection_update) are ignored
+      this.pending.delete(msg.id);
+      clearTimeout(p.timer);
+      if (msg.error) {
+        const e = new UserError(`${p.method}: ${String(msg.error.data?.reason || msg.error.message || 'error').slice(0, 200)}`);
+        e.rpcCode = msg.error.code;
+        p.reject(e);
+      } else p.resolve(msg.result);
+    });
+    ws.on('close', (err) => {
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(err || new UserError('Connection closed'));
+      }
+      this.pending.clear();
+    });
+  }
+
+  call(method, params = []) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new UserError(`${method} timed out`));
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, method });
+      this.ws.send(0x1, JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SNMPv3 client (RFC 3412/3414/3826/7860), used for Synology
+//
+// Only authPriv is supported: HMAC-SHA-96 or HMAC-SHA-256-192 authentication plus
+// AES-128-CFB encryption. Passwords never leave the server; they only key the HMAC and
+// the cipher. The agent's engine ID is pinned (like a TLS fingerprint): it is checked
+// after the unauthenticated discovery step and before any authenticated message is sent,
+// so a device impersonating the NAS never receives a message it could use to attack the
+// passwords offline.
+
+const T = {
+  INT: 0x02, OCTETS: 0x04, NULL: 0x05, OID: 0x06, SEQ: 0x30,
+  IPADDR: 0x40, COUNTER32: 0x41, GAUGE32: 0x42, TIMETICKS: 0x43, COUNTER64: 0x46,
+  NO_SUCH_OBJECT: 0x80, NO_SUCH_INSTANCE: 0x81, END_OF_MIB: 0x82,
+  GET: 0xa0, GETNEXT: 0xa1, RESPONSE: 0xa2, GETBULK: 0xa5, REPORT: 0xa8,
+};
+const SNMP_AUTH = { sha: { hash: 'sha1', macLen: 12 }, sha256: { hash: 'sha256', macLen: 24 } };
+const USM_REPORTS = {
+  '1.3.6.1.6.3.15.1.1.1.0': 'SNMP user is not configured for authentication + privacy (authPriv)',
+  '1.3.6.1.6.3.15.1.1.2.0': 'SNMP time window error',
+  '1.3.6.1.6.3.15.1.1.3.0': 'Unknown SNMP user name',
+  '1.3.6.1.6.3.15.1.1.4.0': 'Unknown SNMP engine ID',
+  '1.3.6.1.6.3.15.1.1.5.0': 'Wrong SNMP authentication password or protocol',
+  '1.3.6.1.6.3.15.1.1.6.0': 'Wrong SNMP privacy password (or the device does not use AES)',
+};
+
+function berLength(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  const bytes = [];
+  for (; n > 0; n = Math.floor(n / 256)) bytes.unshift(n & 0xff);
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+const tlv = (tag, value) => Buffer.concat([Buffer.from([tag]), berLength(value.length), value]);
+function berInt(n) {
+  const bytes = [];
+  let v = n;
+  do {
+    bytes.unshift(v & 0xff);
+    v = Math.floor(v / 256);
+  } while (v > 0);
+  if (bytes[0] & 0x80) bytes.unshift(0);
+  return tlv(T.INT, Buffer.from(bytes));
+}
+function berOid(oid) {
+  const p = oid.split('.').map(Number);
+  const out = [40 * p[0] + p[1]];
+  for (const n of p.slice(2)) {
+    const enc = [n & 0x7f];
+    for (let v = Math.floor(n / 128); v > 0; v = Math.floor(v / 128)) enc.unshift((v & 0x7f) | 0x80);
+    out.push(...enc);
+  }
+  return tlv(T.OID, Buffer.from(out));
+}
+const u32 = (n) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32BE(n >>> 0);
+  return b;
+};
+
+function berRead(buf, pos) {
+  if (pos + 2 > buf.length) throw new UserError('Malformed SNMP packet');
+  const tag = buf[pos];
+  let len = buf[pos + 1];
+  let p = pos + 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n < 1 || n > 4 || p + n > buf.length) throw new UserError('Malformed SNMP packet');
+    len = 0;
+    for (let i = 0; i < n; i++) len = len * 256 + buf[p++];
+  }
+  if (p + len > buf.length) throw new UserError('Malformed SNMP packet');
+  return { tag, start: p, end: p + len };
+}
+function berChildren(buf, node) {
+  const out = [];
+  for (let p = node.start; p < node.end; ) {
+    const c = berRead(buf, p);
+    out.push(c);
+    p = c.end;
+  }
+  return out;
+}
+function berToInt(buf, n) {
+  let v = n.end > n.start && buf[n.start] & 0x80 ? -1 : 0;
+  for (let i = n.start; i < n.end; i++) v = v * 256 + buf[i];
+  return v;
+}
+function berToOid(buf, n) {
+  const b = buf.subarray(n.start, n.end);
+  const first = b[0] < 40 ? 0 : b[0] < 80 ? 1 : 2;
+  const parts = [first, b[0] - 40 * first];
+  let v = 0;
+  for (let i = 1; i < b.length; i++) {
+    v = v * 128 + (b[i] & 0x7f);
+    if (!(b[i] & 0x80)) {
+      parts.push(v);
+      v = 0;
+    }
+  }
+  return parts.join('.');
+}
+function berValue(buf, n) {
+  switch (n.tag) {
+    case T.INT:
+      return berToInt(buf, n);
+    case T.COUNTER32:
+    case T.GAUGE32:
+    case T.TIMETICKS: {
+      let v = 0;
+      for (let i = n.start; i < n.end; i++) v = v * 256 + buf[i];
+      return v;
+    }
+    case T.COUNTER64: {
+      let v = 0n;
+      for (let i = n.start; i < n.end; i++) v = v * 256n + BigInt(buf[i]);
+      return Number(v);
+    }
+    case T.OCTETS:
+      return buf.subarray(n.start, n.end).toString('utf8');
+    case T.OID:
+      return berToOid(buf, n);
+    case T.IPADDR:
+      return [...buf.subarray(n.start, n.end)].join('.');
+    default:
+      return null; // NULL, noSuchObject, noSuchInstance, endOfMibView
+  }
+}
+
+function scopedPdu(engineId, pduTag, requestId, a, b, oids) {
+  const vbs = oids.map((oid) => tlv(T.SEQ, Buffer.concat([berOid(oid), tlv(T.NULL, Buffer.alloc(0))])));
+  const pdu = tlv(pduTag, Buffer.concat([berInt(requestId), berInt(a), berInt(b), tlv(T.SEQ, Buffer.concat(vbs))]));
+  return tlv(T.SEQ, Buffer.concat([tlv(T.OCTETS, engineId), tlv(T.OCTETS, Buffer.alloc(0)), pdu]));
+}
+
+function snmpMessage({ msgId, flags, engineId, boots, time, user, authParams, privParams, data }) {
+  const sec = tlv(T.SEQ, Buffer.concat([
+    tlv(T.OCTETS, engineId), berInt(boots), berInt(time), tlv(T.OCTETS, Buffer.from(user, 'utf8')),
+    tlv(T.OCTETS, authParams), tlv(T.OCTETS, privParams),
+  ]));
+  const global = tlv(T.SEQ, Buffer.concat([berInt(msgId), berInt(65507), tlv(T.OCTETS, Buffer.from([flags])), berInt(3)]));
+  return tlv(T.SEQ, Buffer.concat([berInt(3), global, tlv(T.OCTETS, sec), data]));
+}
+
+function snmpParse(buf) {
+  const [version, global, secOctets, data] = berChildren(buf, berRead(buf, 0));
+  if (!data || berToInt(buf, version) !== 3) throw new UserError('Not an SNMPv3 message');
+  const g = berChildren(buf, global);
+  const s = berChildren(buf, berRead(buf, secOctets.start));
+  return {
+    msgId: berToInt(buf, g[0]),
+    flags: buf[g[2].start],
+    engineId: Buffer.from(buf.subarray(s[0].start, s[0].end)),
+    boots: berToInt(buf, s[1]),
+    time: berToInt(buf, s[2]),
+    authNode: s[4],
+    privParams: Buffer.from(buf.subarray(s[5].start, s[5].end)),
+    data,
+  };
+}
+
+function parseScopedPdu(buf, node) {
+  const [, , pdu] = berChildren(buf, node);
+  const [rid, errStatus, , vbl] = berChildren(buf, pdu);
+  return {
+    type: pdu.tag,
+    requestId: berToInt(buf, rid),
+    errorStatus: berToInt(buf, errStatus),
+    varbinds: berChildren(buf, vbl).map((vb) => {
+      const [o, v] = berChildren(buf, vb);
+      return { oid: berToOid(buf, o), type: v.tag, value: berValue(buf, v) };
+    }),
+  };
+}
+
+const randId = () => crypto.randomInt(1, 0x7fffffff);
+
+// Sends a datagram and waits for a reply accepted by `match` (which returns a value, or
+// null to keep waiting). Packets that fail to parse or authenticate are ignored.
+function udpExchange(host, port, packet, match, { timeoutMs = 2500, attempts = 3 } = {}) {
+  return new Promise((resolve, reject) => {
+    const sock = dgram.createSocket(net.isIPv6(host) ? 'udp6' : 'udp4');
+    let tries = 0;
+    let timer = null;
+    let lastProblem = null;
+    const finish = (err, value) => {
+      clearTimeout(timer);
+      sock.close();
+      if (err) reject(err);
+      else resolve(value);
+    };
+    sock.on('message', (msg, rinfo) => {
+      if (rinfo.port !== port) return;
+      try {
+        const v = match(msg);
+        if (v !== null) finish(null, v);
+      } catch (e) {
+        if (e instanceof UserError && e.fatal) return finish(e);
+        lastProblem = e;
+      }
+    });
+    sock.on('error', (e) => finish(friendlyNetError(e)));
+    const send = () => {
+      tries++;
+      sock.send(packet, port, host, (e) => e && finish(friendlyNetError(e)));
+      timer = setTimeout(() => {
+        if (tries < attempts) send();
+        else
+          finish(new UserError(lastProblem instanceof UserError ? lastProblem.message
+            : 'No SNMP response (check the address, that SNMPv3 is enabled in DSM, and firewall rules)'));
+      }, timeoutMs);
+    };
+    send();
+  });
+}
+
+async function snmpDiscover(host, port) {
+  const msgId = randId();
+  const pkt = snmpMessage({
+    msgId, flags: 0x04, engineId: Buffer.alloc(0), boots: 0, time: 0, user: '',
+    authParams: Buffer.alloc(0), privParams: Buffer.alloc(0), data: scopedPdu(Buffer.alloc(0), T.GET, randId(), 0, 0, []),
+  });
+  const res = await udpExchange(host, port, pkt, (raw) => {
+    const m = snmpParse(raw);
+    return m.msgId === msgId ? m : null;
+  });
+  if (!res.engineId.length) throw new UserError('The SNMP agent did not report an engine ID (is SNMPv3 enabled?)');
+  return res;
+}
+
+function snmpPasswordKey(password, hash) {
+  const pw = Buffer.from(password, 'utf8');
+  const block = Buffer.alloc(1048576);
+  for (let i = 0; i < block.length; i += pw.length) pw.copy(block, i);
+  return crypto.createHash(hash).update(block).digest();
+}
+const localizeKey = (ku, engineId, hash) => crypto.createHash(hash).update(Buffer.concat([ku, engineId, ku])).digest();
+
+async function snmpSession(h, secrets) {
+  const { host, port } = splitAddress(h.address);
+  const auth = SNMP_AUTH[h.options?.snmpAuth] || SNMP_AUTH.sha;
+  const d = await snmpDiscover(host, port);
+  const pinned = Buffer.from(h.fingerprint, 'hex');
+  if (d.engineId.length !== pinned.length || !crypto.timingSafeEqual(d.engineId, pinned))
+    throw new UserError('SNMP engine ID mismatch; nothing was sent. Verify the device and update the pinned engine ID');
+  return {
+    host, port, user: h.username, auth, engineId: d.engineId, boots: d.boots, time: d.time, timeAt: Date.now(),
+    authKey: localizeKey(snmpPasswordKey(secrets.auth, auth.hash), d.engineId, auth.hash),
+    privKey: localizeKey(snmpPasswordKey(secrets.priv, auth.hash), d.engineId, auth.hash).subarray(0, 16),
+  };
+}
+
+async function snmpRequest(ctx, pduTag, oids, a = 0, b = 0, retried = false) {
+  const msgId = randId();
+  const time = ctx.time + Math.floor((Date.now() - ctx.timeAt) / 1000);
+  const salt = crypto.randomBytes(8);
+  const cipher = crypto.createCipheriv('aes-128-cfb', ctx.privKey, Buffer.concat([u32(ctx.boots), u32(time), salt]));
+  const plain = scopedPdu(ctx.engineId, pduTag, randId(), a, b, oids);
+  const placeholder = crypto.randomBytes(ctx.auth.macLen);
+  const msg = snmpMessage({
+    msgId, flags: 0x07, engineId: ctx.engineId, boots: ctx.boots, time, user: ctx.user,
+    authParams: placeholder, privParams: salt, data: tlv(T.OCTETS, Buffer.concat([cipher.update(plain), cipher.final()])),
+  });
+  const at = msg.indexOf(placeholder);
+  msg.fill(0, at, at + ctx.auth.macLen);
+  crypto.createHmac(ctx.auth.hash, ctx.authKey).update(msg).digest().subarray(0, ctx.auth.macLen).copy(msg, at);
+
+  const res = await udpExchange(ctx.host, ctx.port, msg, (raw) => {
+    const m = snmpParse(raw);
+    if (m.msgId !== msgId) return null;
+    if (!(m.flags & 0x01)) {
+      // Unauthenticated: only acceptable as a USM error report
+      const pdu = parseScopedPdu(raw, m.data);
+      if (pdu.type !== T.REPORT) return null;
+      return { m, pdu };
+    }
+    const mac = Buffer.from(raw.subarray(m.authNode.start, m.authNode.end));
+    const copy = Buffer.from(raw);
+    copy.fill(0, m.authNode.start, m.authNode.end);
+    const expected = crypto.createHmac(ctx.auth.hash, ctx.authKey).update(copy).digest().subarray(0, ctx.auth.macLen);
+    if (mac.length !== expected.length || !crypto.timingSafeEqual(mac, expected)) throw new UserError('SNMP response failed authentication');
+    if (!m.engineId.equals(ctx.engineId)) throw new UserError('SNMP engine ID changed');
+    if (!(m.flags & 0x02)) return { m, pdu: parseScopedPdu(raw, m.data) };
+    const decipher = crypto.createDecipheriv('aes-128-cfb', ctx.privKey, Buffer.concat([u32(m.boots), u32(m.time), m.privParams]));
+    const enc = raw.subarray(m.data.start, m.data.end);
+    const clear = Buffer.concat([decipher.update(enc), decipher.final()]);
+    return { m, pdu: parseScopedPdu(clear, berRead(clear, 0)) };
+  }).catch((e) => {
+    // Discovery worked, so silence here usually means the agent could not decrypt the request
+    if (/^No SNMP response/.test(e.message))
+      throw new UserError('No response to the encrypted request: most likely a wrong privacy password, or the device is not set to AES');
+    throw e;
+  });
+
+  if (res.pdu.type === T.REPORT) {
+    const oid = res.pdu.varbinds[0]?.oid;
+    if (oid === '1.3.6.1.6.3.15.1.1.2.0' && !retried) {
+      Object.assign(ctx, { boots: res.m.boots, time: res.m.time, timeAt: Date.now() });
+      return snmpRequest(ctx, pduTag, oids, a, b, true);
+    }
+    throw new UserError(USM_REPORTS[oid] || `SNMP error report (${oid || 'unknown'})`);
+  }
+  if (res.pdu.errorStatus) throw new UserError(`SNMP error status ${res.pdu.errorStatus}`);
+  return res.pdu.varbinds;
+}
+
+async function snmpGet(ctx, oidMap) {
+  const entries = Object.entries(oidMap);
+  const out = {};
+  for (let i = 0; i < entries.length; i += 20) {
+    const chunk = entries.slice(i, i + 20);
+    const vbs = await snmpRequest(ctx, T.GET, chunk.map(([, oid]) => oid));
+    chunk.forEach(([k], j) => (out[k] = vbs[j]?.value ?? null));
+  }
+  return out;
+}
+
+// Walks a table and returns rows keyed by index: { index: { column: value } }
+async function snmpTable(ctx, tableOid, maxVarbinds = 2000) {
+  const rows = {};
+  let cur = tableOid;
+  for (let count = 0; count < maxVarbinds; ) {
+    const vbs = await snmpRequest(ctx, T.GETBULK, [cur], 0, 40);
+    if (!vbs.length) break;
+    for (const vb of vbs) {
+      if (vb.type === T.END_OF_MIB || !vb.oid.startsWith(tableOid + '.')) return rows;
+      const [col, ...idx] = vb.oid.slice(tableOid.length + 1).split('.');
+      (rows[idx.join('.')] ||= {})[col] = vb.value;
+      cur = vb.oid;
+      count++;
+    }
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Collectors
+
+const redfishPathCache = new Map();
+
+function okPath(p) {
+  return typeof p === 'string' && p.startsWith('/redfish/v1/') && !p.includes('..') ? p : null;
+}
+
+function healthOf(status) {
+  return status ? { health: status.Health || status.HealthRollup || null, state: status.State || null } : { health: null, state: null };
+}
+
+async function collectIdrac(h, secret) {
+  const auth = 'Basic ' + Buffer.from(`${h.username}:${secret}`).toString('base64');
+  const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers: { Authorization: auth, 'OData-Version': '4.0' } });
+  const tryGet = (p) => get(p).catch((e) => (e.status === 404 || e.status === 405 ? null : Promise.reject(e)));
+
+  const cacheKey = `${h.id}|${h.address}`;
+  let paths = redfishPathCache.get(cacheKey);
+  if (!paths) {
+    const systems = await get('/redfish/v1/Systems');
+    const sysPath = okPath(systems.Members?.[0]?.['@odata.id']);
+    if (!sysPath) throw new UserError('No Redfish system found');
+    const sys = await get(sysPath);
+    const chassisPath = okPath(sys.Links?.Chassis?.[0]?.['@odata.id']) || '/redfish/v1/Chassis/System.Embedded.1';
+    paths = { sysPath, chassisPath };
+    redfishPathCache.set(cacheKey, paths);
+  }
+  const [sys, power, thermal] = await Promise.all([
+    get(paths.sysPath),
+    tryGet(paths.chassisPath + '/Power'),
+    tryGet(paths.chassisPath + '/Thermal'),
+  ]);
+
+  const out = {
+    model: sys.Model || null,
+    serviceTag: sys.SKU || sys.SerialNumber || null,
+    hostName: sys.HostName || null,
+    powerState: sys.PowerState || null,
+    ...healthOf(sys.Status),
+    watts: null,
+    psus: [],
+    temps: [],
+    fans: [],
+  };
+
+  if (power) {
+    const pc = (power.PowerControl || [])[0];
+    out.watts = typeof pc?.PowerConsumedWatts === 'number' ? pc.PowerConsumedWatts : null;
+    out.psus = (power.PowerSupplies || []).map((p) => ({
+      name: p.Name || p.MemberId || 'PSU',
+      ...healthOf(p.Status),
+      inputWatts: p.PowerInputWatts ?? null,
+      outputWatts: p.PowerOutputWatts ?? p.LastPowerOutputWatts ?? null,
+      capacityWatts: p.PowerCapacityWatts ?? null,
+      voltage: p.LineInputVoltage ?? null,
+    }));
+  } else {
+    // Newer Redfish schema (PowerSubsystem / EnvironmentMetrics)
+    const env = await tryGet(paths.chassisPath + '/EnvironmentMetrics');
+    out.watts = env?.PowerWatts?.Reading ?? null;
+    const coll = await tryGet(paths.chassisPath + '/PowerSubsystem/PowerSupplies');
+    const members = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 8);
+    out.psus = (await Promise.all(members.map(tryGet))).filter(Boolean).map((p) => ({
+      name: p.Name || p.Id || 'PSU',
+      ...healthOf(p.Status),
+      inputWatts: null,
+      outputWatts: null,
+      capacityWatts: p.PowerCapacityWatts ?? null,
+      voltage: null,
+    }));
+  }
+
+  if (thermal) {
+    out.temps = (thermal.Temperatures || [])
+      .filter((t) => typeof t.ReadingCelsius === 'number')
+      .map((t) => ({
+        name: t.Name || t.MemberId || 'Sensor',
+        celsius: t.ReadingCelsius,
+        warn: t.UpperThresholdNonCritical ?? null,
+        crit: t.UpperThresholdCritical ?? null,
+        ...healthOf(t.Status),
+      }));
+    out.fans = (thermal.Fans || []).map((f) => ({
+      name: f.Name || f.FanName || f.MemberId || 'Fan',
+      rpm: f.ReadingUnits === 'Percent' ? null : (f.Reading ?? null),
+      percent: f.ReadingUnits === 'Percent' ? f.Reading : null,
+      ...healthOf(f.Status),
+    }));
+  } else {
+    const metrics = await tryGet(paths.chassisPath + '/ThermalSubsystem/ThermalMetrics');
+    out.temps = (metrics?.TemperatureReadingsCelsius || [])
+      .filter((t) => typeof t.Reading === 'number')
+      .map((t) => ({ name: t.DeviceName || 'Sensor', celsius: t.Reading, warn: null, crit: null, health: null, state: null }));
+    const coll = await tryGet(paths.chassisPath + '/ThermalSubsystem/Fans');
+    const members = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 16);
+    out.fans = (await Promise.all(members.map(tryGet))).filter(Boolean).map((f) => ({
+      name: f.Name || f.Id || 'Fan',
+      rpm: f.SpeedPercent?.SpeedRPM ?? null,
+      percent: f.SpeedPercent?.Reading ?? null,
+      ...healthOf(f.Status),
+    }));
+  }
+  return out;
+}
+
+async function collectProxmox(h, secret) {
+  const headers = { Authorization: `PVEAPIToken=${h.username}=${secret}` };
+  const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers }).then((r) => r.data);
+  const [nodes, guests] = await Promise.all([get('/api2/json/nodes'), get('/api2/json/cluster/resources?type=vm')]);
+  return {
+    nodes: (nodes || [])
+      .map((n) => ({
+        name: n.node,
+        status: n.status,
+        cpu: n.cpu ?? null,
+        maxcpu: n.maxcpu ?? null,
+        mem: n.mem ?? null,
+        maxmem: n.maxmem ?? null,
+        disk: n.disk ?? null,
+        maxdisk: n.maxdisk ?? null,
+        uptime: n.uptime ?? null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    guests: (guests || [])
+      .map((g) => ({
+        vmid: g.vmid,
+        name: g.name || `${g.type}-${g.vmid}`,
+        type: g.type === 'lxc' ? 'lxc' : 'qemu',
+        status: g.status,
+        node: g.node,
+        template: Boolean(g.template),
+        cpu: g.cpu ?? null,
+        maxcpu: g.maxcpu ?? null,
+        mem: g.mem ?? null,
+        maxmem: g.maxmem ?? null,
+        uptime: g.uptime ?? null,
+      }))
+      .filter((g) => !g.template)
+      .sort((a, b) => a.vmid - b.vmid),
+  };
+}
+
+async function collectTruenas(h, secret) {
+  const ws = await wsConnect(h, '/api/current');
+  const rpc = new JsonRpc(ws);
+  try {
+    let loggedIn = false;
+    if (h.username) {
+      try {
+        const r = await rpc.call('auth.login_ex', [{ mechanism: 'API_KEY_PLAIN', username: h.username, api_key: secret }]);
+        if (r?.response_type !== 'SUCCESS')
+          throw new UserError(r?.response_type === 'EXPIRED' ? 'API key has expired' : 'Authentication failed (check username and API key)');
+        loggedIn = true;
+      } catch (e) {
+        if (e.rpcCode !== -32601) throw e; // fall back only if the method does not exist
+      }
+    }
+    if (!loggedIn) {
+      const ok = await rpc.call('auth.login_with_api_key', [secret]);
+      if (ok !== true) throw new UserError('Authentication failed (check API key)');
+    }
+
+    const poolFields = ['name', 'status', 'healthy', 'warning', 'status_detail', 'size', 'allocated', 'free'];
+    const [info, pools, alerts] = await Promise.all([
+      rpc.call('system.info'),
+      rpc.call('pool.query', [[], { select: poolFields }]).catch(() => rpc.call('pool.query')),
+      rpc.call('alert.list'),
+    ]);
+
+    const outPools = (pools || []).map((p) => ({
+      name: p.name,
+      status: p.status,
+      healthy: p.healthy,
+      warning: p.warning ?? false,
+      detail: p.status_detail || null,
+      size: p.size ?? null,
+      allocated: p.allocated ?? null,
+      free: p.free ?? null,
+    }));
+    if (outPools.some((p) => p.size == null)) {
+      const ds = await rpc
+        .call('pool.dataset.query', [[['id', 'in', outPools.map((p) => p.name)]], { extra: { retrieve_children: false } }])
+        .catch(() => []);
+      for (const p of outPools) {
+        const d = ds.find((x) => x.id === p.name);
+        if (p.size == null && d) {
+          p.allocated = d.used?.parsed ?? null;
+          p.free = d.available?.parsed ?? null;
+          if (p.allocated != null && p.free != null) p.size = p.allocated + p.free;
+        }
+      }
+    }
+
+    const ts = (d) => (typeof d === 'number' ? d : typeof d?.$date === 'number' ? d.$date : null);
+    return {
+      system: {
+        hostname: info.hostname || null,
+        version: info.version || null,
+        model: info.system_product || info.model || null,
+        cpuModel: info.model || null,
+        cores: info.cores ?? null,
+        memory: info.physmem ?? null,
+        uptime: info.uptime_seconds ?? null,
+        loadavg: Array.isArray(info.loadavg) ? info.loadavg : null,
+      },
+      pools: outPools,
+      alerts: (alerts || [])
+        .filter((a) => !a.dismissed)
+        .map((a) => ({ level: a.level, text: String(a.formatted || a.text || a.klass || '').slice(0, 1000), time: ts(a.datetime) }))
+        .sort((a, b) => (b.time || 0) - (a.time || 0)),
+    };
+  } finally {
+    ws.close();
+  }
+}
+
+
+// --- Synology (SNMPv3) ---
+
+const SYNO = '1.3.6.1.4.1.6574';
+const SYNO_DISK_STATUS = { 1: 'Normal', 2: 'Initialized', 3: 'Not initialized', 4: 'System partition failed', 5: 'Crashed' };
+const SYNO_DISK_HEALTH = { 1: 'Normal', 2: 'Warning', 3: 'Critical', 4: 'Failing' };
+const SYNO_RAID_STATUS = {
+  1: 'Normal', 2: 'Repairing', 3: 'Migrating', 4: 'Expanding', 5: 'Deleting', 6: 'Creating', 7: 'Syncing',
+  8: 'Parity checking', 9: 'Assembling', 10: 'Canceling', 11: 'Degraded', 12: 'Crashed', 13: 'Data scrubbing',
+  14: 'Deploying', 15: 'Undeploying', 16: 'Mounting cache', 17: 'Unmounting cache', 18: 'Expanding', 19: 'Converting', 20: 'Migrating',
+};
+
+async function collectSynology(h, secretJson) {
+  let secrets;
+  try {
+    secrets = JSON.parse(secretJson);
+  } catch {
+    throw new UserError('Stored SNMP credentials are invalid; please re-enter them');
+  }
+  const ctx = await snmpSession(h, secrets);
+  const v = await snmpGet(ctx, {
+    name: '1.3.6.1.2.1.1.5.0',
+    uptime: '1.3.6.1.2.1.25.1.1.0',
+    status: `${SYNO}.1.1.0`,
+    temp: `${SYNO}.1.2.0`,
+    power: `${SYNO}.1.3.0`,
+    systemFan: `${SYNO}.1.4.1.0`,
+    cpuFan: `${SYNO}.1.4.2.0`,
+    model: `${SYNO}.1.5.1.0`,
+    serial: `${SYNO}.1.5.2.0`,
+    version: `${SYNO}.1.5.3.0`,
+    upgrade: `${SYNO}.1.5.4.0`,
+    cpuIdle: '1.3.6.1.4.1.2021.11.11.0',
+    memTotal: '1.3.6.1.4.1.2021.4.5.0',
+    memAvail: '1.3.6.1.4.1.2021.4.6.0',
+    memBuffer: '1.3.6.1.4.1.2021.4.14.0',
+    memCached: '1.3.6.1.4.1.2021.4.15.0',
+    load1: '1.3.6.1.4.1.2021.10.1.3.1',
+    load5: '1.3.6.1.4.1.2021.10.1.3.2',
+    load15: '1.3.6.1.4.1.2021.10.1.3.3',
+  });
+  const [disks, raids, storage] = [
+    await snmpTable(ctx, `${SYNO}.2.1.1`),
+    await snmpTable(ctx, `${SYNO}.3.1.1`),
+    await snmpTable(ctx, '1.3.6.1.2.1.25.2.3.1'),
+  ];
+  const ok = (n) => (n === 1 ? 'Normal' : n === 2 ? 'Failed' : null);
+  const kb = (n) => (typeof n === 'number' ? n * 1024 : null);
+  const memUsed = v.memTotal != null && v.memAvail != null ? v.memTotal - v.memAvail - (v.memBuffer || 0) - (v.memCached || 0) : null;
+  return {
+    system: {
+      name: v.name,
+      model: v.model,
+      serial: v.serial,
+      version: v.version,
+      upgradeAvailable: v.upgrade === 1,
+      uptime: typeof v.uptime === 'number' ? Math.round(v.uptime / 100) : null,
+      temp: v.temp,
+      status: ok(v.status),
+      powerStatus: ok(v.power),
+      systemFan: ok(v.systemFan),
+      cpuFan: ok(v.cpuFan),
+      cpu: typeof v.cpuIdle === 'number' ? Math.max(0, 100 - v.cpuIdle) / 100 : null,
+      memTotal: kb(v.memTotal),
+      memUsed: kb(memUsed),
+      load: [v.load1, v.load5, v.load15].every((x) => x != null) ? [v.load1, v.load5, v.load15].map(Number) : null,
+    },
+    volumes: Object.values(storage)
+      .filter((r) => typeof r['3'] === 'string' && /^\/volume\d+$/.test(r['3']))
+      .map((r) => ({ name: r['3'], size: r['5'] * r['4'], used: r['6'] * r['4'] }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true })),
+    pools: Object.values(raids).map((r) => ({
+      name: r['2'],
+      status: SYNO_RAID_STATUS[r['3']] || `Status ${r['3']}`,
+      healthy: r['3'] === 1 || r['3'] === 13 || r['3'] === 8,
+      free: r['4'] ?? null,
+      size: r['5'] ?? null,
+    })),
+    disks: Object.entries(disks)
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([, r]) => ({
+        id: r['2'],
+        model: typeof r['3'] === 'string' ? r['3'].trim() : null,
+        type: r['4'] ?? null,
+        status: SYNO_DISK_STATUS[r['5']] || null,
+        health: SYNO_DISK_HEALTH[r['13']] || null,
+        temp: r['6'] ?? null,
+        remainingLife: typeof r['11'] === 'number' && r['11'] >= 0 ? r['11'] : null,
+      })),
+  };
+}
+
+// --- UniFi (UniFi OS console, local View Only account) ---
+//
+// The session cookie is kept in memory only. After a failed login no new attempt is made
+// for 15 minutes, so a wrong password can't lock the account on the console.
+
+const unifiSessions = new Map(); // `${id}|${address}|${username}` -> { cookie, failedUntil, error }
+const UNIFI_BACKOFF_MS = 15 * 60 * 1000;
+
+async function unifiLogin(h, password) {
+  const key = `${h.id}|${h.address}|${h.username}`;
+  const s = unifiSessions.get(key) || {};
+  if (s.failedUntil > Date.now())
+    throw new UserError(`${s.error} Next login attempt in ${Math.ceil((s.failedUntil - Date.now()) / 60000)} min.`);
+  const r = await httpsRequest(connectHost(h), h.address, {
+    method: 'POST',
+    path: '/api/auth/login',
+    body: JSON.stringify({ username: h.username, password, rememberMe: false }),
+    full: true,
+  });
+  if (r.status === 200) {
+    const cookies = [].concat(r.headers['set-cookie'] || []);
+    const token = cookies.map((c) => c.split(';')[0]).find((c) => c.startsWith('TOKEN='));
+    if (!token) throw new UserError('UniFi login returned no session token');
+    unifiSessions.set(key, { cookie: token });
+    return token;
+  }
+  const error =
+    r.status === 499 ? 'The UniFi account requires MFA; use a local account without MFA.'
+      : r.status === 429 ? 'Too many login attempts on the UniFi console.'
+        : r.status === 401 || r.status === 403 || r.status === 400 ? 'UniFi login failed (check the username/password of the local account).'
+          : `UniFi login failed (HTTP ${r.status}).`;
+  unifiSessions.set(key, { failedUntil: Date.now() + UNIFI_BACKOFF_MS, error });
+  throw new UserError(error);
+}
+
+async function unifiGet(h, password, apiPath) {
+  const key = `${h.id}|${h.address}|${h.username}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const cookie = unifiSessions.get(key)?.cookie || (await unifiLogin(h, password));
+    const r = await httpsRequest(connectHost(h), h.address, { path: apiPath, headers: { Cookie: cookie }, full: true });
+    if (r.status === 401 && attempt === 0) {
+      unifiSessions.delete(key); // session expired: log in again once
+      continue;
+    }
+    if (r.status === 403) throw new UserError('The UniFi account lacks access to the Network application');
+    if (r.status < 200 || r.status >= 300) throw Object.assign(new UserError(`HTTP ${r.status}`), { status: r.status });
+    if (!r.json) throw new UserError('Invalid JSON response');
+    return r.json.data ?? r.json;
+  }
+  throw new UserError('UniFi session could not be established');
+}
+
+const num0 = (v) => (v === undefined || v === null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+
+function unifiDevice(d) {
+  const ports = (d.port_table || []).map((p) => ({
+    idx: p.port_idx,
+    name: p.name || `Port ${p.port_idx}`,
+    up: Boolean(p.up),
+    speed: num0(p.speed),
+    uplink: Boolean(p.is_uplink),
+    sfp: /sfp/i.test(String(p.media || '')),
+    poeW: p.port_poe && p.poe_enable !== false ? num0(p.poe_power) ?? 0 : null,
+  }));
+  const poePorts = ports.filter((p) => p.poeW !== null);
+  const temps = (d.temperatures || []).map((t) => ({ name: t.name || t.type || 'Sensor', value: num0(t.value) })).filter((t) => t.value !== null);
+  if (!temps.length && num0(d.general_temperature) !== null) temps.push({ name: 'General', value: num0(d.general_temperature) });
+  const stats = d['system-stats'] || {};
+  return {
+    mac: String(d.mac || '').toLowerCase(),
+    name: d.name || d.model || d.mac,
+    model: d.model || null,
+    type: d.type || null, // udm, ugw, usw, uap, ...
+    online: d.state === 1,
+    state: d.state === 1 ? 'Online' : d.state === 0 ? 'Offline' : d.state === 4 ? 'Upgrading' : d.state === 5 ? 'Provisioning' : `State ${d.state}`,
+    version: d.version || null,
+    upgradable: Boolean(d.upgradable),
+    ip: d.ip || null,
+    uptime: num0(d.uptime),
+    cpu: num0(stats.cpu) !== null ? num0(stats.cpu) / 100 : null,
+    mem: num0(stats.mem) !== null ? num0(stats.mem) / 100 : null,
+    temps,
+    fanLevel: num0(d.fan_level),
+    clients: num0(d.num_sta),
+    ports,
+    poe: poePorts.length ? { usedW: poePorts.reduce((a, p) => a + p.poeW, 0), budgetW: num0(d.total_max_power) } : null,
+    radios: (d.radio_table_stats || []).map((r) => ({ radio: r.radio, channel: r.channel ?? null, clients: num0(r.num_sta), satisfaction: num0(r.satisfaction) })),
+    uplinkMac: d.uplink?.uplink_mac ? String(d.uplink.uplink_mac).toLowerCase() : null,
+    uplinkPort: num0(d.uplink?.uplink_remote_port),
+  };
+}
+
+async function collectUnifi(h, password) {
+  const sites = await unifiGet(h, password, '/proxy/network/api/self/sites');
+  const names = (Array.isArray(sites) ? sites : [])
+    .map((x) => x.name)
+    .filter((n) => typeof n === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(n))
+    .slice(0, 5);
+  const devices = [];
+  let health = null;
+  for (const site of names.length ? names : ['default']) {
+    const [devs, hl] = await Promise.all([
+      unifiGet(h, password, `/proxy/network/api/s/${site}/stat/device`),
+      unifiGet(h, password, `/proxy/network/api/s/${site}/stat/health`).catch(() => []),
+    ]);
+    for (const d of Array.isArray(devs) ? devs : []) devices.push({ site, ...unifiDevice(d) });
+    if (!health && Array.isArray(hl)) {
+      const sub = Object.fromEntries(hl.map((x) => [x.subsystem, x]));
+      health = {
+        wan: sub.wan ? { status: sub.wan.status, ip: sub.wan.wan_ip || null } : null,
+        internet: sub.www ? { status: sub.www.status, latencyMs: num0(sub.www.latency), downMbps: num0(sub.www.xput_down), upMbps: num0(sub.www.xput_up) } : null,
+        clients: (num0(sub.wlan?.num_user) || 0) + (num0(sub.lan?.num_user) || 0),
+        wifiClients: num0(sub.wlan?.num_user),
+        wiredClients: num0(sub.lan?.num_user),
+      };
+    }
+  }
+  const order = { udm: 0, ugw: 0, uxg: 0, usw: 1, uap: 2 };
+  devices.sort((a, b) => (order[a.type] ?? 3) - (order[b.type] ?? 3) || a.name.localeCompare(b.name));
+  return { health, devices: devices.slice(0, 200) };
+}
+
+const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi };
+
+function safeErrorMessage(e, secret) {
+  let msg = e instanceof UserError ? e.message : 'Unexpected error while collecting data';
+  if (!(e instanceof UserError)) log('collector error:', e && e.stack ? e.stack.split('\n')[0] : e);
+  const parts = [secret];
+  try {
+    parts.push(...Object.values(JSON.parse(secret)));
+  } catch {
+    /* not a JSON secret */
+  }
+  for (const part of parts) if (typeof part === 'string' && part.length >= 4) msg = msg.split(part).join('[redacted]');
+  return msg.slice(0, 300);
+}
+
+// ---------------------------------------------------------------------------
+// Services (Homepage-style): a link card with a status check and an optional integration
+//
+// A service has a user-facing link (`href`, never requested by the server) and an optional
+// connection URL used for the status check and the integration. HTTPS connections use the
+// same CA verification / SHA-256 pinning as devices; plain HTTP is allowed for LAN services,
+// and the admin page warns that a key would then travel unencrypted.
+
+function parseServiceUrl(input) {
+  let url;
+  try {
+    url = new URL(String(input || '').trim());
+  } catch {
+    throw new UserError('Invalid URL (include http:// or https://)');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new UserError('Only http:// and https:// URLs are supported');
+  if (url.username || url.password) throw new UserError('Put credentials in the credential fields, not in the URL');
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80);
+  return { https: url.protocol === 'https:', host, port, base: url.pathname.replace(/\/+$/, ''), href: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}` };
+}
+
+function plainConnect(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect({ host, port });
+    const timer = setTimeout(() => {
+      sock.destroy();
+      reject(new UserError('Connection timed out'));
+    }, timeoutMs);
+    sock.once('connect', () => {
+      clearTimeout(timer);
+      resolve(sock);
+    });
+    sock.once('error', (e) => {
+      clearTimeout(timer);
+      reject(friendlyNetError(e));
+    });
+  });
+}
+
+// conn: { url, tlsMode, fingerprint }
+function connRequest(conn, reqPath, opts = {}) {
+  const u = parseServiceUrl(conn.url);
+  const address = net.isIPv6(u.host) ? `[${u.host}]:${u.port}` : `${u.host}:${u.port}`;
+  const timeoutMs = opts.timeoutMs || 10000;
+  const sock = u.https
+    ? tlsConnect(address, { pin: conn.tlsMode === 'pin' ? conn.fingerprint : null, verify: true, timeoutMs })
+    : plainConnect(u.host, u.port, timeoutMs);
+  return httpsRequest(sock, address, { ...opts, timeoutMs, path: u.base + reqPath });
+}
+
+// Integration context: small helpers so each integration only describes its API.
+function integrationCtx(svc, secret) {
+  const conn = svc.connection;
+  const req = async (method, p, { headers = {}, body = null, form = null, okStatus } = {}) => {
+    const h = { ...headers };
+    let b = body === null ? null : typeof body === 'string' ? body : JSON.stringify(body);
+    if (form) {
+      b = new URLSearchParams(form).toString();
+      h['Content-Type'] = 'application/x-www-form-urlencoded';
+    }
+    const r = await connRequest(conn, p, { method, headers: h, body: b, full: true });
+    if (okStatus ? !okStatus(r.status) : r.status < 200 || r.status >= 300) {
+      const hint = r.status === 401 ? ' (authentication failed)' : r.status === 403 ? ' (permission denied)' : r.status === 404 ? ' (not found: check the URL and the version)' : '';
+      throw Object.assign(new UserError(`HTTP ${r.status}${hint}`), { status: r.status });
+    }
+    return r;
+  };
+  const json = async (method, p, o) => {
+    const r = await req(method, p, o);
+    if (r.json === null) throw new UserError('Invalid JSON response (is the URL correct?)');
+    return r.json;
+  };
+  return {
+    svc,
+    secret,
+    username: svc.integration.username,
+    options: svc.integration.options || {},
+    req,
+    get: (p, o) => json('GET', p, o),
+    post: (p, body, o) => json('POST', p, { ...o, body }),
+    basic: () => ({ Authorization: 'Basic ' + Buffer.from(`${svc.integration.username}:${secret}`).toString('base64') }),
+  };
+}
+
+const svcSessions = new Map(); // `${service id}|${url}|${user}` -> session token/cookie (memory only)
+async function withSession(x, login, use) {
+  const key = `${x.svc.id}|${x.svc.connection.url}|${x.username}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let session = svcSessions.get(key);
+    if (!session) {
+      session = await login();
+      svcSessions.set(key, session);
+    }
+    try {
+      return await use(session);
+    } catch (e) {
+      svcSessions.delete(key);
+      if (attempt === 1 || ![401, 403].includes(e.status)) throw e;
+    }
+  }
+}
+
+const stat = (label, value, unit) => ({ label, value: value ?? null, ...(unit ? { unit } : {}) });
+const count = (r) => (Array.isArray(r) ? r.length : 0);
+const total = (r) => r?.totalRecords ?? r?.total ?? null;
+
+// Each integration: label, what it needs, and fetch(x) -> up to 4 stats.
+const INTEGRATIONS = {
+  // --- Media ---
+  jellyfin: {
+    label: 'Jellyfin', group: 'Media', secret: 'API key', icon: 'jellyfin',
+    async fetch(x) {
+      const H = { headers: { 'X-Emby-Token': x.secret } };
+      const [c, sessions] = await Promise.all([x.get('/Items/Counts', H), x.get('/Sessions', H)]);
+      return [stat('Movies', c.MovieCount), stat('Series', c.SeriesCount), stat('Episodes', c.EpisodeCount), stat('Streaming', sessions.filter((s) => s.NowPlayingItem).length)];
+    },
+  },
+  emby: {
+    label: 'Emby', group: 'Media', secret: 'API key', icon: 'emby',
+    async fetch(x) {
+      return INTEGRATIONS.jellyfin.fetch(x);
+    },
+  },
+  plex: {
+    label: 'Plex', group: 'Media', secret: 'Plex token', icon: 'plex',
+    async fetch(x) {
+      const H = { headers: { 'X-Plex-Token': x.secret, Accept: 'application/json' } };
+      const [sessions, sections] = await Promise.all([x.get('/status/sessions', H), x.get('/library/sections', H)]);
+      const dirs = sections.MediaContainer?.Directory || [];
+      const size = async (type) => {
+        let n = 0;
+        for (const d of dirs.filter((y) => y.type === type)) {
+          const r = await x.get(`/library/sections/${encodeURIComponent(d.key)}/all?X-Plex-Container-Start=0&X-Plex-Container-Size=0`, H);
+          n += r.MediaContainer?.totalSize ?? r.MediaContainer?.size ?? 0;
+        }
+        return n;
+      };
+      return [stat('Streams', sessions.MediaContainer?.size ?? 0), stat('Movies', await size('movie')), stat('TV shows', await size('show')), stat('Libraries', dirs.length)];
+    },
+  },
+  tautulli: {
+    label: 'Tautulli', group: 'Media', secret: 'API key', icon: 'tautulli',
+    async fetch(x) {
+      const r = await x.get(`/api/v2?apikey=${encodeURIComponent(x.secret)}&cmd=get_activity`);
+      const d = r.response?.data || {};
+      return [stat('Streams', Number(d.stream_count) || 0), stat('Transcoding', Number(d.stream_count_transcode) || 0), stat('Bandwidth', (Number(d.total_bandwidth) || 0) * 1000, 'bps')];
+    },
+  },
+  sonarr: {
+    label: 'Sonarr', group: 'Media', secret: 'API key', icon: 'sonarr',
+    async fetch(x) {
+      const H = { headers: { 'X-Api-Key': x.secret } };
+      const [series, wanted, queue] = await Promise.all([x.get('/api/v3/series', H), x.get('/api/v3/wanted/missing?pageSize=1', H), x.get('/api/v3/queue?pageSize=1', H)]);
+      return [stat('Series', count(series)), stat('Wanted', total(wanted)), stat('Queued', total(queue))];
+    },
+  },
+  radarr: {
+    label: 'Radarr', group: 'Media', secret: 'API key', icon: 'radarr',
+    async fetch(x) {
+      const H = { headers: { 'X-Api-Key': x.secret } };
+      const [movies, wanted, queue] = await Promise.all([x.get('/api/v3/movie', H), x.get('/api/v3/wanted/missing?pageSize=1', H), x.get('/api/v3/queue?pageSize=1', H)]);
+      return [stat('Movies', count(movies)), stat('On disk', Array.isArray(movies) ? movies.filter((m) => m.hasFile).length : null), stat('Wanted', total(wanted)), stat('Queued', total(queue))];
+    },
+  },
+  lidarr: {
+    label: 'Lidarr', group: 'Media', secret: 'API key', icon: 'lidarr',
+    async fetch(x) {
+      const H = { headers: { 'X-Api-Key': x.secret } };
+      const [artists, wanted, queue] = await Promise.all([x.get('/api/v1/artist', H), x.get('/api/v1/wanted/missing?pageSize=1', H), x.get('/api/v1/queue?pageSize=1', H)]);
+      return [stat('Artists', count(artists)), stat('Wanted', total(wanted)), stat('Queued', total(queue))];
+    },
+  },
+  prowlarr: {
+    label: 'Prowlarr', group: 'Media', secret: 'API key', icon: 'prowlarr',
+    async fetch(x) {
+      const H = { headers: { 'X-Api-Key': x.secret } };
+      const [indexers, st] = await Promise.all([x.get('/api/v1/indexer', H), x.get('/api/v1/indexerstats', H)]);
+      const rows = st.indexers || [];
+      const sum = (k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
+      return [stat('Indexers', Array.isArray(indexers) ? indexers.filter((i) => i.enable).length : null), stat('Grabs', sum('numberOfGrabs')), stat('Queries', sum('numberOfQueries')), stat('Failed', sum('numberOfFailedQueries'))];
+    },
+  },
+  bazarr: {
+    label: 'Bazarr', group: 'Media', secret: 'API key', icon: 'bazarr',
+    async fetch(x) {
+      const H = { headers: { 'X-API-KEY': x.secret } };
+      const [ep, mv] = await Promise.all([x.get('/api/episodes/wanted?start=0&length=1', H), x.get('/api/movies/wanted?start=0&length=1', H)]);
+      return [stat('Missing episodes', ep.total ?? null), stat('Missing movies', mv.total ?? null)];
+    },
+  },
+  overseerr: {
+    label: 'Seerr / Overseerr / Jellyseerr', group: 'Media', secret: 'API key', icon: 'overseerr',
+    async fetch(x) {
+      const c = await x.get('/api/v1/request/count', { headers: { 'X-Api-Key': x.secret } });
+      return [stat('Pending', c.pending), stat('Processing', c.processing), stat('Approved', c.approved), stat('Available', c.available)];
+    },
+  },
+  qbittorrent: {
+    label: 'qBittorrent', group: 'Media', user: 'Username', secret: 'Password', icon: 'qbittorrent',
+    async fetch(x) {
+      const origin = parseServiceUrl(x.svc.connection.url).href;
+      return withSession(x, async () => {
+        const r = await x.req('POST', '/api/v2/auth/login', { form: { username: x.username, password: x.secret }, headers: { Referer: origin, Origin: origin } });
+        // "SID" before qBittorrent 5.x; newer versions may use "QBT_SID_<port>"
+        const sid = [].concat(r.headers['set-cookie'] || []).map((c) => c.split(';')[0]).find((c) => /^(SID|QBT_SID[\w-]*)=/.test(c));
+        if (!sid || /fail/i.test(r.text || '')) throw Object.assign(new UserError('qBittorrent login failed'), { status: 401 });
+        return sid;
+      }, async (sid) => {
+        const H = { headers: { Cookie: sid, Referer: origin, Origin: origin } };
+        const [info, torrents] = await Promise.all([x.get('/api/v2/transfer/info', H), x.get('/api/v2/torrents/info', H)]);
+        const states = (Array.isArray(torrents) ? torrents : []).map((t) => t.state);
+        return [stat('Download', info.dl_info_speed, 'B/s'), stat('Upload', info.up_info_speed, 'B/s'),
+          stat('Leeching', states.filter((y) => ['downloading', 'stalledDL', 'metaDL', 'forcedDL'].includes(y)).length),
+          stat('Seeding', states.filter((y) => ['uploading', 'stalledUP', 'forcedUP'].includes(y)).length)]; // paused/queued not counted
+      });
+    },
+  },
+  transmission: {
+    label: 'Transmission', group: 'Media', user: 'Username (optional)', secret: 'Password (optional)', optionalSecret: true, icon: 'transmission',
+    async fetch(x) {
+      const auth = x.username ? x.basic() : {};
+      const call = (sid) => x.req('POST', '/transmission/rpc', { body: { method: 'session-stats' }, headers: { ...auth, ...(sid ? { 'X-Transmission-Session-Id': sid } : {}) }, okStatus: (st) => st === 200 || st === 409 });
+      let r = await call(null);
+      if (r.status === 409) r = await call(r.headers['x-transmission-session-id']);
+      const a = r.json?.arguments || {};
+      return [stat('Download', a.downloadSpeed, 'B/s'), stat('Upload', a.uploadSpeed, 'B/s'), stat('Active', a.activeTorrentCount), stat('Torrents', a.torrentCount)];
+    },
+  },
+  sabnzbd: {
+    label: 'SABnzbd', group: 'Media', secret: 'API key', icon: 'sabnzbd',
+    async fetch(x) {
+      const r = await x.get(`/api?mode=queue&output=json&apikey=${encodeURIComponent(x.secret)}`);
+      const q = r.queue || {};
+      return [stat('Speed', (Number(q.kbpersec) || 0) * 1024, 'B/s'), stat('Queue', Number(q.noofslots) || 0), stat('Time left', q.timeleft || '0:00:00')];
+    },
+  },
+
+  // --- Network & DNS ---
+  pihole: {
+    label: 'Pi-hole', group: 'Network', secret: 'Password (v6) or API token (v5)', icon: 'pi-hole',
+    async fetch(x) {
+      // Pi-hole v6: session API (sessions are reused; v6 limits concurrent sessions)
+      try {
+        return await withSession(x, async () => {
+          const r = await x.post('/api/auth', { password: x.secret });
+          if (!r.session?.valid || !r.session.sid) throw Object.assign(new UserError('Pi-hole login failed'), { status: 401 });
+          return r.session.sid;
+        }, async (sid) => {
+          const s = await x.get('/api/stats/summary', { headers: { 'X-FTL-SID': sid } });
+          return [stat('Queries', s.queries?.total), stat('Blocked', s.queries?.blocked), stat('Block rate', s.queries?.percent_blocked, '%'), stat('On blocklist', s.gravity?.domains_being_blocked)];
+        });
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+      const s = await x.get(`/admin/api.php?summaryRaw&auth=${encodeURIComponent(x.secret)}`); // v5
+      return [stat('Queries', s.dns_queries_today), stat('Blocked', s.ads_blocked_today), stat('Block rate', s.ads_percentage_today, '%'), stat('On blocklist', s.domains_being_blocked)];
+    },
+  },
+  adguard: {
+    label: 'AdGuard Home', group: 'Network', user: 'Username', secret: 'Password', icon: 'adguard-home',
+    async fetch(x) {
+      const s = await x.get('/control/stats', { headers: x.basic() });
+      const q = s.num_dns_queries || 0;
+      return [stat('Queries', q), stat('Blocked', s.num_blocked_filtering), stat('Block rate', q ? (100 * (s.num_blocked_filtering || 0)) / q : 0, '%'), stat('Latency', (s.avg_processing_time || 0) * 1000, 'ms')];
+    },
+  },
+  npm: {
+    label: 'Nginx Proxy Manager', group: 'Network', user: 'E-mail', secret: 'Password', icon: 'nginx-proxy-manager',
+    async fetch(x) {
+      return withSession(x, async () => {
+        const r = await x.post('/api/tokens', { identity: x.username, secret: x.secret });
+        if (!r.token) throw Object.assign(new UserError('Login failed'), { status: 401 });
+        return r.token;
+      }, async (token) => {
+        const hosts = await x.get('/api/nginx/proxy-hosts', { headers: { Authorization: `Bearer ${token}` } });
+        const list = Array.isArray(hosts) ? hosts : [];
+        return [stat('Enabled', list.filter((h) => h.enabled).length), stat('Disabled', list.filter((h) => !h.enabled).length), stat('Total', list.length)];
+      });
+    },
+  },
+  traefik: {
+    label: 'Traefik', group: 'Network', user: 'Username (optional)', secret: 'Password (optional)', optionalSecret: true, icon: 'traefik',
+    async fetch(x) {
+      const o = await x.get('/api/overview', { headers: x.username ? x.basic() : {} });
+      return [stat('Routers', o.http?.routers?.total), stat('Services', o.http?.services?.total), stat('Middleware', o.http?.middlewares?.total), stat('Errors', (o.http?.routers?.errors || 0) + (o.http?.services?.errors || 0))];
+    },
+  },
+
+  // --- Home & productivity ---
+  homeassistant: {
+    label: 'Home Assistant', group: 'Home', secret: 'Long-lived access token', icon: 'home-assistant',
+    async fetch(x) {
+      const states = await x.get('/api/states', { headers: { Authorization: `Bearer ${x.secret}` } });
+      const list = Array.isArray(states) ? states : [];
+      const on = (prefix) => list.filter((e) => e.entity_id.startsWith(prefix) && e.state === 'on').length;
+      return [stat('People home', list.filter((e) => e.entity_id.startsWith('person.') && e.state === 'home').length), stat('Lights on', on('light.')), stat('Switches on', on('switch.')), stat('Entities', list.length)];
+    },
+  },
+  nextcloud: {
+    label: 'Nextcloud', group: 'Home', user: 'Username (empty = serverinfo token)', secret: 'App password or serverinfo token', icon: 'nextcloud',
+    async fetch(x) {
+      const headers = { 'OCS-APIRequest': 'true', ...(x.username ? x.basic() : { 'NC-Token': x.secret }) };
+      const r = await x.get('/ocs/v2.php/apps/serverinfo/api/v1/info?format=json', { headers });
+      const d = r.ocs?.data || {};
+      return [stat('Active users (24 h)', d.activeUsers?.last24hours), stat('Files', d.nextcloud?.storage?.num_files), stat('Free space', d.nextcloud?.system?.freespace, 'B'), stat('CPU load', d.nextcloud?.system?.cpuload?.[0])];
+    },
+  },
+  immich: {
+    label: 'Immich', group: 'Home', secret: 'API key', icon: 'immich',
+    async fetch(x) {
+      const H = { headers: { 'x-api-key': x.secret } };
+      let s;
+      try {
+        s = await x.get('/api/server/statistics', H);
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        s = await x.get('/api/server-info/statistics', H); // older versions
+      }
+      return [stat('Photos', s.photos), stat('Videos', s.videos), stat('Storage', s.usage, 'B'), stat('Users', s.usageByUser?.length)];
+    },
+  },
+  paperless: {
+    label: 'Paperless-ngx', group: 'Home', secret: 'API token', icon: 'paperless-ngx',
+    async fetch(x) {
+      const s = await x.get('/api/statistics/', { headers: { Authorization: `Token ${x.secret}` } });
+      return [stat('Documents', s.documents_total), stat('Inbox', s.documents_inbox)];
+    },
+  },
+
+  // --- Monitoring & admin ---
+  uptimekuma: {
+    label: 'Uptime Kuma', group: 'Monitoring', secret: null, icon: 'uptime-kuma', options: [{ key: 'slug', label: 'Status page slug', required: true, placeholder: 'e.g. homelab' }],
+    async fetch(x) {
+      const slug = encodeURIComponent(x.options.slug || '');
+      const hb = await x.get(`/api/status-page/heartbeat/${slug}`);
+      const last = Object.values(hb.heartbeatList || {}).map((beats) => beats[beats.length - 1]).filter(Boolean);
+      const ratios = Object.entries(hb.uptimeList || {}).filter(([k]) => k.endsWith('_24')).map(([, v]) => v);
+      const avg = ratios.length ? (100 * ratios.reduce((a, b) => a + b, 0)) / ratios.length : null;
+      return [stat('Up', last.filter((b) => b.status === 1).length), stat('Down', last.filter((b) => b.status === 0).length), stat('Uptime 24 h', avg, '%')];
+    },
+  },
+  grafana: {
+    label: 'Grafana', group: 'Monitoring', user: 'Username (empty = API token)', secret: 'Password or service account token', icon: 'grafana',
+    async fetch(x) {
+      const s = await x.get('/api/admin/stats', { headers: x.username ? x.basic() : { Authorization: `Bearer ${x.secret}` } });
+      return [stat('Dashboards', s.dashboards), stat('Data sources', s.datasources), stat('Alert rules', s.alerts), stat('Users', s.users)];
+    },
+  },
+  portainer: {
+    label: 'Portainer', group: 'Monitoring', secret: 'Access token', icon: 'portainer', options: [{ key: 'env', label: 'Environment ID', placeholder: 'empty = first' }],
+    async fetch(x) {
+      const H = { headers: { 'X-API-Key': x.secret } };
+      let env = String(x.options.env || '').trim();
+      if (!env) env = String((await x.get('/api/endpoints', H))[0]?.Id ?? '1');
+      if (!/^\d+$/.test(env)) throw new UserError('Environment ID must be a number');
+      const containers = await x.get(`/api/endpoints/${env}/docker/containers/json?all=1`, H);
+      const list = Array.isArray(containers) ? containers : [];
+      return [stat('Running', list.filter((c) => c.State === 'running').length), stat('Stopped', list.filter((c) => c.State !== 'running').length), stat('Total', list.length)];
+    },
+  },
+  speedtest: {
+    label: 'Speedtest Tracker', group: 'Monitoring', secret: 'API token (v1 API; empty for old versions)', optionalSecret: true, icon: 'speedtest-tracker',
+    async fetch(x) {
+      const r = x.secret
+        ? await x.get('/api/v1/results/latest', { headers: { Authorization: `Bearer ${x.secret}`, Accept: 'application/json' } })
+        : await x.get('/api/speedtest/latest');
+      const d = r.data || {};
+      const mbps = (bits, legacy) => (bits != null ? bits / 1e6 : legacy != null ? Number(legacy) : null);
+      return [stat('Download', mbps(d.download_bits, d.download), 'Mbps'), stat('Upload', mbps(d.upload_bits, d.upload), 'Mbps'), stat('Ping', Number(d.ping), 'ms')];
+    },
+  },
+  prometheus: {
+    label: 'Prometheus', group: 'Monitoring', secret: null, icon: 'prometheus',
+    async fetch(x) {
+      const r = await x.get('/api/v1/targets?state=active');
+      const t = r.data?.activeTargets || [];
+      return [stat('Targets up', t.filter((y) => y.health === 'up').length), stat('Down', t.filter((y) => y.health !== 'up').length)];
+    },
+  },
+  authentik: {
+    label: 'authentik', group: 'Monitoring', secret: 'API token', icon: 'authentik',
+    async fetch(x) {
+      const H = { headers: { Authorization: `Bearer ${x.secret}` } };
+      const since = new Date(Date.now() - 86400000).toISOString();
+      const [users, logins, failed] = await Promise.all([
+        x.get('/api/v3/core/users/?page_size=1', H),
+        x.get(`/api/v3/events/events/?action=login&page_size=1&created__gt=${encodeURIComponent(since)}`, H),
+        x.get(`/api/v3/events/events/?action=login_failed&page_size=1&created__gt=${encodeURIComponent(since)}`, H),
+      ]);
+      return [stat('Users', users.pagination?.count), stat('Logins (24 h)', logins.pagination?.count), stat('Failed (24 h)', failed.pagination?.count)];
+    },
+  },
+
+  // --- Anything with a JSON API ---
+  customapi: {
+    label: 'Custom JSON API', group: 'Other', secret: 'Header value (optional)', optionalSecret: true, icon: null,
+    options: [
+      { key: 'path', label: 'Path', placeholder: '/api/stats' },
+      { key: 'header', label: 'Auth header name (optional)', placeholder: 'X-Api-Key' },
+      { key: 'fields', label: 'Fields: one per line, "Label = json.path"', multiline: true, required: true, placeholder: 'Users = data.users\nUptime = stats.uptime' },
+    ],
+    async fetch(x) {
+      const p = String(x.options.path || '/');
+      if (!p.startsWith('/') || /\s/.test(p)) throw new UserError('Path must start with /');
+      const header = String(x.options.header || '').trim();
+      if (header && !/^[A-Za-z0-9-]{1,64}$/.test(header)) throw new UserError('Invalid header name');
+      const data = await x.get(p, { headers: header && x.secret ? { [header]: x.secret } : {} });
+      return String(x.options.fields || '').split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4).map((line) => {
+        const [label, expr = ''] = line.split('=').map((v) => v.trim());
+        const value = expr.split('.').filter(Boolean).reduce((o, k) => (o === null || o === undefined ? undefined : o[k]), data);
+        return stat(label.slice(0, 30), typeof value === 'number' || typeof value === 'string' ? value : value === undefined ? null : JSON.stringify(value).slice(0, 40));
+      });
+    },
+  },
+};
+
+// What the admin form needs to know about each integration (no code)
+function integrationDefs() {
+  return Object.fromEntries(Object.entries(INTEGRATIONS).map(([k, v]) => [k, {
+    label: v.label, group: v.group, user: v.user || null, secret: v.secret, optionalSecret: Boolean(v.optionalSecret), icon: v.icon, options: v.options || [],
+  }]));
+}
+
+const serviceResults = new Map(); // service id -> { check, stats, error, updatedAt }
+
+async function checkService(svc) {
+  if (!svc.connection?.url) return null;
+  const t0 = Date.now();
+  try {
+    const r = await connRequest(svc.connection, '/', { method: 'GET', headOnly: true, timeoutMs: 8000 });
+    return { up: r.status < 500, code: r.status, ms: Date.now() - t0 };
+  } catch (e) {
+    return { up: false, code: null, ms: null, error: e instanceof UserError ? e.message : 'Unreachable' };
+  }
+}
+
+async function runIntegration(svc, plainSecret = null) {
+  const def = svc.integration && INTEGRATIONS[svc.integration.type];
+  if (!def) return { stats: null, error: null };
+  let secret = plainSecret;
+  try {
+    if (!secret && svc.secret) secret = decryptSecret(serviceSecretHost(svc));
+    if (def.secret && !def.optionalSecret && !secret) throw new UserError('No credentials set; enter them in Admin → Services');
+    const stats = await withTimeout(def.fetch(integrationCtx(svc, secret || '')), 20000, 'Integration');
+    return { stats: stats.slice(0, 4), error: null };
+  } catch (e) {
+    return { stats: null, error: safeErrorMessage(e, secret) };
+  }
+}
+
+// The secret is bound to the service and its connection (AAD), like device secrets.
+function serviceIdentity(svc) {
+  return { id: svc.id, type: `svc:${svc.integration?.type || ''}`, address: svc.connection?.url || '', username: svc.integration?.username || '', tlsMode: svc.connection?.tlsMode || '', fingerprint: svc.connection?.fingerprint || '' };
+}
+// What encryptSecret/decryptSecret take: the identity plus the stored ciphertext
+function serviceSecretHost(svc) {
+  return { ...serviceIdentity(svc), secret: svc.secret };
+}
+
+async function pollService(svc) {
+  const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc)]);
+  if (config.services.find((x) => x.id === svc.id) !== svc) return;
+  const prev = serviceResults.get(svc.id);
+  serviceResults.set(svc.id, {
+    check,
+    stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
+    error: integ.error,
+    updatedAt: Date.now(),
+  });
+}
+
+function forgetService(id) {
+  serviceResults.delete(id);
+  for (const k of svcSessions.keys()) if (k.startsWith(id + '|')) svcSessions.delete(k);
+}
+
+// --- Service configuration ---
+
+const ICON_DIR = path.join(DATA_DIR, 'icons');
+const ICON_INDEX_URL = { host: 'cdn.jsdelivr.net:443', path: '/gh/homarr-labs/dashboard-icons/tree.json' };
+let iconIndex = { names: null, fetchedAt: 0 };
+const iconPreviewCache = new Map(); // name -> sanitized image (memory only)
+
+const validId = (v) => typeof v === 'string' && UUID.test(v);
+const str = (v, max, name, { required = false, multiline = false } = {}) => {
+  const s = String(v ?? '').trim();
+  if (required && !s) throw new UserError(`${name} is required`);
+  if (s.length > max) throw new UserError(`${name} is too long (max ${max} characters)`);
+  if (multiline ? /[\u0000-\u0008\u000b-\u001f\u007f]/.test(s) : hasControlChars(s)) throw new UserError(`${name} contains invalid characters`);
+  return s;
+};
+
+function validateLink(v) {
+  const s = str(v, 500, 'Link');
+  if (!s) return '';
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    throw new UserError('Link must be a full URL (https://…)');
+  }
+  if (!['http:', 'https:'].includes(u.protocol)) throw new UserError('Link must start with http:// or https://');
+  return u.href;
+}
+
+function validateServiceInput(b) {
+  const name = str(b.name, 48, 'Name', { required: true });
+  const out = {
+    name,
+    group: str(b.group, 32, 'Group') || 'Services',
+    description: str(b.description, 120, 'Description'),
+    href: validateLink(b.href),
+    deviceId: b.deviceId && config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : null,
+    icon: b.icon?.kind === 'file' && config.icons.some((i) => i.id === b.icon.id) ? { kind: 'file', id: b.icon.id } : { kind: 'letter' },
+    connection: null,
+    integration: null,
+  };
+  const url = str(b.connection?.url, 500, 'Connection URL');
+  if (url) {
+    const u = parseServiceUrl(url);
+    const tlsMode = u.https && b.connection?.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.connection = { url: u.href, tlsMode, fingerprint: tlsMode === 'pin' ? normalizeFingerprint(b.connection.fingerprint) : '' };
+  }
+  const type = b.integration?.type;
+  if (type) {
+    const def = INTEGRATIONS[type];
+    if (!def) throw new UserError('Unknown integration');
+    if (!out.connection) throw new UserError(`${def.label} needs a connection URL`);
+    const options = {};
+    for (const o of def.options || []) {
+      options[o.key] = str(b.integration.options?.[o.key], o.multiline ? 1000 : 200, o.label, { required: o.required, multiline: o.multiline });
+    }
+    const username = def.user ? str(b.integration.username, 128, def.user) : '';
+    if (def.user && !/optional|empty/i.test(def.user) && !username) throw new UserError(`${def.user} is required for ${def.label}`);
+    out.integration = { type, username, options };
+  }
+  return out;
+}
+
+// Applies a create/update. A changed connection, integration type or user name without a
+// newly entered secret deletes the stored secret (it is never sent anywhere new).
+function buildService(old, b) {
+  const fields = validateServiceInput(b);
+  const next = old ? { ...old, ...fields } : { id: crypto.randomUUID(), ...fields, secret: null, order: Math.max(0, ...config.services.map((x) => x.order || 0)) + 1 };
+  const secret = typeof b.secret === 'string' && b.secret.length ? b.secret : null;
+  if (secret && (secret.length > 4096 || hasControlChars(secret))) throw new UserError('Invalid secret');
+  let note = null;
+  const ident = (x) => JSON.stringify(serviceIdentity(x));
+  if (!next.integration) next.secret = null;
+  else if (secret) next.secret = encryptSecret(serviceSecretHost(next), secret);
+  else if (old && b.clearSecret === true) next.secret = null;
+  else if (old?.secret && ident(old) !== ident(next)) {
+    next.secret = null;
+    note = 'The URL, integration or user name changed, so the stored secret was deleted. Enter it again.';
+  }
+  return { svc: next, note };
+}
+
+function publicService(svc) {
+  return { ...svc, secret: undefined, hasSecret: Boolean(svc.secret) };
+}
+
+function iconUrl(icon) {
+  return icon?.kind === 'file' ? `/media/icon/${icon.id}` : null;
+}
+
+function servicesPayload() {
+  const groups = new Map();
+  for (const svc of [...config.services].sort((a, b) => (a.order || 0) - (b.order || 0))) {
+    if (!groups.has(svc.group)) groups.set(svc.group, []);
+    const r = serviceResults.get(svc.id);
+    groups.get(svc.group).push({
+      id: svc.id,
+      name: svc.name,
+      description: svc.description,
+      href: svc.href,
+      icon: iconUrl(svc.icon),
+      device: config.devices.find((d) => d.id === svc.deviceId)?.name || null,
+      integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
+      check: svc.connection ? r?.check ?? null : undefined,
+      stats: r?.stats ?? null,
+      error: r?.error ?? null,
+      updatedAt: r?.updatedAt ?? null,
+    });
+  }
+  return { groups: [...groups].map(([name, services]) => ({ name, services })), refreshSeconds: config.settings.dashboard.refreshSeconds };
+}
+
+// Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
+function storeIcon(buf, source) {
+  const { mime, data } = sanitizeImage(buf);
+  const existing = config.icons.find((i) => i.source === source && source.startsWith('library:'));
+  if (existing) return existing;
+  const id = crypto.randomBytes(16).toString('hex');
+  fs.mkdirSync(ICON_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(ICON_DIR, id), data, { mode: 0o600, flag: 'wx' });
+  const rec = { id, mime, bytes: data.length, source, addedAt: Date.now() };
+  config.icons.push(rec);
+  return rec;
+}
+
+function pruneIcons() {
+  const used = new Set(config.services.filter((s) => s.icon?.kind === 'file').map((s) => s.icon.id));
+  for (const icon of config.icons.filter((i) => !used.has(i.id))) {
+    if (Date.now() - icon.addedAt < 3600 * 1000) continue; // just picked in an unsaved form
+    fs.rmSync(path.join(ICON_DIR, icon.id), { force: true });
+    config.icons = config.icons.filter((i) => i !== icon);
+  }
+}
+
+async function iconNames() {
+  if (iconIndex.names && Date.now() - iconIndex.fetchedAt < 24 * 3600 * 1000) return iconIndex.names;
+  const r = await httpsRequest(tlsConnect(ICON_INDEX_URL.host, { verify: true }), ICON_INDEX_URL.host, { path: ICON_INDEX_URL.path, full: true, maxBytes: 4 << 20 });
+  if (r.status !== 200 || !Array.isArray(r.json?.png)) throw new UserError('Could not load the icon library');
+  iconIndex = { names: r.json.png.filter((n) => /^[a-z0-9][a-z0-9._-]{0,80}\.png$/.test(n)).map((n) => n.slice(0, -4)), fetchedAt: Date.now() };
+  return iconIndex.names;
+}
+
+async function fetchLibraryIcon(name) {
+  const names = await iconNames();
+  if (!names.includes(name)) throw new UserError('Unknown icon');
+  const host = ICON_INDEX_URL.host;
+  const r = await httpsRequest(tlsConnect(host, { verify: true }), host, { path: `/gh/homarr-labs/dashboard-icons/png/${name}.png`, binary: true, maxBytes: 2 << 20 });
+  if (r.status !== 200) throw new UserError(`Icon download failed (HTTP ${r.status})`);
+  return storeIcon(r.body, `library:${name}`);
+}
+
+// --- Documentation (always behind login, even with a public dashboard) ---
+
+const DOCS_FILE = path.join(DATA_DIR, 'docs.json');
+let docs = null;
+const emptyDocs = () => ({ servers: {}, network: { networks: [], reservations: [], notes: '' }, pages: [] });
+
+function loadDocs() {
+  const d = readJson(DOCS_FILE, null);
+  docs = { ...emptyDocs(), ...(d && typeof d === 'object' ? d : {}) };
+}
+function saveDocs() {
+  writeJsonAtomic(DOCS_FILE, docs);
+}
+
+const SERVER_DOC_FIELDS = { role: 80, os: 80, location: 80, purchased: 20, warranty: 20, notes: 50000 };
+function validateServerDoc(b) {
+  const out = {};
+  for (const [k, max] of Object.entries(SERVER_DOC_FIELDS)) out[k] = str(b[k], max, k, { multiline: k === 'notes' });
+  out.custom = (Array.isArray(b.custom) ? b.custom : []).slice(0, 40).map((f) => ({ label: str(f?.label, 60, 'Field name'), value: str(f?.value, 500, 'Field value') })).filter((f) => f.label || f.value);
+  out.updatedAt = Date.now();
+  return out;
+}
+
+function validateNetworkDoc(b) {
+  const row = (r, spec) => Object.fromEntries(Object.entries(spec).map(([k, max]) => [k, str(r?.[k], max, k)]));
+  const networks = (Array.isArray(b.networks) ? b.networks : []).slice(0, 100).map((r) => row(r, { name: 60, vlan: 10, subnet: 50, gateway: 50, dhcp: 80, purpose: 200 }));
+  const reservations = (Array.isArray(b.reservations) ? b.reservations : []).slice(0, 1000).map((r) => ({
+    ...row(r, { ip: 50, name: 80, mac: 30, notes: 200 }),
+    deviceId: validId(r?.deviceId) && config.devices.some((d) => d.id === r.deviceId) ? r.deviceId : null,
+  }));
+  return { networks, reservations, notes: str(b.notes, 50000, 'Notes', { multiline: true }), updatedAt: Date.now() };
+}
+
+function validatePage(b) {
+  return {
+    title: str(b.title, 120, 'Title', { required: true }),
+    folder: str(b.folder, 60, 'Folder'),
+    body: str(b.body, 200000, 'Page', { multiline: true }),
+    updatedAt: Date.now(),
+  };
+}
+
+// UniFi data that only the docs need (networks, clients); fetched on demand, cached briefly.
+// Only whitelisted fields are kept: network configs can also contain VPN/PPPoE secrets.
+const unifiDocsCache = new Map(); // host id -> { at, data }
+async function unifiDocsData(h) {
+  const c = unifiDocsCache.get(h.id);
+  if (c && Date.now() - c.at < 60000) return c.data;
+  const password = decryptSecret(h);
+  const site = 'default';
+  const [nets, sta] = await Promise.all([
+    unifiGet(h, password, `/proxy/network/api/s/${site}/rest/networkconf`).catch(() => []),
+    unifiGet(h, password, `/proxy/network/api/s/${site}/stat/sta`).catch(() => []),
+  ]);
+  const data = {
+    networks: (Array.isArray(nets) ? nets : []).filter((n) => n.purpose !== 'wan' && n.ip_subnet).map((n) => ({
+      name: String(n.name || ''), vlan: n.vlan_enabled ? String(n.vlan ?? '') : '', subnet: String(n.ip_subnet || ''), purpose: String(n.purpose || ''),
+      dhcp: n.dhcpd_enabled ? `${n.dhcpd_start || ''} – ${n.dhcpd_stop || ''}` : '', domain: String(n.domain_name || ''),
+    })),
+    clients: (Array.isArray(sta) ? sta : []).slice(0, 2000).map((x) => ({
+      mac: String(x.mac || '').toLowerCase(), name: String(x.name || x.hostname || ''), ip: String(x.ip || ''), wired: Boolean(x.is_wired),
+      swMac: x.sw_mac ? String(x.sw_mac).toLowerCase() : null, swPort: num0(x.sw_port), apMac: x.ap_mac ? String(x.ap_mac).toLowerCase() : null,
+      network: String(x.network || ''), fixedIp: x.use_fixedip ? String(x.fixed_ip || '') : '',
+    })),
+  };
+  unifiDocsCache.set(h.id, { at: Date.now(), data });
+  return data;
+}
+
+// Facts gathered automatically for the documentation (login only)
+async function docsAuto() {
+  const hostIp = (h) => splitAddress(h.address).host;
+  const devices = config.devices.filter((d) => !d.hidden).map((d) => {
+    const conns = deviceHosts(d);
+    const data = (type) => results.get(conns.find((h) => h.type === type)?.id)?.data;
+    const idrac = data('idrac');
+    const pveHost = conns.find((h) => h.type === 'proxmox');
+    const pve = pveHost && results.get(pveHost.id)?.data;
+    const node = pveHost ? effectiveNode(pveHost, d) : null;
+    const syno = data('synology');
+    const tn = data('truenas');
+    const ud = d.unifi ? results.get(d.unifi.hostId)?.data?.devices?.find((x) => x.mac === d.unifi.mac) : null;
+    const nodeInfo = pve?.nodes?.find((n) => n.name === node) || (pve?.nodes?.length === 1 ? pve.nodes[0] : null);
+    return {
+      id: d.id, name: d.name, kind: d.kind, location: d.location, u: d.u, height: d.height, estimateW: d.estimateW,
+      connections: conns.map((h) => ({ type: h.type, label: HOST_TYPES[h.type].label, address: h.address, ip: hostIp(h) })),
+      ips: [...new Set([...conns.map(hostIp), ud?.ip].filter(Boolean))],
+      model: idrac?.model || syno?.system?.model || tn?.system?.model || ud?.model || null,
+      serviceTag: idrac?.serviceTag || syno?.system?.serial || null,
+      hostName: idrac?.hostName || tn?.system?.hostname || syno?.system?.name || null,
+      firmware: syno?.system?.version || tn?.system?.version || ud?.version || null,
+      cpu: nodeInfo?.maxcpu ? `${nodeInfo.maxcpu} threads` : tn?.system?.cores ? `${tn.system.cores} cores` : null,
+      memory: nodeInfo?.maxmem || tn?.system?.memory || syno?.system?.memTotal || null,
+      psus: idrac?.psus?.map((p) => p.capacityWatts && `${p.name}: ${p.capacityWatts} W`).filter(Boolean) || [],
+      disks: syno?.disks?.map((x) => `${x.id}: ${x.model || ''} (${x.health || x.status || ''})`) || [],
+      pools: [...(syno?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(tn?.pools || []).map((p) => `${p.name}: ${p.status}`)],
+      vms: pve ? pve.guests.filter((g) => !node || g.node === node).map((g) => ({ vmid: g.vmid, name: g.name, type: g.type, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu })) : [],
+      services: config.services.filter((s) => s.deviceId === d.id).map((s) => ({ name: s.name, href: s.href })),
+      unifiMac: d.unifi?.mac || null,
+    };
+  });
+  const unifi = [];
+  for (const h of config.hosts.filter((x) => x.type === 'unifi' && x.secret)) {
+    const r = results.get(h.id);
+    if (!r?.data) continue;
+    let extra = { networks: [], clients: [] };
+    try {
+      extra = await unifiDocsData(h);
+    } catch {
+      /* show what we have */
+    }
+    unifi.push({
+      console: h.name,
+      devices: r.data.devices.map((x) => ({ mac: x.mac, name: x.name, type: x.type, model: x.model, ip: x.ip, online: x.online, uplinkMac: x.uplinkMac, uplinkPort: x.uplinkPort, ports: x.ports })),
+      ...extra,
+    });
+  }
+  return { devices, unifi };
+}
+
+// ---------------------------------------------------------------------------
+// Polling
+
+const results = new Map(); // host id -> { ok, error, data, updatedAt, lastOkAt }
+let pollTimer = null;
+let polling = false;
+
+// `plainSecret` is only used to test a connection before it is saved.
+async function runCollector(h, plainSecret = null) {
+  let secret = plainSecret;
+  try {
+    if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
+    secret ||= decryptSecret(h);
+    const data = await withTimeout(COLLECTORS[h.type](h, secret), COLLECT_TIMEOUT_MS, 'Data collection');
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: safeErrorMessage(e, secret) };
+  }
+}
+
+async function pollHost(h) {
+  const r = await runCollector(h);
+  if (config.hosts.find((x) => x.id === h.id) !== h) return; // host edited/removed meanwhile
+  const now = Date.now();
+  const prev = results.get(h.id);
+  if (r.ok) {
+    results.set(h.id, { ok: true, data: r.data, updatedAt: now, lastOkAt: now });
+    if (h.type === 'idrac' && typeof r.data.watts === 'number') recordPower(`idrac:${h.id}`, r.data.watts, now);
+    if (h.type === 'unifi') {
+      for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now);
+      syncUnifiDevices(h, r.data.devices);
+    }
+  } else {
+    results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null });
+  }
+}
+
+async function pollAll() {
+  if (polling) return;
+  polling = true;
+  try {
+    await ensurePrices().catch(() => {});
+    await Promise.all([...config.hosts.map(pollHost), ...config.services.map(pollService)]);
+    recordPower('estimate', estimatedWatts(), Date.now(), true);
+  } finally {
+    polling = false;
+  }
+}
+
+function schedulePolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(pollAll, config.settings.dashboard.refreshSeconds * 1000);
+  pollAll();
+}
+
+// ---------------------------------------------------------------------------
+// Time helpers (Europe/Oslo)
+
+const zonedFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  weekday: 'short',
+  hourCycle: 'h23',
+});
+
+function zoned(ms) {
+  const p = {};
+  for (const { type, value } of zonedFmt.formatToParts(new Date(ms))) p[type] = value;
+  return {
+    date: `${p.year}-${p.month}-${p.day}`,
+    month: `${p.year}-${p.month}`,
+    year: p.year,
+    hour: parseInt(p.hour, 10),
+    minute: parseInt(p.minute, 10),
+    second: parseInt(p.second, 10),
+    weekend: p.weekday === 'Sat' || p.weekday === 'Sun',
+  };
+}
+
+function osloDayStart(ms) {
+  const z = zoned(ms);
+  let t = ms - ((z.hour * 60 + z.minute) * 60 + z.second) * 1000 - (ms % 1000);
+  // Correct for DST shifts within the day
+  for (let i = 0; i < 3 && zoned(t).date !== z.date; i++) t += 3600 * 1000;
+  for (let i = 0; i < 3 && zoned(t - 3600 * 1000).date === z.date; i++) t -= 3600 * 1000;
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Electricity prices
+
+const spotCache = new Map(); // `${area}|${date}` -> { slots: [{start,end,nokPerKwh}] } | { failedAt }
+
+async function fetchSpot(area, date) {
+  const [y, m, d] = date.split('-');
+  const address = 'www.hvakosterstrommen.no:443';
+  const data = await httpsRequest(tlsConnect(address, { verify: true }), address, {
+    path: `/api/v1/prices/${y}/${m}-${d}_${area}.json`,
+  });
+  if (!Array.isArray(data) || !data.length) throw new UserError('Empty price data');
+  return data
+    .map((e) => ({ start: Date.parse(e.time_start), end: Date.parse(e.time_end), nok: Number(e.NOK_per_kWh) }))
+    .filter((e) => Number.isFinite(e.start) && Number.isFinite(e.end) && Number.isFinite(e.nok))
+    .sort((a, b) => a.start - b.start);
+}
+
+async function loadSpot(area, date) {
+  const k = `${area}|${date}`;
+  const c = spotCache.get(k);
+  if (c?.slots) return c.slots;
+  if (c?.failedAt && Date.now() - c.failedAt < 10 * 60 * 1000) return null;
+  try {
+    const slots = await fetchSpot(area, date);
+    spotCache.set(k, { slots });
+    return slots;
+  } catch (e) {
+    spotCache.set(k, { failedAt: Date.now() });
+    if (!(e.status === 404)) log(`Spot price fetch failed for ${area} ${date}: ${e.message}`);
+    return null;
+  }
+}
+
+async function ensurePrices() {
+  const p = config.settings.power;
+  if (p.plan !== 'spot') return;
+  const now = Date.now();
+  await loadSpot(p.area, zoned(now).date);
+  if (zoned(now).hour >= 13) await loadSpot(p.area, zoned(now + 24 * 3600 * 1000).date);
+  if (spotCache.size > 20) {
+    const keep = new Set([0, -1, 1].map((d) => `${p.area}|${zoned(now + d * 86400000).date}`));
+    for (const k of spotCache.keys()) if (!keep.has(k)) spotCache.delete(k);
+  }
+}
+
+function spotAt(area, t) {
+  const slots = spotCache.get(`${area}|${zoned(t).date}`)?.slots;
+  return slots?.find((s) => t >= s.start && t < s.end) ?? null;
+}
+
+// Norwegian public holidays (helligdager) as YYYY-MM-DD, for tariffs with night rate on holidays.
+const holidayCache = new Map();
+function holidays(year) {
+  if (holidayCache.has(year)) return holidayCache.get(year);
+  // Easter Sunday (anonymous Gregorian algorithm)
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  const easter = Date.UTC(year, month - 1, day);
+  const rel = (n) => new Date(easter + n * 86400000).toISOString().slice(0, 10);
+  const set = new Set(
+    [`${year}-01-01`, `${year}-05-01`, `${year}-05-17`, `${year}-12-25`, `${year}-12-26`].concat([-3, -2, 0, 1, 39, 49, 50].map(rel))
+  );
+  holidayCache.set(year, set);
+  return set;
+}
+
+function gridRateAt(t, p) {
+  const g = p.grid;
+  const z = zoned(t);
+  const offDay = (g.weekendNight && z.weekend) || (g.holidayNight && holidays(+z.year).has(z.date));
+  const day = z.hour >= g.dayStartHour && z.hour < g.dayEndHour && !offDay;
+  let ore = day ? g.dayOre : g.nightOre;
+  if (g.ratesInclVat) ore /= 1.25;
+  if (!g.ratesInclFees) ore += g.elavgiftOre + g.enovaOre;
+  return { ore: ore * (p.vat ? 1.25 : 1), period: day ? 'day' : 'night' };
+}
+
+function fixedPerHourKr(p) {
+  return p.fixed.include ? ((p.fixed.gridMonthlyKr + p.fixed.supplierMonthlyKr) * 12) / 8760 : 0;
+}
+
+// Returns total price in øre/kWh (energy incl. VAT/markup/subsidy + grid tariff), or null if unknown.
+function priceAt(t, p = config.settings.power) {
+  const vat = p.vat ? 1.25 : 1;
+  let energy;
+  let spotOre = null;
+  // Under Norgespris the supplier still bills spot + markup; the state settles spot vs. 40 øre.
+  if (p.plan === 'norgespris') energy = NORGESPRIS_ORE_EX_VAT * vat + p.markupOre;
+  else {
+    const slot = spotAt(p.area, t);
+    if (!slot) return null;
+    spotOre = slot.nok * 100;
+    let ex = spotOre;
+    if (p.support.enabled) ex -= Math.max(0, spotOre - p.support.thresholdOre) * (p.support.percent / 100);
+    energy = ex * vat + p.markupOre;
+  }
+  const grid = gridRateAt(t, p);
+  return { energy, grid: grid.ore, total: energy + grid.ore, period: grid.period, spotOre };
+}
+
+// ---------------------------------------------------------------------------
+// Energy log: integrates iDRAC power readings into hourly buckets
+
+let energy = { buckets: {} }; // hourStartMs -> { wh, ore, unpricedWh }
+let energyDirty = false;
+const lastSample = new Map(); // host id -> { t, w }
+
+function loadEnergy() {
+  const e = readJson(ENERGY_FILE, null);
+  if (e && e.buckets && typeof e.buckets === 'object') energy = e;
+}
+
+function saveEnergy() {
+  if (!energyDirty) return;
+  const cutoff = Date.now() - 3 * 366 * 86400000;
+  for (const k of Object.keys(energy.buckets)) if (+k < cutoff) delete energy.buckets[k];
+  writeJsonAtomic(ENERGY_FILE, energy);
+  energyDirty = false;
+}
+
+// Measured sources: `idrac:<host>`, `poe:<host>:<mac>`. Estimated: 'estimate' (rack equipment).
+function recordPower(sourceId, watts, t, estimated = false) {
+  const prev = lastSample.get(sourceId);
+  lastSample.set(sourceId, { t, w: watts });
+  if (!prev) return;
+  const dt = t - prev.t;
+  const maxGap = Math.max(3 * config.settings.dashboard.refreshSeconds * 1000, 5 * 60 * 1000);
+  if (dt <= 0 || dt > maxGap) return;
+  const mid = prev.t + dt / 2;
+  const wh = ((prev.w + watts) / 2) * (dt / 3600000);
+  const key = String(Math.floor(mid / 3600000) * 3600000);
+  const b = (energy.buckets[key] ||= { wh: 0, ore: 0, unpricedWh: 0 });
+  const price = priceAt(mid);
+  const [whKey, oreKey, unKey] = estimated ? ['estWh', 'estOre', 'estUnpricedWh'] : ['wh', 'ore', 'unpricedWh'];
+  b[whKey] = (b[whKey] || 0) + wh;
+  if (price) b[oreKey] = (b[oreKey] || 0) + (wh / 1000) * price.total;
+  else b[unKey] = (b[unKey] || 0) + wh;
+  energyDirty = true;
+}
+
+const bucketDayCache = new Map();
+
+function energySummary() {
+  const now = Date.now();
+  const zNow = zoned(now);
+  const fixedHour = fixedPerHourKr(config.settings.power); // fixed fees pro rata per logged hour, if enabled
+  const est = config.settings.power.includeEstimates;
+  const add = (acc, b) => {
+    acc.kwh += (b.wh + (est ? b.estWh || 0 : 0)) / 1000;
+    acc.cost += (b.ore + (est ? b.estOre || 0 : 0)) / 100 + fixedHour;
+    acc.unpricedKwh += (b.unpricedWh + (est ? b.estUnpricedWh || 0 : 0)) / 1000;
+  };
+  const blank = () => ({ kwh: 0, cost: 0, unpricedKwh: 0 });
+  const today = blank();
+  const month = blank();
+  const year = blank();
+  const days = new Map();
+  for (let i = 29; i >= 0; i--) days.set(zoned(now - i * 86400000).date, { date: zoned(now - i * 86400000).date, ...blank() });
+  let first = null;
+  for (const [k, b] of Object.entries(energy.buckets)) {
+    let date = bucketDayCache.get(k);
+    if (!date) {
+      date = zoned(+k + 1).date;
+      bucketDayCache.set(k, date);
+    }
+    if (first === null || +k < first) first = +k;
+    if (date === zNow.date) add(today, b);
+    if (date.startsWith(zNow.month)) add(month, b);
+    if (date.startsWith(zNow.year)) add(year, b);
+    if (days.has(date)) add(days.get(date), b);
+  }
+  return { today, month, year, days: [...days.values()], since: first };
+}
+
+// Rack equipment estimates; devices linked to an iDRAC are measured instead.
+// Estimated draw of devices without a power sensor; devices with an iDRAC are measured instead.
+function estimatedWatts() {
+  let w = 0;
+  for (const d of config.devices) {
+    if (d.hidden || !(d.estimateW > 0)) continue;
+    if (deviceHosts(d).some((h) => h.type === 'idrac')) continue;
+    w += d.estimateW;
+  }
+  return w;
+}
+
+function measuredWatts() {
+  let idrac = null;
+  let poe = null;
+  for (const h of config.hosts) {
+    const r = results.get(h.id);
+    if (!r?.ok) continue;
+    if (h.type === 'idrac' && typeof r.data?.watts === 'number') idrac = (idrac || 0) + r.data.watts;
+    if (h.type === 'unifi') for (const d of r.data.devices) if (d.poe) poe = (poe || 0) + d.poe.usedW;
+  }
+  return { idrac, poe, total: idrac === null && poe === null ? null : (idrac || 0) + (poe || 0) };
+}
+
+function powerSummary() {
+  const p = config.settings.power;
+  const measured = measuredWatts();
+  const estimatedW = estimatedWatts();
+  const watts = measured.total === null && !(p.includeEstimates && estimatedW) ? null : (measured.total || 0) + (p.includeEstimates ? estimatedW : 0);
+  const now = Date.now();
+  const priceNow = priceAt(now);
+  let estimate = null;
+  if (watts !== null) {
+    // Cost for a full day at the current draw with today's price profile
+    const start = osloDayStart(now);
+    const end = osloDayStart(start + 36 * 3600 * 1000);
+    let ore = 0;
+    let complete = true;
+    for (let t = start; t < end; t += 15 * 60 * 1000) {
+      const pr = priceAt(t + 7.5 * 60 * 1000);
+      if (!pr) {
+        complete = false;
+        break;
+      }
+      ore += (watts / 1000) * 0.25 * pr.total;
+    }
+    const kwhDay = (watts / 1000) * ((end - start) / 3600000);
+    const fixedMonth = p.fixed.include ? p.fixed.gridMonthlyKr + p.fixed.supplierMonthlyKr : 0;
+    estimate = complete
+      ? {
+          kwhDay,
+          day: ore / 100 + (fixedMonth * 12) / 365,
+          month: (ore / 100) * 30.4375 + fixedMonth,
+          year: (ore / 100) * 365 + fixedMonth * 12,
+        }
+      : { kwhDay, day: null, month: null, year: null };
+  }
+  return {
+    watts, // what the cost is based on
+    measured,
+    estimatedW,
+    includeEstimates: p.includeEstimates,
+    plan: p.plan,
+    area: p.area,
+    vat: p.vat,
+    priceNow,
+    fixed: { monthlyKr: p.fixed.gridMonthlyKr + p.fixed.supplierMonthlyKr, included: p.fixed.include },
+    estimate,
+    usage: energySummary(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sessions, rate limiting
+
+const sessions = new Map(); // id -> { user, csrf, created, seen }
+const COOKIE_SECURE =
+  process.env.COOKIE_SECURE === '1' || (process.env.COOKIE_SECURE !== '0' && Boolean(process.env.TLS_CERT_FILE));
+const COOKIE_NAME = COOKIE_SECURE ? '__Host-hd_session' : 'hd_session';
+
+function parseCookies(header) {
+  const out = {};
+  for (const part of String(header || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function getSession(req) {
+  const id = parseCookies(req.headers.cookie)[COOKIE_NAME];
+  if (!id) return null;
+  const s = sessions.get(id);
+  if (!s) return null;
+  const now = Date.now();
+  if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) {
+    sessions.delete(id);
+    return null;
+  }
+  s.seen = now;
+  s.id = id;
+  return s;
+}
+
+function createSession(res, user) {
+  const id = crypto.randomBytes(32).toString('base64url');
+  const s = { user, csrf: crypto.randomBytes(32).toString('base64url'), created: Date.now(), seen: Date.now() };
+  sessions.set(id, s);
+  setCookie(res, id, SESSION_MAX_MS / 1000);
+  return s;
+}
+
+function setCookie(res, value, maxAge) {
+  res.setHeader(
+    'Set-Cookie',
+    `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${COOKIE_SECURE ? '; Secure' : ''}`
+  );
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of sessions) if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) sessions.delete(id);
+  for (const [k, v] of loginFailures) if (now - v.last > 24 * 3600 * 1000) loginFailures.delete(k);
+}, 60 * 1000).unref();
+
+const loginFailures = new Map(); // key -> { count, last, lockedUntil }
+
+function lockRemaining(key) {
+  const f = loginFailures.get(key);
+  return f && f.lockedUntil > Date.now() ? Math.ceil((f.lockedUntil - Date.now()) / 1000) : 0;
+}
+
+function registerFailure(key, freeAttempts) {
+  const now = Date.now();
+  const f = loginFailures.get(key) || { count: 0, last: 0, lockedUntil: 0 };
+  if (now - f.last > 3600 * 1000) f.count = 0;
+  f.count++;
+  f.last = now;
+  if (f.count >= freeAttempts) f.lockedUntil = now + Math.min(30000 * 2 ** (f.count - freeAttempts), 3600 * 1000);
+  loginFailures.set(key, f);
+}
+
+// ---------------------------------------------------------------------------
+// HTTP plumbing
+
+const CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "object-src 'none'",
+].join('; ');
+
+function securityHeaders(res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Cache-Control', 'no-store');
+  if (COOKIE_SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+}
+
+function sendJson(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+  res.end(body);
+}
+
+function sendError(res, status, message) {
+  sendJson(res, status, { error: message });
+}
+
+function redirect(res, location) {
+  res.writeHead(303, { Location: location });
+  res.end();
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (type !== 'application/json') return reject(Object.assign(new UserError('Content-Type must be application/json'), { status: 415 }));
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        reject(Object.assign(new UserError('Request body too large'), { status: 413 }));
+        req.destroy();
+      } else chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        const v = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error();
+        resolve(v);
+      } catch {
+        reject(Object.assign(new UserError('Invalid JSON'), { status: 400 }));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+const allowedHosts = new Set();
+function initAllowedHosts() {
+  const names = [HOST.includes(':') ? `[${HOST}]` : HOST];
+  if (HOST === '127.0.0.1' || HOST === '::1') names.push('localhost', '127.0.0.1', '[::1]');
+  for (const extra of String(process.env.ALLOWED_HOSTS || '').split(',')) if (extra.trim()) names.push(extra.trim().toLowerCase());
+  for (const n of names) {
+    if (/:\d+$/.test(n) && !n.endsWith(']')) allowedHosts.add(n);
+    else {
+      allowedHosts.add(`${n}:${PORT}`);
+      if (PORT === 80 || PORT === 443) allowedHosts.add(n);
+      allowedHosts.add(n.replace(/:\d+$/, '')); // reverse proxies (e.g. tailscale serve) on default port
+    }
+  }
+}
+
+function hostAllowed(h) {
+  return typeof h === 'string' && allowedHosts.has(h.toLowerCase());
+}
+
+// Blocks cross-site state-changing requests in addition to the CSRF token and SameSite cookie.
+function sameOrigin(req) {
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin') return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const o = new URL(origin);
+      if (o.host.toLowerCase() !== String(req.headers.host).toLowerCase() && !allowedHosts.has(o.host.toLowerCase())) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function csrfOk(req, session) {
+  const token = req.headers['x-csrf-token'];
+  if (typeof token !== 'string' || !session) return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(session.csrf);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Static files are loaded once into memory from an explicit allow-list.
+const STATIC = {};
+const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg']);
+const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js']);
+function loadStatic() {
+  const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+  const files = {
+    'login.html': 'login.html',
+    'dashboard.html': 'dashboard.html',
+    'admin.html': 'admin.html',
+    'services.html': 'services.html',
+    'docs.html': 'docs.html',
+    '/static/js/services.js': 'js/services.js',
+    '/static/js/docs.js': 'js/docs.js',
+    '/static/js/markdown.js': 'js/markdown.js',
+    '/static/css/style.css': 'css/style.css',
+    '/static/js/common.js': 'js/common.js',
+    '/static/js/login.js': 'js/login.js',
+    '/static/js/dashboard.js': 'js/dashboard.js',
+    '/static/js/layout.js': 'js/layout.js',
+    '/static/js/rack.js': 'js/rack.js',
+    '/static/js/admin.js': 'js/admin.js',
+    '/static/favicon.svg': 'favicon.svg',
+  };
+  for (const [key, rel] of Object.entries(files)) {
+    STATIC[key] = { body: fs.readFileSync(path.join(PUBLIC_DIR, rel)), type: types[path.extname(rel)] };
+  }
+}
+
+function sendStatic(res, key) {
+  const f = STATIC[key];
+  res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': f.body.length });
+  res.end(f.body);
+}
+
+// ---------------------------------------------------------------------------
+// Background images
+//
+// Only JPEG, PNG and WebP are accepted, identified by their content (never SVG, which can
+// carry scripts). Metadata that may hold GPS position, camera details or comments
+// (EXIF, XMP, IPTC, PNG text chunks) is removed before the file is stored. A JPEG's
+// EXIF orientation is kept, so portrait photos still display upright.
+
+const BACKGROUND_DIR = path.join(DATA_DIR, 'backgrounds');
+
+function sniffImage(buf) {
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length > 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function exifOrientation(app1) {
+  if (app1.length < 14 || app1.toString('latin1', 0, 6) !== 'Exif\0\0') return null;
+  const t = app1.subarray(6);
+  const le = t.toString('latin1', 0, 2) === 'II';
+  const r16 = (o) => (le ? t.readUInt16LE(o) : t.readUInt16BE(o));
+  const r32 = (o) => (le ? t.readUInt32LE(o) : t.readUInt32BE(o));
+  try {
+    const ifd = r32(4);
+    const n = r16(ifd);
+    for (let i = 0; i < n; i++) {
+      const e = ifd + 2 + i * 12;
+      if (r16(e) === 0x0112) {
+        const v = r16(e + 8);
+        return v >= 1 && v <= 8 ? v : null;
+      }
+    }
+  } catch {
+    /* malformed EXIF: ignore */
+  }
+  return null;
+}
+
+function orientationSegment(v) {
+  // APP1 with a minimal big-endian TIFF holding only the Orientation tag
+  const tiff = Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, v, 0, 0, 0, 0, 0, 0]);
+  const payload = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]);
+  const hdr = Buffer.from([0xff, 0xe1, 0, 0]);
+  hdr.writeUInt16BE(payload.length + 2, 2);
+  return Buffer.concat([hdr, payload]);
+}
+
+function stripJpeg(buf) {
+  const out = [buf.subarray(0, 2)];
+  let pos = 2;
+  let orientation = null;
+  let scan = false;
+  while (pos + 4 <= buf.length) {
+    if (buf[pos] !== 0xff) break;
+    const m = buf[pos + 1];
+    if (m === 0xff) {
+      pos++;
+      continue;
+    }
+    if (m === 0xda) {
+      out.push(buf.subarray(pos)); // start of scan: the rest is image data
+      scan = true;
+      break;
+    }
+    if ((m >= 0xd0 && m <= 0xd7) || m === 0x01) {
+      out.push(buf.subarray(pos, pos + 2));
+      pos += 2;
+      continue;
+    }
+    const end = pos + 2 + buf.readUInt16BE(pos + 2);
+    if (end > buf.length || end < pos + 4) break;
+    if (m === 0xe1) orientation = exifOrientation(buf.subarray(pos + 4, end)) || orientation; // EXIF/XMP: dropped
+    else if (m !== 0xed && m !== 0xfe) out.push(buf.subarray(pos, end)); // IPTC (APP13) and comments dropped
+    pos = end;
+  }
+  if (!scan) throw new UserError('Invalid or truncated JPEG');
+  if (orientation && orientation !== 1) out.splice(1, 0, orientationSegment(orientation));
+  return Buffer.concat(out);
+}
+
+function stripPng(buf) {
+  const drop = new Set(['tEXt', 'zTXt', 'iTXt', 'eXIf', 'tIME']);
+  const out = [buf.subarray(0, 8)];
+  let pos = 8;
+  while (pos + 12 <= buf.length) {
+    const type = buf.toString('latin1', pos + 4, pos + 8);
+    const end = pos + 12 + buf.readUInt32BE(pos);
+    if (end > buf.length) break;
+    if (!drop.has(type)) out.push(buf.subarray(pos, end));
+    if (type === 'IEND') return Buffer.concat(out);
+    pos = end;
+  }
+  throw new UserError('Invalid or truncated PNG');
+}
+
+function stripWebp(buf) {
+  const chunks = [];
+  let pos = 12;
+  while (pos + 8 <= buf.length) {
+    const id = buf.toString('latin1', pos, pos + 4);
+    const size = buf.readUInt32LE(pos + 4);
+    if (pos + 8 + size > buf.length) throw new UserError('Invalid or truncated WebP');
+    const end = Math.min(pos + 8 + size + (size & 1), buf.length);
+    if (id !== 'EXIF' && id !== 'XMP ') {
+      const c = Buffer.from(buf.subarray(pos, end));
+      if (id === 'VP8X' && c.length > 8) c[8] &= ~0x0c; // clear EXIF/XMP flags
+      chunks.push(c);
+    }
+    pos = end;
+  }
+  if (!chunks.length) throw new UserError('Invalid WebP');
+  const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), ...chunks]);
+  const hdr = Buffer.alloc(8);
+  hdr.write('RIFF', 0, 'latin1');
+  hdr.writeUInt32LE(body.length, 4);
+  return Buffer.concat([hdr, body]);
+}
+
+function sanitizeImage(buf) {
+  const mime = sniffImage(buf);
+  if (!mime) throw new UserError('Only JPEG, PNG and WebP images are supported');
+  const clean = mime === 'image/jpeg' ? stripJpeg(buf) : mime === 'image/png' ? stripPng(buf) : stripWebp(buf);
+  return { mime, data: clean };
+}
+
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const declared = parseInt(req.headers['content-length'] || '0', 10);
+    if (declared > maxBytes) {
+      req.resume();
+      return reject(Object.assign(new UserError(`Image too large (max ${maxBytes >> 20} MB)`), { status: 413 }));
+    }
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new UserError(`Image too large (max ${maxBytes >> 20} MB)`), { status: 413 }));
+        req.destroy();
+      } else chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function backgroundVisible(session) {
+  return Boolean(session) || config.settings.dashboard.public;
+}
+
+// Per-request appearance: CSS custom properties and the background image URL.
+function appearanceCss(session) {
+  const a = config.settings.appearance;
+  let css = `:root{--bg-blur:${a.blur}px;--bg-dim:${a.dim / 100};--card-alpha:${a.cardOpacity / 100};}\n`;
+  if (a.background.type === 'image' && a.background.imageId && backgroundVisible(session))
+    css += `.app-bg{background-image:url("/media/bg/${a.background.imageId}");}\n`;
+  return css;
+}
+
+function htmlAttrs(session) {
+  const a = config.settings.appearance;
+  const bg =
+    a.background.type === 'builtin' ? a.background.builtin : a.background.type === 'image' && backgroundVisible(session) ? 'image' : 'none';
+  return `data-theme="${a.theme}" data-bg="${bg}"`; // both values come from fixed allow-lists
+}
+
+function sendPage(res, key, session) {
+  const html = STATIC[key].body.toString('utf8').replace('<html lang="en">', `<html lang="en" ${htmlAttrs(session)}>`);
+  const body = Buffer.from(html);
+  res.writeHead(200, { 'Content-Type': STATIC[key].type, 'Content-Length': body.length });
+  res.end(body);
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+
+function dashboardPayload() {
+  const s = config.settings.dashboard;
+  const group = (type) =>
+    config.hosts
+      .filter((h) => h.type === type)
+      .map((h) => {
+        const r = results.get(h.id);
+        return {
+          id: h.id,
+          name: h.name,
+          ok: r ? r.ok : null,
+          error: r && !r.ok ? r.error : null,
+          updatedAt: r?.updatedAt ?? null,
+          lastOkAt: r?.lastOkAt ?? null,
+          data: r?.data ?? null,
+        };
+      });
+  const devices = config.devices
+    .filter((d) => !d.hidden)
+    .map((d) => ({
+      id: d.id,
+      name: d.name,
+      kind: d.kind,
+      location: d.location,
+      u: d.u,
+      height: d.height,
+      estimateW: d.estimateW,
+      unifi: d.unifi,
+      links: deviceLinks(d),
+      connections: deviceHosts(d).map((h) => ({ id: h.id, type: h.type, node: h.type === 'proxmox' ? effectiveNode(h, d) : undefined })),
+    }));
+  return {
+    title: s.title,
+    refreshSeconds: s.refreshSeconds,
+    showStoppedGuests: s.showStoppedGuests,
+    layout: config.layout,
+    generatedAt: Date.now(),
+    idrac: group('idrac'),
+    proxmox: group('proxmox'),
+    truenas: group('truenas'),
+    synology: group('synology'),
+    unifi: group('unifi'),
+    devices,
+    rack: { ...config.rack, items: devices },
+    power: powerSummary(),
+  };
+}
+
+async function handleLogin(req, res) {
+  const ip = req.socket.remoteAddress || '?';
+  const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+  if (wait) {
+    res.setHeader('Retry-After', String(wait));
+    return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+  }
+  const body = await readBody(req);
+  const username = typeof body.username === 'string' ? body.username : '';
+  const password = typeof body.password === 'string' ? body.password.slice(0, 1024) : '';
+  const admin = readAdmin();
+  if (!admin) return sendError(res, 503, 'No admin account exists. Run: node server.js set-admin');
+  const userOk = crypto.timingSafeEqual(
+    crypto.createHash('sha256').update(username).digest(),
+    crypto.createHash('sha256').update(admin.username).digest()
+  );
+  const passOk = await verifyPassword(password, userOk ? admin.hash : DUMMY_HASH);
+  if (!(userOk && passOk)) {
+    registerFailure('ip:' + ip, 5);
+    registerFailure('global', 20);
+    log(`Failed login from ${ip}`);
+    await new Promise((r) => setTimeout(r, 400 + crypto.randomInt(400)));
+    return sendError(res, 401, 'Invalid username or password');
+  }
+  loginFailures.delete('ip:' + ip);
+  const old = getSession(req);
+  if (old) sessions.delete(old.id);
+  createSession(res, admin.username);
+  log(`Admin login from ${ip}`);
+  sendJson(res, 200, { ok: true });
+}
+
+function findHost(id) {
+  const h = config.hosts.find((x) => x.id === id);
+  if (!h) throw Object.assign(new UserError('Host not found'), { status: 404 });
+  return h;
+}
+
+function forgetHost(id) {
+  results.delete(id);
+  for (const k of lastSample.keys()) if (k === `idrac:${id}` || k.startsWith(`poe:${id}:`)) lastSample.delete(k);
+  for (const k of unifiSessions.keys()) if (k.startsWith(id + '|')) unifiSessions.delete(k);
+  for (const k of redfishPathCache.keys()) if (k.startsWith(id + '|')) redfishPathCache.delete(k);
+}
+
+async function handleApi(req, res, url, session) {
+  const p = url.pathname;
+  const m = req.method;
+
+  if (p === '/api/login' && m === 'POST') return handleLogin(req, res);
+
+  if (p === '/api/dashboard' && m === 'GET') {
+    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    return sendJson(res, 200, { ...dashboardPayload(), loggedIn: Boolean(session) });
+  }
+
+  if (p === '/api/services' && m === 'GET') {
+    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    return sendJson(res, 200, { ...servicesPayload(), loggedIn: Boolean(session), title: config.settings.dashboard.title });
+  }
+
+  if (!session) return sendError(res, 401, 'Login required');
+
+  if (p === '/api/session' && m === 'GET') return sendJson(res, 200, { user: session.user, csrf: session.csrf });
+
+  // Everything below changes state or exposes admin data: require CSRF token on writes.
+  if (m !== 'GET' && !csrfOk(req, session)) return sendError(res, 403, 'Invalid CSRF token');
+
+  if (p === '/api/logout' && m === 'POST') {
+    sessions.delete(session.id);
+    setCookie(res, '', 0);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (p === '/api/admin/config' && m === 'GET') {
+    return sendJson(res, 200, {
+      settings: config.settings,
+      hosts: config.hosts.map((h) => {
+        const r = results.get(h.id);
+        return {
+          ...publicHost(h),
+          deviceId: h.deviceId,
+          nodes: h.type === 'proxmox' ? (r?.data?.nodes || []).map((n) => n.name) : undefined,
+          status: r ? { ok: r.ok, error: r.ok ? null : r.error, updatedAt: r.updatedAt } : null,
+        };
+      }),
+      devices: config.devices,
+      types: HOST_TYPES,
+      themes: THEMES,
+      builtinBackgrounds: BUILTIN_BACKGROUNDS,
+      backgrounds: config.backgrounds,
+      rack: config.rack,
+      rackKinds: RACK_KINDS,
+      user: session.user,
+    });
+  }
+
+  if (p === '/api/admin/settings' && m === 'PUT') {
+    const body = await readBody(req);
+    const prevRefresh = config.settings.dashboard.refreshSeconds;
+    const prevPower = JSON.stringify(config.settings.power);
+    config.settings = validateSettings(body, config.settings);
+    saveConfig();
+    if (config.settings.dashboard.refreshSeconds !== prevRefresh) schedulePolling();
+    else if (JSON.stringify(config.settings.power) !== prevPower) ensurePrices().catch(() => {});
+    log('Settings updated');
+    return sendJson(res, 200, { settings: config.settings });
+  }
+
+  if (p === '/api/admin/hosts' && m === 'POST') {
+    const body = await readBody(req);
+    const type = body.type;
+    if (!HOST_TYPES[type]) throw new UserError('Invalid host type');
+    const h = { id: crypto.randomUUID(), type, ...validateHostInput(body, type), secret: null };
+    const secret = secretFromBody(type, body);
+    if (secret) h.secret = encryptSecret(h, secret);
+    const dev = newDevice({ name: h.name, kind: KIND_FOR_TYPE[type] || 'other' });
+    h.deviceId = dev.id;
+    config.devices.push(dev);
+    config.hosts.push(h);
+    saveConfig();
+    log(`Host added: ${type} ${h.name}`);
+    pollHost(h);
+    return sendJson(res, 201, { host: publicHost(h) });
+  }
+
+  const hm = p.match(/^\/api\/admin\/hosts\/([0-9a-f-]{36})(\/test)?$/);
+  if (hm) {
+    const old = findHost(hm[1]);
+    if (hm[2] && m === 'POST') {
+      const r = await runCollector(old);
+      if (r.ok) {
+        const now = Date.now();
+        results.set(old.id, { ok: true, data: r.data, updatedAt: now, lastOkAt: now });
+      }
+      return sendJson(res, 200, r.ok ? { ok: true } : { ok: false, error: r.error });
+    }
+    if (!hm[2] && m === 'PUT') {
+      const body = await readBody(req);
+      const next = { ...old, ...validateHostInput(body, old.type) };
+      const secret = secretFromBody(old.type, body);
+      const identityChanged = ['address', 'username', 'tlsMode', 'fingerprint'].some((k) => next[k] !== old[k]);
+      let secretNote = null;
+      if (secret) next.secret = encryptSecret(next, secret);
+      else if (body.clearSecret === true) next.secret = null;
+      else if (identityChanged && old.secret) {
+        next.secret = null; // never send an old secret to a different endpoint/identity
+        secretNote = 'Address, username or the pinned identity changed: the stored secret was deleted. Enter it again.';
+      }
+      config.hosts[config.hosts.indexOf(old)] = next;
+      saveConfig();
+      forgetHost(old.id);
+      log(`Host updated: ${next.type} ${next.name}`);
+      pollHost(next);
+      return sendJson(res, 200, { host: publicHost(next), note: secretNote });
+    }
+    if (!hm[2] && m === 'DELETE') {
+      config.hosts = config.hosts.filter((x) => x !== old);
+      // drop the device too if it was only a holder for this connection
+      const dev = config.devices.find((d) => d.id === old.deviceId);
+      if (dev && !dev.discovered && dev.location === 'none' && !deviceHosts(dev).length) config.devices = config.devices.filter((d) => d !== dev);
+      saveConfig();
+      forgetHost(old.id);
+      log(`Host removed: ${old.type} ${old.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  if (p === '/api/admin/rack' && m === 'PUT') {
+    config.rack = validateRackSettings(await readBody(req));
+    saveConfig();
+    log('Rack settings updated');
+    return sendJson(res, 200, { rack: config.rack });
+  }
+
+  if (p === '/api/admin/devices' && m === 'POST') {
+    const body = await readBody(req);
+    const dev = newDevice(validateDeviceFields(body, null));
+    const built = validateConnections(body.connections).map((c) => buildConnection(null, c, dev));
+    config.devices.push(dev);
+    config.hosts.push(...built.map((b) => b.host));
+    saveConfig();
+    log(`Device added: ${dev.name} (${built.map((b) => b.host.type).join(', ') || 'no connections'})`);
+    built.forEach((b) => pollHost(b.host));
+    return sendJson(res, 201, { device: dev, notes: built.map((b) => b.note).filter(Boolean) });
+  }
+
+  const dm = p.match(/^\/api\/admin\/devices\/([0-9a-f-]{36})(\/placement)?$/);
+  if (dm) {
+    const dev = findDevice(dm[1]);
+    if (dm[2] && m === 'PUT') {
+      // Drag in the rack view: only placement changes
+      Object.assign(dev, validatePlacement({ ...dev, ...(await readBody(req)) }, dev.id, dev.name));
+      saveConfig();
+      return sendJson(res, 200, { device: dev });
+    }
+    if (!dm[2] && m === 'PUT') {
+      const body = await readBody(req);
+      const fields = validateDeviceFields(body, dev.id);
+      const existing = deviceHosts(dev);
+      // Without a connections list (e.g. "show again"), the connections are left as they are
+      const list = body.connections === undefined ? existing.map((h) => ({ ...h, id: h.id, secret: undefined })) : body.connections;
+      const built = validateConnections(list).map((c) => {
+        const old = c.id ? existing.find((h) => h.id === c.id) : null;
+        if (c.id && !old) throw new UserError('Unknown connection');
+        return buildConnection(old, c, { ...dev, ...fields });
+      });
+      const keep = new Set(built.map((b) => b.host.id));
+      const removed = existing.filter((h) => !keep.has(h.id));
+      Object.assign(dev, fields, { hidden: body.hidden === true });
+      const byId = new Map(built.map((b) => [b.host.id, b.host]));
+      config.hosts = config.hosts.filter((h) => !removed.includes(h)).map((h) => byId.get(h.id) || h);
+      for (const b of built) if (!existing.some((h) => h.id === b.host.id)) config.hosts.push(b.host);
+      saveConfig();
+      const same = (a, b) => ['address', 'username', 'tlsMode', 'fingerprint', 'secret'].every((k) => a[k] === b[k]) && JSON.stringify(a.options) === JSON.stringify(b.options);
+      const changed = built.map((b) => b.host).filter((h) => !existing.some((o) => o.id === h.id && same(o, h)));
+      for (const h of [...removed, ...changed]) forgetHost(h.id);
+      changed.forEach((h) => pollHost(h));
+      log(`Device updated: ${dev.name}`);
+      return sendJson(res, 200, { device: dev, notes: built.map((b) => b.note).filter(Boolean) });
+    }
+    if (!dm[2] && m === 'DELETE') {
+      if (dev.discovered) {
+        // Would be re-created by the next UniFi update, so it is hidden instead
+        dev.hidden = true;
+        saveConfig();
+        return sendJson(res, 200, { hidden: true });
+      }
+      const removed = deviceHosts(dev);
+      config.hosts = config.hosts.filter((h) => !removed.includes(h));
+      config.devices = config.devices.filter((d) => d !== dev);
+      saveConfig();
+      removed.forEach((h) => forgetHost(h.id));
+      log(`Device removed: ${dev.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  if (p === '/api/admin/test-connection' && m === 'POST') {
+    // Tests settings from the form; a newly typed secret is used once and not stored.
+    const body = await readBody(req);
+    const old = typeof body.id === 'string' && UUID.test(body.id) ? config.hosts.find((h) => h.id === body.id) : null;
+    const type = old ? old.type : body.type;
+    if (!HOST_TYPES[type]) throw new UserError('Invalid connection type');
+    const fields = validateHostInput({ ...body, name: old?.name || 'Test' }, type);
+    const h = { id: old?.id || crypto.randomUUID(), type, ...fields };
+    if (type === 'proxmox') h.options = { ...h.options, node: String(body.options?.node || '') };
+    let secret = secretFromBody(type, body);
+    if (!secret && old?.secret) {
+      if (['address', 'username', 'tlsMode', 'fingerprint'].some((k) => h[k] !== old[k]))
+        throw new UserError('The address or identity changed: enter the secret again to test');
+      secret = decryptSecret(old);
+    }
+    if (!secret) throw new UserError('Enter the password/token/key to test');
+    const r = await runCollector(h, secret);
+    if (!old) for (const k of unifiSessions.keys()) if (k.startsWith(h.id + '|')) unifiSessions.delete(k);
+    if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
+    const d = r.data;
+    const info = {
+      idrac: () => [d.model, typeof d.watts === 'number' ? `${d.watts} W` : null].filter(Boolean).join(' · '),
+      proxmox: () => `${d.nodes.length} node${d.nodes.length === 1 ? '' : 's'}: ${d.nodes.map((n) => n.name).join(', ')}`,
+      truenas: () => [d.system.hostname, d.system.version].filter(Boolean).join(' · '),
+      synology: () => [d.system.model, d.system.version].filter(Boolean).join(' · '),
+      unifi: () => `${d.devices.length} device${d.devices.length === 1 ? '' : 's'} found`,
+    }[type]();
+    return sendJson(res, 200, { ok: true, info, nodes: type === 'proxmox' ? d.nodes.map((n) => n.name) : undefined });
+  }
+
+  if (p === '/api/admin/layout' && m === 'PUT') {
+    config.layout = validateLayout(await readBody(req));
+    saveConfig();
+    log(config.layout ? 'Dashboard layout saved' : 'Dashboard layout reset');
+    return sendJson(res, 200, { layout: config.layout });
+  }
+
+  if (p === '/api/admin/backgrounds' && m === 'POST') {
+    if (config.backgrounds.length >= MAX_BACKGROUNDS) throw new UserError(`At most ${MAX_BACKGROUNDS} images; delete one first`);
+    const { mime, data } = sanitizeImage(await readRawBody(req, MAX_BACKGROUND_BYTES));
+    const id = crypto.randomBytes(16).toString('hex');
+    fs.mkdirSync(BACKGROUND_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(BACKGROUND_DIR, id), data, { mode: 0o600, flag: 'wx' });
+    const rawName = String(req.headers['x-file-name'] || '');
+    let name = 'Image';
+    try {
+      name = decodeURIComponent(rawName).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80) || name;
+    } catch {
+      /* keep default */
+    }
+    const rec = { id, mime, bytes: data.length, name, uploadedAt: Date.now() };
+    config.backgrounds.push(rec);
+    saveConfig();
+    log(`Background uploaded (${mime}, ${data.length} bytes)`);
+    return sendJson(res, 201, { background: rec });
+  }
+
+  const bm = p.match(/^\/api\/admin\/backgrounds\/([0-9a-f]{32})$/);
+  if (bm && m === 'DELETE') {
+    const rec = config.backgrounds.find((b) => b.id === bm[1]);
+    if (!rec) throw Object.assign(new UserError('Image not found'), { status: 404 });
+    config.backgrounds = config.backgrounds.filter((b) => b !== rec);
+    const a = config.settings.appearance;
+    if (a.background.imageId === rec.id) a.background = { ...a.background, type: 'none', imageId: null };
+    saveConfig();
+    fs.rmSync(path.join(BACKGROUND_DIR, rec.id), { force: true });
+    return sendJson(res, 200, { ok: true, appearance: a });
+  }
+
+  // --- Services (admin) ---
+  if (p === '/api/admin/services' && m === 'GET') {
+    return sendJson(res, 200, {
+      services: [...config.services].sort((a, b) => (a.order || 0) - (b.order || 0)).map((x) => {
+        const r = serviceResults.get(x.id);
+        return { ...publicService(x), result: r ? { check: r.check, error: r.error } : null };
+      }),
+      integrations: integrationDefs(),
+      devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+      icons: config.icons.map((i) => ({ id: i.id, source: i.source })),
+    });
+  }
+  if (p === '/api/admin/services' && m === 'POST') {
+    const { svc, note } = buildService(null, await readBody(req));
+    config.services.push(svc);
+    saveConfig();
+    log(`Service added: ${svc.name}`);
+    pollService(svc);
+    return sendJson(res, 201, { service: publicService(svc), note });
+  }
+  if (p === '/api/admin/services/order' && m === 'PUT') {
+    const { ids } = await readBody(req);
+    if (!Array.isArray(ids)) throw new UserError('Invalid order');
+    ids.forEach((id, i) => {
+      const svc = config.services.find((x) => x.id === id);
+      if (svc) svc.order = i + 1;
+    });
+    saveConfig();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/admin/services/test' && m === 'POST') {
+    // Tests the form as entered; a newly typed secret is used once and not stored
+    const body = await readBody(req);
+    const old = validId(body.id) ? config.services.find((x) => x.id === body.id) : null;
+    const { svc } = buildService(old, { ...body, secret: '' });
+    let secret = typeof body.secret === 'string' && body.secret ? body.secret : null;
+    if (!secret && old?.secret) {
+      if (JSON.stringify(serviceIdentity(old)) !== JSON.stringify(serviceIdentity(svc))) throw new UserError('The URL, integration or user name changed: enter the secret again to test');
+      secret = decryptSecret(serviceSecretHost(old));
+    }
+    const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc, secret)]);
+    for (const k of svcSessions.keys()) if (!old && k.startsWith(svc.id + '|')) svcSessions.delete(k);
+    return sendJson(res, 200, { check, stats: integ.stats, error: integ.error });
+  }
+  const sm = p.match(/^\/api\/admin\/services\/([0-9a-f-]{36})$/);
+  if (sm) {
+    const old = config.services.find((x) => x.id === sm[1]);
+    if (!old) throw Object.assign(new UserError('Service not found'), { status: 404 });
+    if (m === 'PUT') {
+      const { svc, note } = buildService(old, await readBody(req));
+      config.services[config.services.indexOf(old)] = svc;
+      pruneIcons();
+      saveConfig();
+      forgetService(old.id);
+      pollService(svc);
+      return sendJson(res, 200, { service: publicService(svc), note });
+    }
+    if (m === 'DELETE') {
+      config.services = config.services.filter((x) => x !== old);
+      pruneIcons();
+      saveConfig();
+      forgetService(old.id);
+      log(`Service removed: ${old.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  // --- Icons ---
+  if (p === '/api/admin/icons/search' && m === 'GET') {
+    const q = String(url.searchParams.get('q') || '').toLowerCase().replace(/[^a-z0-9.-]/g, '');
+    if (q.length < 2) return sendJson(res, 200, { names: [] });
+    const names = await iconNames();
+    const hits = names.filter((n) => n.includes(q)).sort((a, b) => (a.startsWith(q) ? 0 : 1) - (b.startsWith(q) ? 0 : 1) || a.length - b.length).slice(0, 36);
+    return sendJson(res, 200, { names: hits });
+  }
+  const ip = p.match(/^\/api\/admin\/icons\/preview\/([a-z0-9][a-z0-9._-]{0,80})$/);
+  if (ip && m === 'GET') {
+    // Thumbnail for the icon search: fetched by the server (CSP keeps the browser on this origin)
+    let entry = iconPreviewCache.get(ip[1]);
+    if (!entry) {
+      if (!(await iconNames()).includes(ip[1])) throw Object.assign(new UserError('Unknown icon'), { status: 404 });
+      const host = ICON_INDEX_URL.host;
+      const r = await httpsRequest(tlsConnect(host, { verify: true }), host, { path: `/gh/homarr-labs/dashboard-icons/png/${ip[1]}.png`, binary: true, maxBytes: 2 << 20 });
+      if (r.status !== 200) throw new UserError('Icon not available');
+      entry = sanitizeImage(r.body);
+      iconPreviewCache.set(ip[1], entry);
+      if (iconPreviewCache.size > 300) iconPreviewCache.delete(iconPreviewCache.keys().next().value);
+    }
+    res.writeHead(200, { 'Content-Type': entry.mime, 'Content-Length': entry.data.length, 'Cache-Control': 'private, max-age=86400' });
+    return res.end(entry.data);
+  }
+  if (p === '/api/admin/icons/library' && m === 'POST') {
+    const { name } = await readBody(req);
+    const icon = await fetchLibraryIcon(String(name || ''));
+    saveConfig();
+    return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
+  }
+  if (p === '/api/admin/icons' && m === 'POST') {
+    const icon = storeIcon(await readRawBody(req, 2 << 20), 'upload');
+    saveConfig();
+    return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
+  }
+
+  // --- Documentation (login required even when the dashboard is public) ---
+  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto() });
+  const ds = p.match(/^\/api\/docs\/servers\/([0-9a-f-]{36})$/);
+  if (ds && m === 'PUT') {
+    findDevice(ds[1]);
+    docs.servers[ds[1]] = validateServerDoc(await readBody(req));
+    saveDocs();
+    return sendJson(res, 200, { server: docs.servers[ds[1]] });
+  }
+  if (p === '/api/docs/network' && m === 'PUT') {
+    docs.network = validateNetworkDoc(await readBody(req));
+    saveDocs();
+    return sendJson(res, 200, { network: docs.network });
+  }
+  if (p === '/api/docs/pages' && m === 'POST') {
+    if (docs.pages.length >= 500) throw new UserError('Too many pages');
+    const page = { id: crypto.randomUUID(), ...validatePage(await readBody(req)) };
+    docs.pages.push(page);
+    saveDocs();
+    return sendJson(res, 201, { page });
+  }
+  const dp = p.match(/^\/api\/docs\/pages\/([0-9a-f-]{36})$/);
+  if (dp) {
+    const page = docs.pages.find((x) => x.id === dp[1]);
+    if (!page) throw Object.assign(new UserError('Page not found'), { status: 404 });
+    if (m === 'PUT') {
+      Object.assign(page, validatePage(await readBody(req)));
+      saveDocs();
+      return sendJson(res, 200, { page });
+    }
+    if (m === 'DELETE') {
+      docs.pages = docs.pages.filter((x) => x !== page);
+      saveDocs();
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  if (p === '/api/admin/fingerprint' && m === 'POST') {
+    // Connects and reads the certificate only; no application data is sent.
+    const body = await readBody(req);
+    if (!HOST_TYPES[body.type]) throw new UserError('Invalid host type');
+    const address = normalizeAddress(body.address, body.type);
+    if (body.type === 'synology') {
+      // SNMPv3 discovery: unauthenticated, carries no user name or credentials
+      const { host, port } = splitAddress(address);
+      const d = await snmpDiscover(host, port);
+      return sendJson(res, 200, { address, engineId: formatFingerprint(d.engineId.toString('hex')), boots: d.boots, uptime: d.time });
+    }
+    const sock = await tlsConnect(address, { verify: false, timeoutMs: 10000 });
+    const cert = sock.getPeerCertificate();
+    const caTrusted = sock.authorized;
+    sock.destroy();
+    if (!cert || !cert.raw) throw new UserError('No certificate presented');
+    return sendJson(res, 200, {
+      address,
+      fingerprint: formatFingerprint(crypto.createHash('sha256').update(cert.raw).digest('hex')),
+      subject: cert.subject?.CN || null,
+      issuer: cert.issuer?.CN || cert.issuer?.O || null,
+      validFrom: cert.valid_from,
+      validTo: cert.valid_to,
+      caTrusted,
+    });
+  }
+
+  if (p === '/api/admin/password' && m === 'POST') {
+    const body = await readBody(req);
+    const admin = readAdmin();
+    if (!(await verifyPassword(String(body.current || ''), admin.hash))) {
+      registerFailure('ip:' + (req.socket.remoteAddress || '?'), 5);
+      throw new UserError('Current password is incorrect');
+    }
+    const problem = passwordProblem(body.password);
+    if (problem) throw new UserError(problem);
+    writeJsonAtomic(ADMIN_FILE, { username: admin.username, hash: await hashPassword(body.password), changedAt: Date.now() });
+    for (const id of sessions.keys()) if (id !== session.id) sessions.delete(id);
+    log('Admin password changed; other sessions revoked');
+    return sendJson(res, 200, { ok: true });
+  }
+
+  sendError(res, 404, 'Not found');
+}
+
+async function handle(req, res) {
+  securityHeaders(res);
+  if (!hostAllowed(req.headers.host)) return sendError(res, 421, 'Unknown host; add it to ALLOWED_HOSTS');
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    return sendError(res, 400, 'Bad request');
+  }
+  const p = url.pathname;
+  if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
+  const session = getSession(req);
+
+  try {
+    if (p.startsWith('/api/')) return await handleApi(req, res, url, session);
+    if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
+
+    if (p === '/login') return session ? redirect(res, '/') : sendPage(res, 'login.html', session);
+    if (p === '/') {
+      if (!session && !config.settings.dashboard.public) return redirect(res, '/login');
+      return sendPage(res, 'dashboard.html', session);
+    }
+    if (p === '/admin') return session ? sendPage(res, 'admin.html', session) : redirect(res, '/login?next=admin');
+    if (p === '/services') {
+      if (!session && !config.settings.dashboard.public) return redirect(res, '/login?next=services');
+      return sendPage(res, 'services.html', session);
+    }
+    if (p === '/docs') return session ? sendPage(res, 'docs.html', session) : redirect(res, '/login?next=docs');
+    const im = p.match(/^\/media\/icon\/([0-9a-f]{32})$/);
+    if (im) {
+      const rec = config.icons.find((i) => i.id === im[1]);
+      if (!rec) return sendError(res, 404, 'Not found');
+      if (!backgroundVisible(session)) return sendError(res, 401, 'Login required');
+      const data = fs.readFileSync(path.join(ICON_DIR, rec.id));
+      res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+      return res.end(data);
+    }
+    if (p === '/appearance.css') {
+      const css = Buffer.from(appearanceCss(session));
+      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Content-Length': css.length });
+      return res.end(css);
+    }
+    const mm = p.match(/^\/media\/bg\/([0-9a-f]{32})$/);
+    if (mm) {
+      const rec = config.backgrounds.find((b) => b.id === mm[1]);
+      if (!rec) return sendError(res, 404, 'Not found');
+      if (!backgroundVisible(session)) return sendError(res, 401, 'Login required');
+      const data = fs.readFileSync(path.join(BACKGROUND_DIR, rec.id));
+      // Immutable: ids are random and never reused
+      res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+      return res.end(data);
+    }
+    if (STATIC[p] && p.startsWith('/static/')) {
+      const allowed = PUBLIC_ASSETS.has(p) || session || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
+      return allowed ? sendStatic(res, p) : sendError(res, 401, 'Login required');
+    }
+    if (p === '/favicon.ico') return sendStatic(res, '/static/favicon.svg');
+    sendError(res, 404, 'Not found');
+  } catch (e) {
+    if (e instanceof UserError) return sendError(res, e.status || 400, e.message);
+    log('Request error:', e && e.stack ? e.stack : e);
+    if (!res.headersSent) sendError(res, 500, 'Internal error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Startup
+
+function validateBindHost() {
+  if (!net.isIP(HOST) && HOST !== 'localhost') fatal('HOST must be an IP address (loopback or private)');
+  const h = HOST === 'localhost' ? '127.0.0.1' : HOST;
+  if (h === '0.0.0.0' || h === '::' || /^0+(\.0+){3}$/.test(h)) fatal('Refusing to listen on all interfaces; set HOST to 127.0.0.1 or the internal IP');
+  const privateV4 = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./];
+  const ok = net.isIPv4(h) ? privateV4.some((r) => r.test(h)) : h === '::1' || /^f[cd]/i.test(h) || /^fe80:/i.test(h);
+  if (!ok) fatal(`HOST ${HOST} is not a loopback/private address`);
+}
+
+let pipedInput = '';
+function readPasswordFromTty(prompt) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    process.stdout.write(prompt);
+    if (!stdin.isTTY) {
+      const tryLine = () => {
+        const i = pipedInput.indexOf('\n');
+        if (i === -1) return false;
+        const line = pipedInput.slice(0, i).replace(/\r$/, '');
+        pipedInput = pipedInput.slice(i + 1);
+        stdin.off('data', onData);
+        stdin.pause();
+        process.stdout.write('\n');
+        resolve(line);
+        return true;
+      };
+      const onData = (d) => {
+        pipedInput += d;
+        tryLine();
+      };
+      if (tryLine()) return;
+      stdin.setEncoding('utf8');
+      stdin.on('data', onData);
+      stdin.resume();
+      return;
+    }
+    let pw = '';
+    stdin.setRawMode(true);
+    stdin.setEncoding('utf8');
+    stdin.resume();
+    const onData = (ch) => {
+      for (const c of ch) {
+        if (c === '\r' || c === '\n') {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off('data', onData);
+          process.stdout.write('\n');
+          return resolve(pw);
+        }
+        if (c === '\u0003') process.exit(130);
+        if (c === '\u007f' || c === '\b') pw = pw.slice(0, -1);
+        else pw += c;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+async function cliSetAdmin(username) {
+  ensureDataDir();
+  username = (username || 'admin').trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) fatal('Username may only contain letters, digits, . _ -');
+  const pw = await readPasswordFromTty(`New password for ${username}: `);
+  const problem = passwordProblem(pw);
+  if (problem) fatal(problem);
+  const again = await readPasswordFromTty('Repeat password: ');
+  if (again !== pw) fatal('Passwords do not match');
+  writeJsonAtomic(ADMIN_FILE, { username, hash: await hashPassword(pw), changedAt: Date.now() });
+  console.log(`Admin account "${username}" saved in ${ADMIN_FILE}. Restart the service to end existing sessions.`);
+}
+
+async function main() {
+  const [cmd, arg] = process.argv.slice(2);
+  if (cmd === 'set-admin') return cliSetAdmin(arg);
+  if (cmd) fatal(`Unknown command: ${cmd}`);
+
+  const major = parseInt(process.versions.node, 10);
+  if (major < 18) fatal('Node.js 18 or newer is required');
+  if (process.getuid && process.getuid() === 0) fatal('Do not run as root; use the dedicated service user');
+  process.umask(0o077);
+  validateBindHost();
+  ensureDataDir();
+  KEY = loadKey();
+  loadConfig();
+  loadEnergy();
+  loadDocs();
+  loadStatic();
+  initAllowedHosts();
+  DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
+  if (!readAdmin()) log('WARNING: no admin account yet. Run: node server.js set-admin <username>');
+
+  let server;
+  if (process.env.TLS_CERT_FILE && process.env.TLS_KEY_FILE) {
+    const https = require('node:https');
+    server = https.createServer(
+      { cert: fs.readFileSync(process.env.TLS_CERT_FILE), key: fs.readFileSync(process.env.TLS_KEY_FILE), minVersion: 'TLSv1.2' },
+      handle
+    );
+  } else server = http.createServer(handle);
+  server.headersTimeout = 15000;
+  server.requestTimeout = 30000;
+  server.keepAliveTimeout = 5000;
+  server.listen(PORT, HOST, () => log(`Listening on ${COOKIE_SECURE ? 'https' : 'http'}://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`));
+
+  schedulePolling();
+  setInterval(saveEnergy, 5 * 60 * 1000).unref();
+  const shutdown = () => {
+    try {
+      saveEnergy();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
+
+main().catch((e) => fatal(e && e.stack ? e.stack : String(e)));

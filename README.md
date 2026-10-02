@@ -1,0 +1,125 @@
+# Homelab dashboard
+
+A dashboard for Dell iDRAC (Redfish), Proxmox VE and TrueNAS, with estimates and logs of power cost for Norway (spot price or Norgespris, plus grid tariff).
+
+It is built from one Node.js server file (`server.js`, Node 18+) plus static HTML/CSS/JS in `public/`. There are no npm dependencies.
+
+## What it shows
+
+- **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s).
+- **Proxmox**: nodes (CPU, memory, root disk, uptime) and VMs/containers with their status.
+- **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
+- **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
+- **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
+- **Devices**: everything is organised around physical devices (server, NAS, switch, patch panel…).
+  - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
+  - The dashboard shows one widget per device, with a section per connection.
+  - Switches and access points found through a UniFi console appear as devices automatically. Deleting one hides it; it isn't re-created.
+- **Rack**: the right third of the dashboard shows your rack (1–60 U) with live faceplates:
+  - switch ports lit by link and PoE, NAS bays by disk health, and servers with status LEDs and watts;
+  - click a device to jump to its widget; devices outside the rack (e.g. access points) are listed below it.
+  - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
+- **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down, response time) and up to 4 numbers from the app.
+  - 28 integrations: Jellyfin, Emby, Plex, Tautulli, Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, Overseerr/Jellyseerr, qBittorrent, Transmission, SABnzbd, Pi-hole (v5/v6), AdGuard Home, Nginx Proxy Manager, Traefik, Home Assistant, Nextcloud, Immich, Paperless-ngx, Uptime Kuma, Grafana, Portainer, Speedtest Tracker, Prometheus, authentik, plus **Custom JSON API** for anything else.
+  - Icons come from the [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) library (downloaded once by the server and served locally) or are uploaded.
+- **Docs** tab (always requires login, even with a public dashboard), edited in place:
+  - Server sheets: automatic facts (model, service tag, CPU/RAM, PSUs, disks, VMs, rack position, management IPs, switch port) plus your notes.
+  - Network plan: networks and IP reservations, importable from UniFi, plus the live UniFi client list.
+  - Switch ports: what is connected to each port.
+  - Topology diagram drawn from UniFi uplinks.
+  - Your own Markdown pages in folders.
+  - Not meant for passwords: link to your password manager instead.
+- **Admin** is organised in tabs: Devices, Services, Power & cost, Dashboard, Appearance, Account.
+- **Power cost**:
+  - Price plans: spot price per price area (NO1–NO5, from [hvakosterstrommen.no](https://www.hvakosterstrommen.no/strompris-api)), or Norgespris (40 øre/kWh excl. VAT, 50 incl.).
+  - Optional supplier markup and strømstøtte.
+  - Grid tariff with day/night energy rates.
+  - Estimated cost per day/month/year at the current draw.
+  - Actual logged usage, from integrating iDRAC readings into hourly buckets, priced at the time of use.
+
+- **Appearance**:
+  - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night.
+  - Backgrounds: 6 built-in gradients, or upload your own (JPEG/PNG/WebP, max 10 MB).
+  - Sliders for blur, dimming and card opacity (frosted glass).
+- **Layout**: press **Customize** on the dashboard (as admin) to drag widgets on a 12-column grid. You can resize them from the corner, hide and re-show them, "fit height" to their content, or reset everything. The layout is saved on the server, so it's the same on every device. On phones the widgets stack in one column.
+
+Multiple hosts of each type are supported. The server polls hosts every *refresh interval* and the browser reads the cached results. Logging therefore continues while no browser is open.
+
+## Security model
+
+| Concern | How it is handled |
+|---|---|
+| Access | Login is required for everything except the login page and its CSS/JS. The dashboard can optionally be made public, but `/admin` and all admin APIs always need a session. |
+| Secrets at rest | AES-256-GCM. The AAD binds each ciphertext to the host's id, type, address, username and TLS pin. The key is stored outside the repo in `/etc/homelab-dashboard/secret.key` (root 0600) and passed in via systemd `LoadCredential=`. The server refuses to start if the key or data dir is inside the app directory, or if the key file is group/world readable. |
+| Secrets in transit to the browser | Never. Secret fields are write-only. APIs only return `hasSecret: true/false`, and no page or script contains secrets. |
+| Changing a host | If the address, username or TLS pin changes and the secret is not entered again, the stored secret is deleted. |
+| Self-signed certs | Per-host SHA-256 certificate pinning. The TLS handshake completes and the fingerprint is compared before any byte (including credentials) is written. "Fetch certificate" only performs a handshake. |
+| Passwords | scrypt (N=2^15, r=8, p=1). Unknown usernames take the same time as known ones. |
+| Brute force | Per-IP lockout after 5 failures, plus a global lockout after 20. Lockouts grow exponentially up to 1 h. |
+| Sessions | Random 256-bit id, in memory only. Cookie is `HttpOnly; SameSite=Strict` (and `Secure` / `__Host-` when served over HTTPS). 2 h idle and 12 h absolute timeout. Changing the password revokes other sessions. |
+| CSRF | Per-session token in `X-CSRF-Token` on every state-changing request. `Origin` / `Sec-Fetch-Site` are also checked, and request bodies must be JSON. |
+| CSP | `default-src 'none'; script-src 'self'; style-src 'self'; …`. No inline scripts, no inline styles, DOM built without `innerHTML`. Also sends `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and `Cache-Control: no-store`. |
+| Uploaded images | Accepted only if the content is really JPEG/PNG/WebP (SVG is rejected). EXIF/XMP/IPTC metadata, PNG text chunks and comments are stripped on upload, keeping only JPEG orientation. Files are stored 0600 under random ids and served with `nosniff`, under the same access rules as the dashboard. |
+| SNMPv3 (Synology) | authPriv only: HMAC-SHA-96/SHA-256-192 plus AES-128; passwords never leave the server. The agent's engine ID is pinned and checked before any authenticated message is sent, so a device impersonating the NAS gets nothing to attack offline. Responses that fail the HMAC check are dropped. |
+| Services | API keys/passwords are encrypted and write-only like device secrets; bound to the service URL (changing it without re-entering deletes the key). Over plain `http://` the admin page warns that the key travels unencrypted. Links (`href`) must be http(s); cards open them with `noopener noreferrer`. Connection URLs are never sent to the browser. |
+| Docs | Login always required. Markdown is rendered to DOM nodes (no `innerHTML`): HTML in documents is shown as text, and only http(s)/mailto links are created. UniFi network settings are reduced to safe fields (no PPPoE/VPN secrets). |
+| Network exposure | Refuses `0.0.0.0` / `::` and any non-private address. The `Host` header is checked against an allow-list to block DNS rebinding. |
+| OS | Runs as the dedicated `homelab-dash` system user (no shell). Code is root-owned and read-only for the service. The data dir is 0700. The unit is sandboxed: `ProtectSystem=strict`, `ProtectHome`, no capabilities, syscall filter, etc. |
+
+## Install (as root)
+
+```sh
+sudo sh deploy/install.sh --host 127.0.0.1          # or the VM's internal IP
+```
+
+The script:
+
+1. Installs Debian's `nodejs` if needed.
+2. Creates the `homelab-dash` user.
+3. Copies the app to `/opt/homelab-dashboard`.
+4. Generates the key.
+5. Writes `/etc/homelab-dashboard/env`.
+6. Asks for the admin password.
+7. Enables `homelab-dashboard.service`.
+
+Re-run the script to deploy updates. Review the diff first: the installed code runs with access to your secrets.
+
+- Reset the admin password: `sudo sh deploy/install.sh --reset-admin`
+- Logs: `journalctl -u homelab-dashboard`
+
+### Reaching it over Tailscale / WireGuard
+
+- **Bound to the VM's internal IP** (reached via WireGuard or a subnet router): browse to `http://<ip>:8080/`.
+- **Bound to 127.0.0.1 with Tailscale on the VM**: run `tailscale serve --bg --https=443 http://127.0.0.1:8080`. Then add the MagicDNS name to `ALLOWED_HOSTS` and set `COOKIE_SECURE=1` in `/etc/homelab-dashboard/env`.
+
+## Credentials for the devices (read-only is enough)
+
+- **iDRAC**: create a local user with the *Read Only* role.
+- **Proxmox**: use a token with the `PVEAuditor` role. In the admin UI, the username is the full token ID (e.g. `dashboard@pve!monitor`) and the secret is the token UUID.
+  ```sh
+  pveum user add dashboard@pve
+  pveum acl modify / --users dashboard@pve --roles PVEAuditor
+  pveum user token add dashboard@pve monitor --privsep 0
+  ```
+- **Synology**: DSM → Control Panel → Terminal & SNMP → SNMP. Enable the **SNMPv3** service with a user, protocol **SHA** (or SHA-256), and privacy **AES** with its own password. In Admin, use "Fetch engine ID from device" to pin the NAS's engine ID; authenticated requests are only sent if it matches.
+- **UniFi**: create a local user on the console (UniFi OS → Admins & Users) with the **View Only** role for Network and no MFA ("Restrict to local access only"). The session is kept in memory only. After a failed login the dashboard waits 15 minutes before trying again, so the account isn't locked.
+- **TrueNAS 25.04+**: create an API key for a user with the *Read-only Administrator* role. Enter that user's name as the username. TrueNAS revokes keys that are used over plain `ws://`; this app only uses `wss://`.
+
+## Development
+
+```sh
+DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js set-admin admin
+DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js
+```
+
+`DATA_DIR` must be outside the repository. In dev the key is generated as `$DATA_DIR/secret.key` (0600).
+
+## Tests
+
+```sh
+node test/run.js              # end-to-end API suites (~255 checks)
+node test/run.js --ui         # also browser tests (needs Playwright)
+node test/run.js --verbose    # print every check
+```
+
+No npm packages needed: the runner generates a throwaway certificate, starts mock devices (iDRAC, Proxmox, TrueNAS, UniFi OS) and mock service APIs (all 28 integrations), and runs each suite against its own fresh server and data directory. The SNMPv3 suite runs against a real net-snmp agent if `snmpd` is installed (`apt install snmpd`, or set `SNMPD=/path/to/snmpd`) and is skipped otherwise.

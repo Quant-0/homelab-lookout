@@ -1,0 +1,1090 @@
+'use strict';
+
+const { api, el, status, fmt } = HD;
+const $ = (id) => document.getElementById(id);
+
+const TYPE_TEXT = {
+  idrac: {
+    username: 'Username',
+    usernameHint: 'iDRAC user (a read-only account is enough)',
+    secret: 'Password',
+    address: 'iDRAC host or IP (default port 443)',
+  },
+  proxmox: {
+    username: 'API token ID',
+    usernameHint: 'Full token ID, e.g. root@pam!dashboard. The token needs the PVEAuditor role on /.',
+    secret: 'Token secret',
+    address: 'Proxmox host or IP (default port 8006)',
+  },
+  synology: {
+    username: 'SNMPv3 user',
+    usernameHint: 'In DSM: Control Panel → Terminal & SNMP → SNMP → SNMPv3 service. Use SHA + AES (privacy).',
+    secret: 'Authentication password',
+    address: 'Synology host or IP (SNMP, default UDP port 161)',
+  },
+  unifi: {
+    username: 'Local account',
+    usernameHint: 'A local UniFi OS user with the View Only role for Network, without MFA.',
+    secret: 'Password',
+    address: 'UniFi OS console host or IP (e.g. the UDM Pro, default port 443)',
+  },
+  truenas: {
+    username: 'Username',
+    usernameHint: 'Owner of the API key (e.g. truenas_admin). Leave empty only on versions before 25.04.',
+    secret: 'API key',
+    address: 'TrueNAS host or IP (default port 443). Connects via wss://…/api/current',
+  },
+};
+
+let state = null;
+
+function normFp(s) {
+  return String(s || '').replace(/[\s:]/g, '').toUpperCase();
+}
+
+function showMsg(id, text, ok) {
+  const m = $(id);
+  m.textContent = text;
+  m.className = `msg ${ok ? 'ok' : 'error'}`;
+  if (ok) setTimeout(() => m.textContent === text && (m.textContent = ''), 4000);
+}
+
+async function load() {
+  try {
+    state = await api('GET', '/api/admin/config');
+    $('whoami').textContent = `Signed in as ${state.user}`;
+    $('device-kind').replaceChildren(...state.rackKinds.map((k) => el('option', { value: k, text: Rack.KIND_LABELS[k] || k })));
+    fillPower(state.settings.power);
+    fillDashboard(state.settings.dashboard);
+    appearance = structuredClone(state.settings.appearance);
+    renderAppearance();
+    rackData = await api('GET', '/api/dashboard').catch(() => null);
+    renderDevicesTab();
+  } catch (e) {
+    $('global-error').textContent = e.message;
+    $('global-error').classList.remove('hidden');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+
+function fillPower(p) {
+  const f = $('power-form').elements;
+  f.plan.value = p.plan;
+  f.area.value = p.area;
+  f.vat.checked = p.vat;
+  f.markupOre.value = p.markupOre;
+  f.supportEnabled.checked = p.support.enabled;
+  f.thresholdOre.value = p.support.thresholdOre;
+  f.percent.value = p.support.percent;
+  f.dayOre.value = p.grid.dayOre;
+  f.nightOre.value = p.grid.nightOre;
+  f.dayStartHour.value = p.grid.dayStartHour;
+  f.dayEndHour.value = p.grid.dayEndHour;
+  f.weekendNight.checked = p.grid.weekendNight;
+  f.holidayNight.checked = p.grid.holidayNight;
+  f.ratesInclVat.checked = p.grid.ratesInclVat;
+  f.ratesInclFees.checked = p.grid.ratesInclFees;
+  f.elavgiftOre.value = p.grid.elavgiftOre;
+  f.enovaOre.value = p.grid.enovaOre;
+  f.gridMonthlyKr.value = p.fixed.gridMonthlyKr;
+  f.supplierMonthlyKr.value = p.fixed.supplierMonthlyKr;
+  f.fixedInclude.checked = p.fixed.include;
+  f.includeEstimates.checked = p.includeEstimates;
+  updatePlanFields();
+}
+
+function powerBody() {
+  const p = $('power-form').elements;
+  return {
+    plan: p.plan.value,
+    area: p.area.value,
+    vat: p.vat.checked,
+    markupOre: Number(p.markupOre.value || 0),
+    support: { enabled: p.supportEnabled.checked, thresholdOre: Number(p.thresholdOre.value), percent: Number(p.percent.value) },
+    grid: {
+      dayOre: Number(p.dayOre.value),
+      nightOre: Number(p.nightOre.value),
+      ratesInclVat: p.ratesInclVat.checked,
+      ratesInclFees: p.ratesInclFees.checked,
+      elavgiftOre: Number(p.elavgiftOre.value || 0),
+      enovaOre: Number(p.enovaOre.value || 0),
+      dayStartHour: Number(p.dayStartHour.value),
+      dayEndHour: Number(p.dayEndHour.value),
+      weekendNight: p.weekendNight.checked,
+      holidayNight: p.holidayNight.checked,
+    },
+    fixed: {
+      gridMonthlyKr: Number(p.gridMonthlyKr.value || 0),
+      supplierMonthlyKr: Number(p.supplierMonthlyKr.value || 0),
+      include: p.fixedInclude.checked,
+    },
+    includeEstimates: p.includeEstimates.checked,
+  };
+}
+
+// Same formula as the server (gridRateAt / priceAt), shown so it can be compared with an invoice.
+function updatePlanFields() {
+  const f = $('power-form').elements;
+  const spot = f.plan.value === 'spot';
+  for (const n of document.querySelectorAll('#power-form .spot-only')) n.classList.toggle('hidden', !spot);
+  for (const n of document.querySelectorAll('#power-form .fees-only')) n.classList.toggle('hidden', f.ratesInclFees.checked);
+  const b = powerBody();
+  const vat = b.vat ? 1.25 : 1;
+  const grid = (rate) => {
+    let ore = b.grid.ratesInclVat ? rate / 1.25 : rate;
+    if (!b.grid.ratesInclFees) ore += b.grid.elavgiftOre + b.grid.enovaOre;
+    return ore * vat;
+  };
+  const day = grid(b.grid.dayOre);
+  const night = grid(b.grid.nightOre);
+  const lines = [`Grid, effective${b.vat ? ' incl. VAT' : ''}: day ${fmt.n(day, 2)} øre/kWh · night/weekend ${fmt.n(night, 2)} øre/kWh`];
+  if (b.plan === 'norgespris') {
+    const energy = 40 * vat + b.markupOre;
+    lines.push(`Energy (Norgespris): ${fmt.n(energy, 2)} øre/kWh → total day ${fmt.n(energy + day, 2)} · night ${fmt.n(energy + night, 2)} øre/kWh`);
+  } else lines.push(`Energy: spot price${b.vat ? ' + VAT' : ''}${b.support.enabled ? ' − subsidy' : ''} + ${fmt.n(b.markupOre, 2)} øre markup (varies by hour)`);
+  const fixed = b.fixed.gridMonthlyKr + b.fixed.supplierMonthlyKr;
+  if (fixed) lines.push(`Fixed: ${fmt.kr(fixed)}/month (${b.fixed.include ? 'included in' : 'excluded from'} homelab cost)`);
+  $('price-preview').replaceChildren(...lines.map((l) => el('div', { text: l })));
+}
+
+$('power-form').addEventListener('input', updatePlanFields);
+$('power-form').addEventListener('change', updatePlanFields);
+$('power-form').elements.area.addEventListener('change', (ev) => {
+  // Households in Nord-Norge (NO4) are generally exempt from VAT on electricity.
+  $('power-form').elements.vat.checked = ev.target.value !== 'NO4';
+  updatePlanFields();
+});
+
+function fillDashboard(d) {
+  const f = $('dash-form').elements;
+  f.title.value = d.title;
+  f.refreshSeconds.value = d.refreshSeconds;
+  f.showStoppedGuests.checked = d.showStoppedGuests;
+  f.public.checked = d.public;
+}
+
+async function saveSettings(msgId) {
+  const d = $('dash-form').elements;
+  const body = {
+    dashboard: {
+      title: d.title.value,
+      refreshSeconds: Number(d.refreshSeconds.value),
+      showStoppedGuests: d.showStoppedGuests.checked,
+      public: d.public.checked,
+    },
+    power: powerBody(),
+  };
+  try {
+    const r = await api('PUT', '/api/admin/settings', body);
+    state.settings = r.settings;
+    showMsg(msgId, 'Saved', true);
+  } catch (e) {
+    showMsg(msgId, e.message, false);
+  }
+}
+
+$('power-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  saveSettings('power-msg');
+});
+
+$('dash-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  if ($('dash-form').elements.public.checked && !state.settings.dashboard.public &&
+      !confirm('Anyone who can reach this server will be able to view the dashboard without logging in. Continue?')) return;
+  saveSettings('dash-msg');
+});
+
+$('pw-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  if (f.password.value !== f.password2.value) return showMsg('pw-msg', 'New passwords do not match', false);
+  try {
+    await api('POST', '/api/admin/password', { current: f.current.value, password: f.password.value });
+    showMsg('pw-msg', 'Password changed. Other sessions have been signed out.', true);
+  } catch (e) {
+    showMsg('pw-msg', e.message, false);
+  } finally {
+    f.current.value = f.password.value = f.password2.value = '';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Devices: physical boxes with their monitoring connections, placed in the rack
+
+let rackData = null; // dashboard data, for live faceplates and status LEDs
+let draft = null; // device in the editor; typed secrets live here only until saved
+
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway' };
+const deviceForm = () => $('device-form').elements;
+const hostsOf = (dev) => state.hosts.filter((h) => h.deviceId === dev.id);
+const placementText = (d) =>
+  d.location === 'rack' ? (d.height > 1 ? `U${d.u}–U${d.u + d.height - 1}` : `U${d.u}`) : d.location === 'outside' ? 'Outside the rack' : 'Not placed';
+
+async function refreshDevices() {
+  [state, rackData] = await Promise.all([api('GET', '/api/admin/config'), api('GET', '/api/dashboard').catch(() => null)]);
+  renderDevicesTab();
+}
+
+function fillRackSettings() {
+  $('rack-enabled').checked = state.rack.enabled;
+  $('rack-units').value = state.rack.units;
+  $('rack-numbering').value = state.rack.numbering;
+}
+
+function freeU(height, exceptId) {
+  for (let u = 1; u + height - 1 <= state.rack.units; u++) {
+    if (!state.devices.some((o) => o.id !== exceptId && !o.hidden && o.location === 'rack' && o.u <= u + height - 1 && u <= o.u + o.height - 1)) return u;
+  }
+  return null;
+}
+
+function renderDevicesTab() {
+  fillRackSettings();
+  const rack = rackData?.rack || { ...state.rack, items: [] };
+  Rack.render($('rack-preview'), rack, rackData, {
+    uPx: 28,
+    editable: true,
+    selectedId: draft?.id,
+    onSelect: (item) => openDevice(state.devices.find((d) => d.id === item.id)),
+    onMove: (item, u) => moveDevice(item, u),
+    onEmpty: (u) => openDevice(null, { location: 'rack', u }),
+  });
+  renderDeviceList();
+}
+
+async function moveDevice(item, u) {
+  try {
+    await api('PUT', `/api/admin/devices/${item.id}/placement`, { location: 'rack', u, height: item.height });
+    showMsg('rack-msg', `${item.name} moved to U${u}`, true);
+  } catch (e) {
+    showMsg('rack-msg', e.message, false);
+  }
+  await refreshDevices();
+}
+
+function deviceRow(d) {
+  const item = rackData?.devices?.find((x) => x.id === d.id) || { ...d, links: [] };
+  const info = Rack.itemInfo(item, rackData);
+  const conns = hostsOf(d);
+  const errors = conns.filter((h) => h.status && !h.status.ok).length;
+  const missing = conns.filter((h) => !h.hasSecret).length;
+  const what = [...conns.map((h) => state.types[h.type].label), d.unifi && !conns.some((h) => h.type === 'unifi') ? 'found via UniFi' : null].filter(Boolean).join(' + ');
+  const problems = [errors ? `${errors} with errors` : '', missing ? `${missing} without credentials` : ''].filter(Boolean).join(', ');
+  return el('button', { type: 'button', class: `device-row${draft?.id === d.id ? ' selected' : ''}`, onclick: () => openDevice(d) },
+    el('span', { class: `led ${info.status || 'off'}`, 'aria-hidden': 'true' }),
+    el('span', { class: 'device-main' },
+      el('strong', { text: d.name }),
+      el('span', { class: 'small muted', text: [Rack.KIND_LABELS[d.kind], placementText(d), d.estimateW ? `~${d.estimateW} W` : ''].filter(Boolean).join(' · ') })),
+    el('span', { class: `device-links small${problems ? ' has-problems' : ''}`, text: [what || 'Not monitored', problems].filter(Boolean).join(' · ') }));
+}
+
+function renderDeviceList() {
+  const rows = [];
+  const visible = state.devices.filter((d) => !d.hidden);
+  const rackOrder = (d) => (state.rack.numbering === 'top' ? d.u : -d.u);
+  for (const [loc, label] of [['rack', 'In the rack'], ['outside', 'Outside the rack'], ['none', 'Not placed']]) {
+    const list = visible.filter((d) => d.location === loc).sort((a, b) => (loc === 'rack' ? rackOrder(a) - rackOrder(b) : a.name.localeCompare(b.name)));
+    if (list.length) rows.push(el('h4', { text: `${label} (${list.length})` }), ...list.map(deviceRow));
+  }
+  const hidden = state.devices.filter((d) => d.hidden);
+  if (hidden.length) {
+    rows.push(el('h4', { text: `Hidden (${hidden.length})` }));
+    for (const d of hidden) {
+      rows.push(el('div', { class: 'source-row' },
+        el('div', { class: 'device-main' }, el('strong', { text: d.name }), el('span', { class: 'small muted', text: 'Found through UniFi; hidden from the dashboard and rack' })),
+        el('button', { type: 'button', text: 'Show again', onclick: () => setHidden(d, false) })));
+    }
+  }
+  if (!state.devices.length) rows.push(el('p', { class: 'empty', text: 'No devices yet. Use “Add device” to add a server, NAS, switch… with its connections.' }));
+  $('device-list').replaceChildren(...rows);
+}
+
+async function setHidden(d, hidden) {
+  try {
+    await api('PUT', `/api/admin/devices/${d.id}`, { name: d.name, kind: d.kind, location: d.location, u: d.u, height: d.height, estimateW: d.estimateW, hidden });
+  } catch (e) {
+    showMsg('rack-msg', e.message, false);
+  }
+  await refreshDevices();
+}
+
+function connFromHost(h) {
+  return {
+    id: h.id, type: h.type, address: h.address, username: h.username, tlsMode: h.tlsMode, fingerprint: h.fingerprint,
+    options: { ...h.options }, secret: '', secret2: '', clearSecret: false, hasSecret: h.hasSecret, status: h.status, nodes: h.nodes || [],
+    orig: { address: h.address, username: h.username, tlsMode: h.tlsMode, fingerprint: h.fingerprint },
+  };
+}
+
+function newConn(type) {
+  return {
+    id: null, type, address: '', username: '', tlsMode: 'pin', fingerprint: '',
+    options: type === 'synology' ? { snmpAuth: 'sha' } : type === 'proxmox' ? { node: '' } : {},
+    secret: '', secret2: '', clearSecret: false, hasSecret: false, status: null, nodes: [], orig: null,
+  };
+}
+
+function openDevice(dev, preset = {}) {
+  draft = dev
+    ? { ...structuredClone(dev), connections: hostsOf(dev).map(connFromHost) }
+    : { id: null, name: '', kind: 'server', location: 'rack', u: null, height: 1, estimateW: null, discovered: false, unifi: null, connections: [], ...preset };
+  if (!dev && draft.location === 'rack' && !draft.u) draft.u = freeU(draft.height);
+  const f = deviceForm();
+  f.name.value = draft.name;
+  f.kind.value = draft.kind;
+  f.location.value = draft.location;
+  f.height.value = draft.height;
+  f.u.value = draft.u ?? '';
+  f.estimateW.value = draft.estimateW ?? '';
+  $('device-editor-title').textContent = dev ? `Edit ${dev.name}` : 'Add device';
+  $('device-origin').textContent = dev?.discovered
+    ? `Found automatically through the UniFi console (${dev.unifi.mac}). Rename it, choose its type and where it sits.`
+    : '';
+  $('device-delete').hidden = !dev;
+  $('device-delete').textContent = dev?.discovered ? 'Hide device' : 'Delete device';
+  $('device-msg').textContent = !dev && draft.location === 'rack' && !draft.u ? 'The rack is full: choose a position, or another placement.' : '';
+  $('device-msg').className = 'msg';
+  $('device-editor').hidden = false;
+  renderConnections();
+  syncDraft();
+  renderDevicesTab();
+  $('device-editor').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  f.name.focus();
+}
+
+function closeDevice() {
+  draft = null; // typed secrets are dropped with the draft
+  $('device-editor').hidden = true;
+  renderDevicesTab();
+}
+
+function syncDraft() {
+  if (!draft) return;
+  const f = deviceForm();
+  draft.name = f.name.value.trim();
+  draft.kind = f.kind.value;
+  draft.location = f.location.value || 'none';
+  draft.height = Number(f.height.value) || 1;
+  draft.u = f.u.value === '' ? null : Number(f.u.value);
+  draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
+  for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
+  const types = draft.connections.map((c) => c.type);
+  $('device-est-hint').textContent = types.includes('idrac')
+    ? 'Power is measured by the iDRAC; an estimate is ignored.'
+    : draft.kind === 'ap' ? 'Usually powered by PoE, which is already measured at the switch: leave empty.'
+      : draft.kind === 'switch' ? 'Base consumption of the switch itself; PoE delivered to other devices is measured separately.'
+        : 'Typical draw (spec sheet or your own measurement). Counted only if enabled under Power & cost.';
+  const free = Object.keys(state.types).filter((t) => !types.includes(t));
+  $('conn-add').replaceChildren(
+    el('option', { value: '', text: free.length ? 'Choose a type…' : 'All connection types added' }),
+    ...free.map((t) => el('option', { value: t, text: state.types[t].label })));
+  $('conn-add').disabled = !free.length;
+}
+
+function renderConnections() {
+  $('conn-list').replaceChildren(...(draft.connections.length
+    ? draft.connections.map(connCard)
+    : [el('p', { class: 'small muted', text: draft.unifi ? 'Monitored through its UniFi console; no connection needed.' : 'No connections: the device is shown in the rack, but not monitored.' })]));
+}
+
+function connCard(c) {
+  const t = TYPE_TEXT[c.type];
+  const snmp = c.type === 'synology';
+  const stored = c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set';
+  const result = el('div', { class: 'conn-result', role: 'status' });
+  const warn = el('p', { class: 'banner hidden' });
+  const field = (label, input, hint, cls) => el('label', { class: cls }, el('span', { text: label }), input, hint ? el('span', { class: 'hint', text: hint }) : null);
+  const input = (key, attrs = {}) => {
+    const node = el('input', { value: c[key], spellcheck: 'false', autocomplete: 'off', ...attrs });
+    node.addEventListener('input', () => {
+      c[key] = node.value;
+      updateWarning();
+    });
+    return node;
+  };
+  const select = (options, value, onChange) => {
+    const node = el('select', null, options.map(([v, label]) => el('option', { value: v, text: label })));
+    node.value = value;
+    node.addEventListener('change', () => onChange(node.value));
+    return node;
+  };
+  const fpInput = input('fingerprint', { placeholder: snmp ? '80:00:…' : 'AB:CD:…' });
+  const fpField = field(snmp ? 'SNMP engine ID (pinned)' : 'SHA-256 fingerprint', fpInput, null, 'wide');
+  fpField.classList.toggle('hidden', !snmp && c.tlsMode !== 'pin');
+
+  function updateWarning() {
+    const o = c.orig;
+    const changed = o && c.hasSecret && !c.secret && !c.clearSecret
+      ? [c.address.trim() !== o.address && 'address', c.username.trim() !== o.username && 'user name',
+        (c.tlsMode !== o.tlsMode || normFp(c.fingerprint) !== normFp(o.fingerprint)) && (snmp ? 'engine ID' : 'certificate')].filter(Boolean)
+      : [];
+    warn.textContent = changed.length
+      ? `You changed the ${changed.join(', ')}. Unless you enter the ${snmp ? 'SNMP passwords' : t.secret.toLowerCase()} again, the stored one will be deleted so it is never sent to a different host.`
+      : '';
+    warn.classList.toggle('hidden', !changed.length);
+  }
+
+  const statusNode = c.status
+    ? c.status.ok ? status('OK', 'good') : status('Error', 'critical')
+    : c.id ? status('Pending', '') : status('Not saved yet', '');
+  const fields = [
+    field('Address', input('address', { placeholder: 'host or IP[:port]' }), t.address),
+    field(t.username, input('username'), t.usernameHint),
+    field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
+  ];
+  if (snmp) {
+    fields.push(field('Privacy password (AES)', input('secret2', { type: 'password', autocomplete: 'new-password', placeholder: stored })));
+    fields.push(field('Authentication protocol', select([['sha', 'SHA (SHA-1)'], ['sha256', 'SHA-256']], c.options.snmpAuth || 'sha', (v) => (c.options.snmpAuth = v))));
+  } else {
+    fields.push(field('TLS certificate check', select([['verify', 'Verify with trusted CAs'], ['pin', 'Pin SHA-256 fingerprint (self-signed)']], c.tlsMode, (v) => {
+      c.tlsMode = v;
+      fpField.classList.toggle('hidden', v !== 'pin');
+      updateWarning();
+    })));
+  }
+  if (c.type === 'proxmox') {
+    const nodes = [...new Set([...(c.nodes || []), c.options.node].filter(Boolean))];
+    fields.push(field('Node', select([['', 'Automatic (single node, or same name as the device)'], ...nodes.map((n) => [n, n])], c.options.node || '', (v) => (c.options.node = v)),
+      'For a cluster: the node this device is. Press Test to list the nodes.'));
+  }
+  fields.push(fpField);
+  if (c.hasSecret) {
+    const clear = el('input', { type: 'checkbox', checked: c.clearSecret });
+    clear.addEventListener('change', () => {
+      c.clearSecret = clear.checked;
+      updateWarning();
+    });
+    fields.push(el('label', { class: 'check wide' }, clear, ' Delete the stored secret'));
+  }
+
+  const card = el('div', { class: 'conn-card' },
+    el('div', { class: 'conn-head' },
+      el('strong', { text: state.types[c.type].label }),
+      statusNode,
+      el('span', { class: 'spacer' }),
+      el('button', {
+        type: 'button',
+        class: 'danger',
+        text: 'Remove',
+        onclick: () => {
+          draft.connections = draft.connections.filter((x) => x !== c);
+          renderConnections();
+          syncDraft();
+        },
+      })),
+    c.status && !c.status.ok ? el('p', { class: 'small msg error', text: c.status.error }) : null,
+    c.type === 'unifi' ? el('p', { class: 'hint', text: 'Switches and access points found through this console appear as their own devices automatically.' }) : null,
+    el('div', { class: 'form-grid two' }, fields),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
+      el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
+      el('span', { class: 'hint', text: snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+    result,
+    warn);
+  updateWarning();
+  return card;
+}
+
+async function fetchIdentity(c, fpInput, box) {
+  box.replaceChildren('Connecting…');
+  try {
+    const r = await api('POST', '/api/admin/fingerprint', { type: c.type, address: c.address });
+    const value = r.engineId || r.fingerprint;
+    const use = el('button', {
+      type: 'button',
+      text: r.engineId ? 'Use this engine ID' : 'Use this fingerprint',
+      onclick: () => {
+        c.fingerprint = value;
+        fpInput.value = value;
+        if (!r.engineId) c.tlsMode = 'pin';
+        renderConnections();
+      },
+    });
+    box.replaceChildren(el('div', { class: 'fp-box' },
+      el('div', null, el('strong', { text: r.engineId ? 'Engine ID: ' : 'SHA-256: ' }), el('code', { text: value })),
+      r.engineId
+        ? el('div', { text: `Agent uptime ${fmt.uptime(r.uptime)} · restarts ${r.boots}` })
+        : el('div', { text: `${r.subject || '–'} · issued by ${r.issuer || '–'} · valid until ${r.validTo}${r.caTrusted ? ' · trusted by system CAs' : ' · self-signed'}` }),
+      el('div', { class: 'hint', text: 'Only use it if this really is your device (compare with what the device shows, if you can).' }),
+      el('div', { class: 'form-actions' }, use)));
+  } catch (e) {
+    box.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+  }
+}
+
+async function testConnection(c, box) {
+  box.replaceChildren(el('span', { class: 'small muted', text: 'Testing…' }));
+  try {
+    const r = await api('POST', '/api/admin/test-connection', {
+      id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode,
+      fingerprint: c.fingerprint, options: c.options, secret: c.secret, secret2: c.secret2,
+    });
+    if (r.ok && r.nodes) {
+      c.nodes = r.nodes;
+      renderConnections(); // refresh the node list
+      return;
+    }
+    box.replaceChildren(r.ok ? el('span', { class: 'msg ok', text: `Connected: ${r.info}` }) : el('span', { class: 'msg error', text: r.error }));
+  } catch (e) {
+    box.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+  }
+}
+
+$('conn-add').addEventListener('change', (e) => {
+  const type = e.target.value;
+  if (!type || !draft) return;
+  if (!draft.connections.length && !draft.id && deviceForm().kind.value === 'server') deviceForm().kind.value = KIND_FOR_TYPE[type];
+  draft.connections.push(newConn(type));
+  renderConnections();
+  syncDraft();
+  $('conn-list').lastElementChild?.querySelector('input')?.focus();
+});
+// Fields of the device itself; connection cards and the "add connection" list handle their own events
+// (a <select> fires `input` before `change`, and syncDraft rebuilds that list).
+const ownField = (e) => !e.target.closest('.conn-card') && e.target.id !== 'conn-add';
+$('device-form').addEventListener('input', (e) => ownField(e) && syncDraft());
+$('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
+$('device-new').addEventListener('click', () => openDevice(null));
+$('device-cancel').addEventListener('click', closeDevice);
+
+$('device-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  syncDraft();
+  const d = draft;
+  const body = {
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false,
+    connections: d.connections.map((c) => ({
+      id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
+      options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,
+    })),
+  };
+  $('device-save').disabled = true;
+  try {
+    const r = d.id ? await api('PUT', `/api/admin/devices/${d.id}`, body) : await api('POST', '/api/admin/devices', body);
+    closeDevice();
+    await refreshDevices();
+    showMsg('rack-msg', `Saved ${body.name}`, true);
+    if (r.notes?.length) alert(r.notes.join('\n'));
+  } catch (e) {
+    showMsg('device-msg', e.message, false);
+  } finally {
+    for (const c of body.connections) c.secret = c.secret2 = '';
+    $('device-save').disabled = false;
+  }
+});
+
+$('device-delete').addEventListener('click', async () => {
+  if (!draft?.id) return;
+  const n = draft.connections.length;
+  const question = draft.discovered
+    ? `Hide ${draft.name}? It is found through UniFi, so it is hidden instead of deleted. You can show it again later.`
+    : `Delete ${draft.name}${n ? ` and its ${n} connection${n === 1 ? '' : 's'} (stored credentials are deleted)` : ''}?`;
+  if (!confirm(question)) return;
+  try {
+    await api('DELETE', `/api/admin/devices/${draft.id}`);
+    showMsg('rack-msg', draft.discovered ? `${draft.name} hidden` : `Deleted ${draft.name}`, true);
+    closeDevice();
+    await refreshDevices();
+  } catch (e) {
+    showMsg('device-msg', e.message, false);
+  }
+});
+
+async function saveRackSettings(next, okText) {
+  try {
+    const r = await api('PUT', '/api/admin/rack', { ...state.rack, ...next });
+    state.rack = r.rack;
+    showMsg('rack-msg', okText, true);
+  } catch (e) {
+    showMsg('rack-msg', e.message, false);
+  }
+  await refreshDevices();
+}
+$('rack-enabled').addEventListener('change', (e) => saveRackSettings({ enabled: e.target.checked }, e.target.checked ? 'The rack is shown on the dashboard' : 'The rack is hidden'));
+$('rack-units').addEventListener('change', (e) => {
+  const units = Number(e.target.value);
+  if (!(units >= 1 && units <= 60)) return fillRackSettings();
+  saveRackSettings({ units }, `Rack size set to ${units} U`);
+});
+$('rack-numbering').addEventListener('change', (e) => saveRackSettings({ numbering: e.target.value }, 'Numbering changed'));
+
+// ---------------------------------------------------------------------------
+// Services (dashboard Services tab)
+
+let svcState = null; // { services, integrations, devices, icons }
+let svcDraft = null; // service in the editor; a typed secret lives here only until saved
+const svcForm = () => $('svc-form').elements;
+
+async function loadServices() {
+  try {
+    svcState = await api('GET', '/api/admin/services');
+    renderServiceList();
+  } catch (e) {
+    showMsg('svc-list-msg', e.message, false);
+  }
+}
+
+function serviceIcon(svc, cls = 'svc-icon') {
+  return svc.icon?.kind === 'file' ? el('img', { class: cls, src: `/media/icon/${svc.icon.id}`, alt: '' }) : HD.letterIcon(svc.name || '?', `${cls} letter`);
+}
+
+function renderServiceList() {
+  const list = svcState.services;
+  const groups = [...new Set(list.map((x) => x.group))];
+  $('svc-groups').replaceChildren(...groups.map((g) => el('option', { value: g })));
+  if (!list.length) return $('svc-list').replaceChildren(el('p', { class: 'empty', text: 'No services yet. “Add service” to add Jellyfin, Pi-hole, Home Assistant…' }));
+  $('svc-list').replaceChildren(...groups.flatMap((g) => [
+    el('h4', { text: g }),
+    ...list.filter((x) => x.group === g).map((svc) => {
+      const r = svc.result;
+      const st = !svc.connection ? HD.status('Link only', '')
+        : !r?.check ? HD.status('Pending', '') : r.check.up ? HD.status(`Up · ${r.check.ms} ms`, 'good') : HD.status('Down', 'critical');
+      const integ = svc.integration ? svcState.integrations[svc.integration.type]?.label : null;
+      return el('div', { class: `svc-row${svcDraft?.id === svc.id ? ' selected' : ''}` },
+        serviceIcon(svc),
+        el('div', { class: 'device-main' },
+          el('strong', { text: svc.name }),
+          el('span', { class: 'small muted', text: [integ, svc.description].filter(Boolean).join(' · ') || 'Link' }),
+          r?.error ? el('span', { class: 'small msg error', text: r.error }) : null),
+        st,
+        el('span', { class: 'svc-row-actions' },
+          el('button', { type: 'button', text: '↑', 'aria-label': `Move ${svc.name} up`, onclick: () => moveService(svc, -1) }),
+          el('button', { type: 'button', text: '↓', 'aria-label': `Move ${svc.name} down`, onclick: () => moveService(svc, 1) }),
+          el('button', { type: 'button', text: 'Edit', onclick: () => openService(svc) })));
+    }),
+  ]));
+}
+
+async function moveService(svc, dir) {
+  const list = svcState.services;
+  const same = list.filter((x) => x.group === svc.group);
+  const other = same[same.indexOf(svc) + dir];
+  if (!other) return;
+  const a = list.indexOf(svc);
+  const b = list.indexOf(other);
+  [list[a], list[b]] = [list[b], list[a]];
+  renderServiceList();
+  try {
+    await api('PUT', '/api/admin/services/order', { ids: list.map((x) => x.id) });
+  } catch (e) {
+    showMsg('svc-list-msg', e.message, false);
+  }
+}
+
+function openService(svc) {
+  svcDraft = svc
+    ? { ...structuredClone(svc), secret: '', clearSecret: false }
+    : { id: null, name: '', group: '', description: '', href: '', deviceId: null, icon: { kind: 'letter' }, connection: null, integration: null, secret: '', clearSecret: false, hasSecret: false };
+  const f = svcForm();
+  f.name.value = svcDraft.name;
+  f.group.value = svcDraft.group;
+  f.description.value = svcDraft.description;
+  f.href.value = svcDraft.href;
+  $('svc-device').replaceChildren(el('option', { value: '', text: '–' }), ...svcState.devices.map((d) => el('option', { value: d.id, text: d.name })));
+  f.deviceId.value = svcDraft.deviceId || '';
+  f.url.value = svcDraft.connection?.url || '';
+  f.tlsMode.value = svcDraft.connection?.tlsMode || 'verify';
+  f.fingerprint.value = svcDraft.connection?.fingerprint || '';
+  const defs = svcState.integrations;
+  const byGroup = {};
+  for (const [k, d] of Object.entries(defs)) (byGroup[d.group] ||= []).push([k, d]);
+  $('svc-integration').replaceChildren(el('option', { value: '', text: 'None (status check only)' }),
+    ...Object.entries(byGroup).map(([g, items]) => el('optgroup', { label: g }, items.map(([k, d]) => el('option', { value: k, text: d.label })))));
+  f.integration.value = svcDraft.integration?.type || '';
+  $('svc-editor-title').textContent = svc ? `Edit ${svc.name}` : 'Add service';
+  $('svc-delete').hidden = !svc;
+  $('svc-test-result').replaceChildren();
+  $('svc-fp-result').classList.add('hidden');
+  $('icon-results').replaceChildren();
+  $('icon-search').value = '';
+  $('svc-msg').textContent = '';
+  renderIconPreview();
+  renderIntegrationFields();
+  syncService();
+  $('svc-editor').hidden = false;
+  renderServiceList();
+  $('svc-editor').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  f.name.focus();
+}
+
+function closeService() {
+  svcDraft = null;
+  $('svc-editor').hidden = true;
+  renderServiceList();
+}
+
+function renderIconPreview() {
+  $('svc-icon-preview').replaceChildren(serviceIcon({ ...svcDraft, name: svcForm().name.value || svcDraft.name }, 'svc-icon large'));
+}
+
+function renderIntegrationFields() {
+  const type = svcForm().integration.value;
+  const def = svcState.integrations[type];
+  const box = $('svc-int-fields');
+  if (!def) return box.replaceChildren();
+  const integ = svcDraft.integration?.type === type ? svcDraft.integration : { type, username: '', options: {} };
+  svcDraft.integration = integ;
+  const fields = [];
+  if (def.user) {
+    const u = el('input', { value: integ.username || '', autocomplete: 'off', spellcheck: 'false' });
+    u.addEventListener('input', () => (integ.username = u.value));
+    fields.push(el('label', null, el('span', { text: def.user }), u));
+  }
+  if (def.secret) {
+    const stored = svcDraft.hasSecret && svcDraft.id ? 'Stored (leave blank to keep)' : def.optionalSecret ? 'Optional' : 'Not set';
+    const sec = el('input', { type: 'password', autocomplete: 'new-password', value: svcDraft.secret, placeholder: stored });
+    sec.addEventListener('input', () => {
+      svcDraft.secret = sec.value;
+      syncService();
+    });
+    fields.push(el('label', null, el('span', { text: def.secret }), sec));
+  }
+  for (const o of def.options) {
+    const input = o.multiline ? el('textarea', { rows: 4, value: integ.options?.[o.key] || '', placeholder: o.placeholder || '' }) : el('input', { value: integ.options?.[o.key] || '', placeholder: o.placeholder || '' });
+    input.addEventListener('input', () => ((integ.options ||= {})[o.key] = input.value));
+    fields.push(el('label', { class: o.multiline ? 'wide' : null }, el('span', { text: o.label }), input));
+  }
+  if (svcDraft.hasSecret && svcDraft.id) {
+    const clear = el('input', { type: 'checkbox', checked: svcDraft.clearSecret });
+    clear.addEventListener('change', () => (svcDraft.clearSecret = clear.checked));
+    fields.push(el('label', { class: 'check wide' }, clear, ' Delete the stored secret'));
+  }
+  box.replaceChildren(...fields);
+}
+
+function syncService() {
+  if (!svcDraft) return;
+  const f = svcForm();
+  const url = f.url.value.trim();
+  const https = /^https:\/\//i.test(url);
+  for (const n of document.querySelectorAll('#svc-form .https-only')) n.classList.toggle('hidden', !https);
+  for (const n of document.querySelectorAll('#svc-form .pin-only')) n.classList.toggle('hidden', !https || f.tlsMode.value !== 'pin');
+  const def = svcState.integrations[f.integration.value];
+  const warn = $('svc-http-warning');
+  const sendsSecret = def?.secret && (svcDraft.secret || svcDraft.hasSecret);
+  warn.textContent = /^http:\/\//i.test(url) && sendsSecret
+    ? 'This URL uses plain http://, so the key/password travels unencrypted over your network. Prefer https:// (e.g. through your reverse proxy) where you can.'
+    : '';
+  warn.classList.toggle('hidden', !warn.textContent);
+}
+
+function serviceBody() {
+  const f = svcForm();
+  const type = f.integration.value;
+  return {
+    id: svcDraft.id || undefined,
+    name: f.name.value,
+    group: f.group.value,
+    description: f.description.value,
+    href: f.href.value,
+    deviceId: f.deviceId.value || null,
+    icon: svcDraft.icon,
+    connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
+    integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {} } : null,
+    secret: svcDraft.secret,
+    clearSecret: svcDraft.clearSecret,
+  };
+}
+
+let iconSearchTimer = null;
+$('icon-search').addEventListener('input', (e) => {
+  clearTimeout(iconSearchTimer);
+  const q = e.target.value.trim();
+  iconSearchTimer = setTimeout(async () => {
+    if (q.length < 2) return $('icon-results').replaceChildren();
+    try {
+      const { names } = await api('GET', `/api/admin/icons/search?q=${encodeURIComponent(q)}`);
+      $('icon-results').replaceChildren(...(names.length ? names.map((n) => el('button', {
+        type: 'button',
+        class: 'icon-choice',
+        title: n,
+        onclick: () => pickLibraryIcon(n),
+      }, el('img', { src: `/api/admin/icons/preview/${n}`, alt: '', loading: 'lazy' }), el('span', { text: n }))) : [el('span', { class: 'small muted', text: 'No icons found' })]));
+    } catch (err) {
+      $('icon-results').replaceChildren(el('span', { class: 'msg error', text: err.message }));
+    }
+  }, 250);
+});
+
+async function pickLibraryIcon(name) {
+  try {
+    const { icon } = await api('POST', '/api/admin/icons/library', { name });
+    svcDraft.icon = { kind: 'file', id: icon.id };
+    renderIconPreview();
+    $('icon-results').replaceChildren();
+    $('icon-search').value = '';
+  } catch (e) {
+    showMsg('svc-msg', e.message, false);
+  }
+}
+
+$('icon-upload').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const { icon } = await HD.upload('/api/admin/icons', file);
+    svcDraft.icon = { kind: 'file', id: icon.id };
+    renderIconPreview();
+  } catch (err) {
+    showMsg('svc-msg', err.message, false);
+  }
+});
+$('icon-letter').addEventListener('click', () => {
+  svcDraft.icon = { kind: 'letter' };
+  renderIconPreview();
+});
+
+$('svc-form').addEventListener('input', (e) => {
+  if (e.target.name === 'name') renderIconPreview();
+  if (e.target.id !== 'icon-search') syncService();
+});
+$('svc-form').addEventListener('change', syncService);
+$('svc-integration').addEventListener('change', async () => {
+  const type = svcForm().integration.value;
+  renderIntegrationFields();
+  syncService();
+  const def = svcState.integrations[type];
+  // Choosing an integration fills in the obvious bits: name, group and icon
+  if (def && !svcForm().name.value) svcForm().name.value = def.label.split(' / ')[0];
+  if (def && !svcForm().group.value) svcForm().group.value = def.group;
+  if (def?.icon && svcDraft.icon.kind === 'letter') await pickLibraryIcon(def.icon).catch(() => {});
+  renderIconPreview();
+});
+
+$('svc-fetch-fp').addEventListener('click', async () => {
+  const box = $('svc-fp-result');
+  box.classList.remove('hidden');
+  box.replaceChildren('Connecting…');
+  try {
+    const u = new URL(svcForm().url.value.trim());
+    const r = await api('POST', '/api/admin/fingerprint', { type: 'idrac', address: `${u.hostname}:${u.port || 443}` });
+    box.replaceChildren(
+      el('div', null, el('strong', { text: 'SHA-256: ' }), el('code', { text: r.fingerprint })),
+      el('div', { text: `${r.subject || '–'} · issued by ${r.issuer || '–'}${r.caTrusted ? ' · trusted by system CAs' : ' · self-signed'}` }),
+      el('div', { class: 'form-actions' }, el('button', {
+        type: 'button',
+        text: 'Use this fingerprint',
+        onclick: () => {
+          svcForm().tlsMode.value = 'pin';
+          svcForm().fingerprint.value = r.fingerprint;
+          syncService();
+        },
+      })));
+  } catch (e) {
+    box.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+  }
+});
+
+$('svc-test').addEventListener('click', async () => {
+  const out = $('svc-test-result');
+  out.replaceChildren(el('span', { class: 'small muted', text: 'Testing…' }));
+  try {
+    const r = await api('POST', '/api/admin/services/test', serviceBody());
+    const parts = [];
+    if (r.check) parts.push(r.check.up ? HD.status(`Up · HTTP ${r.check.code} · ${r.check.ms} ms`, 'good') : HD.status(`Down${r.check.error ? `: ${r.check.error}` : r.check.code ? ` (HTTP ${r.check.code})` : ''}`, 'critical'));
+    if (r.stats) parts.push(el('span', { class: 'small' }, r.stats.map((st) => `${st.label}: ${HD.statValue(st)}`).join(' · ')));
+    if (r.error) parts.push(el('span', { class: 'msg error', text: r.error }));
+    out.replaceChildren(...(parts.length ? parts.flatMap((n) => [n, ' ']) : [el('span', { class: 'small muted', text: 'Nothing to test: add a connection URL.' })]));
+  } catch (e) {
+    out.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+  }
+});
+
+$('svc-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = serviceBody();
+  $('svc-save').disabled = true;
+  try {
+    const r = svcDraft.id ? await api('PUT', `/api/admin/services/${svcDraft.id}`, body) : await api('POST', '/api/admin/services', body);
+    closeService();
+    await loadServices();
+    showMsg('svc-list-msg', `Saved ${r.service.name}`, true);
+    if (r.note) alert(r.note);
+  } catch (e) {
+    showMsg('svc-msg', e.message, false);
+  } finally {
+    body.secret = '';
+    $('svc-save').disabled = false;
+  }
+});
+
+$('svc-delete').addEventListener('click', async () => {
+  if (!svcDraft?.id || !confirm(`Delete ${svcDraft.name}? Its stored credentials are deleted too.`)) return;
+  try {
+    await api('DELETE', `/api/admin/services/${svcDraft.id}`);
+    closeService();
+    await loadServices();
+  } catch (e) {
+    showMsg('svc-msg', e.message, false);
+  }
+});
+$('svc-new').addEventListener('click', () => openService(null));
+$('svc-cancel').addEventListener('click', closeService);
+
+// ---------------------------------------------------------------------------
+// Appearance
+
+const THEME_NAMES = {
+  auto: 'Auto (system)',
+  light: 'Light',
+  dark: 'Dark',
+  nord: 'Nord',
+  dracula: 'Dracula',
+  'catppuccin-mocha': 'Catppuccin Mocha',
+  'catppuccin-latte': 'Catppuccin Latte',
+  'solarized-dark': 'Solarized Dark',
+  'solarized-light': 'Solarized Light',
+  'gruvbox-dark': 'Gruvbox Dark',
+  'tokyo-night': 'Tokyo Night',
+};
+const BG_NAMES = { aurora: 'Aurora', sunset: 'Sunset', ocean: 'Ocean', forest: 'Forest', nebula: 'Nebula', graphite: 'Graphite' };
+const MAX_UPLOAD = 10 * 1024 * 1024;
+let appearance = null; // working copy, previewed live
+
+function isBg(type, value) {
+  const b = appearance.background;
+  return b.type === type && (type === 'none' || (type === 'builtin' ? b.builtin === value : b.imageId === value));
+}
+
+function bgOption(label, selected, onPick, visual) {
+  return el('button', { type: 'button', class: 'bg-option', 'aria-pressed': String(selected), title: label, onclick: onPick }, visual, el('span', { class: 'bg-name', text: label }));
+}
+
+function renderAppearance() {
+  // Theme cards carry their own data-theme, so each previews its real colors
+  $('theme-grid').replaceChildren(...state.themes.map((t) => el('button', {
+    type: 'button',
+    class: 'theme-option',
+    'data-theme': t,
+    'aria-pressed': String(appearance.theme === t),
+    onclick: () => {
+      appearance.theme = t;
+      renderAppearance();
+    },
+  }, el('strong', { text: THEME_NAMES[t] || t }),
+  el('div', { class: 'swatches', 'aria-hidden': 'true' }, ['surface', 'text', 'accent', 'good'].map((k) => el('span', { class: `sw-${k}` }))))));
+
+  const pick = (background) => () => {
+    appearance.background = { ...appearance.background, ...background };
+    renderAppearance();
+  };
+  const upload = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  upload.addEventListener('change', () => uploadBackground(upload));
+  $('bg-grid').replaceChildren(
+    bgOption('None', isBg('none'), pick({ type: 'none' }), el('span', { class: 'bg-swatch' })),
+    ...state.builtinBackgrounds.map((b) => bgOption(BG_NAMES[b] || b, isBg('builtin', b), pick({ type: 'builtin', builtin: b }), el('span', { class: `bg-swatch bg-${b}` }))),
+    ...state.backgrounds.map((img) => el('div', { class: 'bg-wrap' },
+      bgOption(img.name, isBg('image', img.id), pick({ type: 'image', imageId: img.id }), el('img', { src: `/media/bg/${img.id}`, alt: '', loading: 'lazy' })),
+      el('button', { type: 'button', class: 'bg-delete danger', title: `Delete ${img.name}`, 'aria-label': `Delete ${img.name}`, text: '×', onclick: () => deleteBackground(img) }))),
+    el('label', { class: 'bg-upload' }, upload, el('span', { text: '+ Upload image' })));
+
+  for (const [key, id, unit] of [['blur', 'ap-blur', ' px'], ['dim', 'ap-dim', ' %'], ['cardOpacity', 'ap-opacity', ' %']]) {
+    $(id).value = appearance[key];
+    $(`${id}-out`).textContent = `${appearance[key]}${unit}`;
+  }
+  previewAppearance();
+}
+
+function previewAppearance() {
+  const a = appearance;
+  const root = document.documentElement;
+  root.dataset.theme = a.theme;
+  root.dataset.bg = a.background.type === 'builtin' ? a.background.builtin : a.background.type === 'image' ? 'image' : 'none';
+  root.style.setProperty('--bg-blur', `${a.blur}px`);
+  root.style.setProperty('--bg-dim', String(a.dim / 100));
+  root.style.setProperty('--card-alpha', String(a.cardOpacity / 100));
+  document.querySelector('.app-bg').style.backgroundImage = a.background.type === 'image' ? `url("/media/bg/${a.background.imageId}")` : '';
+}
+
+for (const [key, id] of [['blur', 'ap-blur'], ['dim', 'ap-dim'], ['cardOpacity', 'ap-opacity']]) {
+  $(id).addEventListener('input', () => {
+    appearance[key] = Number($(id).value);
+    $(`${id}-out`).textContent = `${appearance[key]}${key === 'blur' ? ' px' : ' %'}`;
+    previewAppearance();
+  });
+}
+
+async function uploadBackground(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (file.size > MAX_UPLOAD) return showMsg('ap-msg', 'Image is larger than 10 MB', false);
+  showMsg('ap-msg', 'Uploading…', true);
+  try {
+    const r = await HD.upload('/api/admin/backgrounds', file);
+    state.backgrounds.push(r.background);
+    appearance.background = { ...appearance.background, type: 'image', imageId: r.background.id };
+    renderAppearance();
+    showMsg('ap-msg', 'Uploaded. Save appearance to use it.', true);
+  } catch (e) {
+    showMsg('ap-msg', e.message, false);
+  }
+}
+
+async function deleteBackground(img) {
+  if (!confirm(`Delete the image “${img.name}”?`)) return;
+  try {
+    const r = await api('DELETE', `/api/admin/backgrounds/${img.id}`);
+    state.backgrounds = state.backgrounds.filter((b) => b.id !== img.id);
+    state.settings.appearance = r.appearance;
+    if (appearance.background.imageId === img.id) appearance.background = { ...appearance.background, type: 'none', imageId: null };
+    renderAppearance();
+  } catch (e) {
+    showMsg('ap-msg', e.message, false);
+  }
+}
+
+$('ap-save').addEventListener('click', async () => {
+  try {
+    const r = await api('PUT', '/api/admin/settings', { appearance });
+    state.settings = r.settings;
+    appearance = structuredClone(r.settings.appearance);
+    renderAppearance();
+    showMsg('ap-msg', 'Saved', true);
+  } catch (e) {
+    showMsg('ap-msg', e.message, false);
+  }
+});
+
+$('ap-revert').addEventListener('click', () => {
+  appearance = structuredClone(state.settings.appearance);
+  renderAppearance();
+});
+
+// ---------------------------------------------------------------------------
+// Tabs (remembered in the URL, e.g. /admin#devices)
+
+const TABS = ['devices', 'services', 'power', 'dashboard', 'appearance', 'account'];
+
+function showTab(name, focus) {
+  if (name === 'hosts' || name === 'rack') name = 'devices'; // old links
+  if (!TABS.includes(name)) name = 'devices';
+  for (const t of TABS) {
+    const on = t === name;
+    $(`tabbtn-${t}`).setAttribute('aria-selected', String(on));
+    $(`tabbtn-${t}`).tabIndex = on ? 0 : -1;
+    $(`tab-${t}`).hidden = !on;
+  }
+  if (focus) $(`tabbtn-${name}`).focus();
+  if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+  if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
+  if (name === 'services') loadServices();
+}
+
+for (const t of TABS) $(`tabbtn-${t}`).addEventListener('click', () => showTab(t));
+document.querySelector('.page-tabs').addEventListener('keydown', (e) => {
+  const i = TABS.findIndex((t) => $(`tabbtn-${t}`) === document.activeElement);
+  const keys = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 };
+  if (i < 0 || !(e.key in keys)) return;
+  e.preventDefault();
+  showTab(TABS[(keys[e.key] + TABS.length) % TABS.length], true);
+});
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+
+$('logout').addEventListener('click', HD.logout);
+load();

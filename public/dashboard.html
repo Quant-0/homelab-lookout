@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Homelab</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand"><img src="/static/favicon.svg" alt=""><h1 id="title">Homelab</h1></div>
+    <nav class="view-tabs" id="view-tabs" aria-label="Views"></nav>
+    <span class="muted small" id="updated"></span>
+    <span class="spacer"></span>
+    <nav id="nav"></nav>
+  </header>
+  <main>
+    <p class="banner hidden" id="global-error" role="alert"></p>
+    <div class="edit-bar hidden" id="edit-bar" role="toolbar" aria-label="Customize dashboard"></div>
+    <p class="empty hidden" id="empty-hint"></p>
+    <div class="dash" id="dash">
+      <div class="grid" id="grid"></div>
+      <aside class="rack-panel card" id="rack-panel" aria-label="Rack"></aside>
+    </div>
+  </main>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/layout.js"></script>
+  <script src="/static/js/rack.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

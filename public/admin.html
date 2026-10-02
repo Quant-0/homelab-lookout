@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Admin · Homelab</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+</head>
+<body class="admin">
+  <div class="app-bg" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand"><img src="/static/favicon.svg" alt=""><h1>Admin</h1></div>
+    <span class="spacer"></span>
+    <nav>
+      <span class="muted small" id="whoami"></span>
+      <a class="button" href="/">Dashboard</a>
+      <button type="button" id="logout">Log out</button>
+    </nav>
+  </header>
+  <main>
+    <p class="banner hidden" id="global-error" role="alert"></p>
+    <nav class="page-tabs" role="tablist" aria-label="Admin sections">
+      <button type="button" role="tab" id="tabbtn-devices" aria-controls="tab-devices" aria-selected="false" tabindex="-1">Devices</button>
+      <button type="button" role="tab" id="tabbtn-services" aria-controls="tab-services" aria-selected="false" tabindex="-1">Services</button>
+      <button type="button" role="tab" id="tabbtn-power" aria-controls="tab-power" aria-selected="false" tabindex="-1">Power &amp; cost</button>
+      <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard</button>
+      <button type="button" role="tab" id="tabbtn-appearance" aria-controls="tab-appearance" aria-selected="false" tabindex="-1">Appearance</button>
+      <button type="button" role="tab" id="tabbtn-account" aria-controls="tab-account" aria-selected="false" tabindex="-1">Account</button>
+    </nav>
+    <div class="tab-panel" role="tabpanel" id="tab-devices" aria-labelledby="tabbtn-devices" hidden>
+    <section class="card">
+      <div class="card-head">
+        <div class="title">
+          <h3>Devices</h3>
+          <p class="hint">A device is a physical box: server, NAS, switch, patch panel… Its monitoring connections (iDRAC, Proxmox, TrueNAS, Synology, UniFi) are added on the device itself. Passwords, tokens and keys are encrypted and write-only: only whether one is set is ever shown.</p>
+        </div>
+        <button type="button" class="primary" id="device-new">Add device</button>
+      </div>
+      <div class="form-grid">
+        <label class="check"><input type="checkbox" id="rack-enabled"> Show the rack on the dashboard</label>
+        <label><span>Rack size (U)</span><input type="number" id="rack-units" min="1" max="60" step="1"></label>
+        <label><span>Numbering</span>
+          <select id="rack-numbering">
+            <option value="bottom">U1 at the bottom</option>
+            <option value="top">U1 at the top</option>
+          </select>
+        </label>
+      </div>
+      <p class="msg" id="rack-msg" role="status"></p>
+    </section>
+    <div class="rack-layout">
+      <section class="card rack-preview-card">
+        <p class="hint">Drag a device to move it. Click it to edit. Double-click an empty U to add a device there.</p>
+        <div class="rack-view" id="rack-preview"></div>
+      </section>
+      <div class="rack-side">
+        <section class="card device-editor" id="device-editor" hidden>
+          <h3 id="device-editor-title">Add device</h3>
+          <p class="hint" id="device-origin"></p>
+          <form id="device-form" autocomplete="off">
+            <div class="form-grid two">
+              <label><span>Name</span><input name="name" maxlength="48" required placeholder="e.g. Orion"></label>
+              <label><span>Type</span><select name="kind" id="device-kind"></select></label>
+            </div>
+            <fieldset class="placement">
+              <legend>Placement</legend>
+              <label class="check"><input type="radio" name="location" value="rack"> In the rack</label>
+              <label class="check"><input type="radio" name="location" value="outside"> Outside the rack (e.g. ceiling access point)</label>
+              <label class="check"><input type="radio" name="location" value="none"> Not placed</label>
+              <div class="form-grid two rack-only">
+                <label><span>Height (U)</span><input name="height" type="number" min="1" max="12" step="1"></label>
+                <label><span>Lowest U</span><input name="u" type="number" min="1" max="60" step="1"></label>
+              </div>
+            </fieldset>
+            <h4>Connections</h4>
+            <p class="hint">How this device is monitored. A server can have both its iDRAC (hardware, power) and Proxmox (VMs). Use Test to check a connection before saving.</p>
+            <div class="conn-list" id="conn-list"></div>
+            <label class="add-conn"><span>Add connection</span><select id="conn-add"></select></label>
+            <label><span>Estimated power (W)</span><input name="estimateW" type="number" min="0" max="5000" step="1" placeholder="Leave empty if measured"><span class="hint" id="device-est-hint"></span></label>
+            <div class="form-actions">
+              <button type="submit" class="primary" id="device-save">Save device</button>
+              <button type="button" id="device-cancel">Cancel</button>
+              <button type="button" class="danger" id="device-delete">Delete device</button>
+            </div>
+            <p class="msg" id="device-msg" role="status"></p>
+          </form>
+        </section>
+        <section class="card">
+          <div class="device-list" id="device-list"></div>
+        </section>
+      </div>
+    </div>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-services" aria-labelledby="tabbtn-services" hidden>
+    <section class="card service-editor" id="svc-editor" hidden>
+      <h3 id="svc-editor-title">Add service</h3>
+      <form id="svc-form" autocomplete="off">
+        <div class="form-grid two">
+          <label><span>Name</span><input name="name" maxlength="48" required placeholder="e.g. Jellyfin"></label>
+          <label><span>Group</span><input name="group" maxlength="32" list="svc-groups" placeholder="e.g. Media"></label>
+          <label><span>Description</span><input name="description" maxlength="120" placeholder="Optional"></label>
+          <label><span>Link (opened when you click the card)</span><input name="href" placeholder="https://jellyfin.example.lan"></label>
+          <label><span>Runs on</span><select name="deviceId" id="svc-device"></select></label>
+        </div>
+        <datalist id="svc-groups"></datalist>
+        <h4>Icon</h4>
+        <div class="icon-picker">
+          <span id="svc-icon-preview"></span>
+          <input type="search" id="icon-search" placeholder="Search 2,800 app icons (e.g. jellyfin)…" aria-label="Search icons">
+          <label class="button">Upload<input type="file" id="icon-upload" accept="image/png,image/jpeg,image/webp" hidden></label>
+          <button type="button" id="icon-letter">Letter</button>
+        </div>
+        <div class="icon-results" id="icon-results"></div>
+        <h4>Status check and integration</h4>
+        <p class="hint">The server uses the connection URL to check that the service is up and, with an integration, to read numbers from it. Leave it empty for a plain link.</p>
+        <div class="form-grid two">
+          <label class="wide"><span>Connection URL</span><input name="url" placeholder="http://192.168.1.30:8096" spellcheck="false"></label>
+          <label class="https-only"><span>TLS certificate check</span>
+            <select name="tlsMode">
+              <option value="verify">Verify with trusted CAs</option>
+              <option value="pin">Pin SHA-256 fingerprint (self-signed)</option>
+            </select>
+          </label>
+          <label class="https-only pin-only"><span>SHA-256 fingerprint</span><input name="fingerprint" spellcheck="false" placeholder="AB:CD:…"></label>
+          <label class="wide"><span>Integration</span><select name="integration" id="svc-integration"></select></label>
+        </div>
+        <div class="form-actions https-only"><button type="button" id="svc-fetch-fp">Fetch certificate</button><span class="hint">Only does a TLS handshake.</span></div>
+        <div class="fp-box hidden" id="svc-fp-result"></div>
+        <div class="form-grid two" id="svc-int-fields"></div>
+        <p class="banner hidden" id="svc-http-warning"></p>
+        <div class="form-actions"><button type="button" id="svc-test">Test</button><span id="svc-test-result" role="status"></span></div>
+        <div class="form-actions">
+          <button type="submit" class="primary" id="svc-save">Save service</button>
+          <button type="button" id="svc-cancel">Cancel</button>
+          <button type="button" class="danger" id="svc-delete">Delete</button>
+          <span class="msg" id="svc-msg" role="status"></span>
+        </div>
+      </form>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <div class="title"><h3>Services</h3><p class="hint">Shown on the dashboard's Services tab. API keys and passwords are encrypted and write-only, like device credentials.</p></div>
+        <button type="button" class="primary" id="svc-new">Add service</button>
+      </div>
+      <div class="svc-list" id="svc-list"></div>
+      <p class="msg" id="svc-list-msg" role="status"></p>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-power" aria-labelledby="tabbtn-power" hidden>
+    <section class="card">
+      <h3>Power &amp; cost</h3>
+      <p class="hint">Used to calculate the cost of the power measured by your iDRACs and switches.</p>
+      <form id="power-form">
+        <div class="form-grid">
+          <label><span>Plan</span>
+            <select name="plan">
+              <option value="spot">Spot price (hvakosterstrommen.no)</option>
+              <option value="norgespris">Norgespris (fixed 40 øre/kWh excl. VAT)</option>
+            </select>
+          </label>
+          <label><span>Price area</span>
+            <select name="area">
+              <option value="NO1">NO1 – Øst-Norge</option>
+              <option value="NO2">NO2 – Sør-Norge</option>
+              <option value="NO3">NO3 – Midt-Norge</option>
+              <option value="NO4">NO4 – Nord-Norge</option>
+              <option value="NO5">NO5 – Vest-Norge</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" name="vat"> 25 % VAT applies (not in most of NO4)</label>
+          <label><span>Supplier markup (øre/kWh, incl. VAT)</span><input name="markupOre" type="number" step="0.01"><span class="hint">Påslag. Also paid under Norgespris.</span></label>
+          <label class="check wide spot-only"><input type="checkbox" name="supportEnabled"> Apply strømstøtte (electricity subsidy)</label>
+          <label class="spot-only"><span>Subsidy threshold (øre/kWh excl. VAT)</span><input name="thresholdOre" type="number" step="0.01"></label>
+          <label class="spot-only"><span>Subsidy share above threshold (%)</span><input name="percent" type="number" step="1" min="0" max="100"></label>
+        </div>
+
+        <h4>Grid tariff (nettleie), energy part</h4>
+        <p class="hint">Copy the day/night energy rates from your grid company’s tariff sheet and tick what they already include.</p>
+        <div class="form-grid">
+          <label><span>Day rate (øre/kWh)</span><input name="dayOre" type="number" step="0.01" min="0" required></label>
+          <label><span>Night/weekend rate (øre/kWh)</span><input name="nightOre" type="number" step="0.01" min="0" required></label>
+          <label><span>Day starts (hour)</span><input name="dayStartHour" type="number" min="0" max="23" step="1" required></label>
+          <label><span>Day ends (hour)</span><input name="dayEndHour" type="number" min="1" max="24" step="1" required></label>
+          <label class="check wide"><input type="checkbox" name="ratesInclVat"> These rates already include VAT</label>
+          <label class="check wide"><input type="checkbox" name="ratesInclFees"> These rates already include elavgift and the Enova fee</label>
+          <label class="fees-only"><span>Elavgift (øre/kWh excl. VAT)</span><input name="elavgiftOre" type="number" step="0.01" min="0"></label>
+          <label class="fees-only"><span>Enova fee / energifondet (øre/kWh excl. VAT)</span><input name="enovaOre" type="number" step="0.01" min="0"></label>
+          <label class="check wide"><input type="checkbox" name="weekendNight"> Night rate all weekend</label>
+          <label class="check wide"><input type="checkbox" name="holidayNight"> Night rate on public holidays</label>
+        </div>
+
+        <h4>Fixed monthly costs</h4>
+        <p class="hint">Paid regardless of the homelab, so excluded from its cost unless you tick the box. Bigger loads can still move you into a higher capacity step.</p>
+        <div class="form-grid">
+          <label><span>Grid fixed fee / capacity step (kr/month)</span><input name="gridMonthlyKr" type="number" step="0.01" min="0"></label>
+          <label><span>Supplier monthly fee (kr/month)</span><input name="supplierMonthlyKr" type="number" step="0.01" min="0"></label>
+          <label class="check wide"><input type="checkbox" name="fixedInclude"> Include fixed costs in homelab cost</label>
+        </div>
+
+        <h4>Devices without a power sensor</h4>
+        <p class="hint">Synology and UniFi devices don't report their own power draw. Estimates are set per device on the Devices tab; PoE power delivered by switches is always measured.</p>
+        <label class="check"><input type="checkbox" name="includeEstimates"> Include estimated power in cost (otherwise only measured values: iDRAC and PoE)</label>
+
+        <div class="fp-box" id="price-preview" role="status"></div>
+        <div class="form-actions"><button type="submit" class="primary">Save power settings</button><span class="msg" id="power-msg" role="status"></span></div>
+      </form>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-dashboard" aria-labelledby="tabbtn-dashboard" hidden>
+    <section class="card">
+      <h3>Dashboard</h3>
+      <form id="dash-form">
+        <div class="form-grid">
+          <label><span>Title</span><input name="title" maxlength="60"></label>
+          <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
+          <label class="check wide"><input type="checkbox" name="showStoppedGuests"> Show stopped VMs/containers</label>
+          <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
+        </div>
+        <p class="hint">A public dashboard shows host names and status data to anyone who can reach the server, but never addresses, usernames or secrets. Admin always requires login.</p>
+        <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
+      </form>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-appearance" aria-labelledby="tabbtn-appearance" hidden>
+    <section class="card" id="appearance-card">
+      <h3>Appearance</h3>
+      <p class="hint">Changes preview on this page right away; save to apply them everywhere. To move and resize widgets, use <a href="/">Customize</a> on the dashboard.</p>
+      <h4>Theme</h4>
+      <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
+      <h4>Background</h4>
+      <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
+      <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
+      <div class="form-grid">
+        <label><span>Background blur</span><div class="range-row"><input type="range" id="ap-blur" min="0" max="40" step="1"><output id="ap-blur-out"></output></div></label>
+        <label><span>Dim background (towards the theme color)</span><div class="range-row"><input type="range" id="ap-dim" min="0" max="90" step="1"><output id="ap-dim-out"></output></div></label>
+        <label><span>Card opacity (lower = frosted glass)</span><div class="range-row"><input type="range" id="ap-opacity" min="30" max="100" step="1"><output id="ap-opacity-out"></output></div></label>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="primary" id="ap-save">Save appearance</button>
+        <button type="button" id="ap-revert">Revert</button>
+        <span class="msg" id="ap-msg" role="status"></span>
+      </div>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-account" aria-labelledby="tabbtn-account" hidden>
+    <section class="card">
+      <h3>Admin password</h3>
+      <form id="pw-form" autocomplete="off">
+        <div class="form-grid">
+          <label><span>Current password</span><input name="current" type="password" autocomplete="current-password" required></label>
+          <label><span>New password (min. 12 characters)</span><input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <label><span>Repeat new password</span><input name="password2" type="password" autocomplete="new-password" minlength="12" required></label>
+        </div>
+        <div class="form-actions"><button type="submit" class="primary">Change password</button><span class="msg" id="pw-msg" role="status"></span></div>
+      </form>
+    </section>
+    </div>
+  </main>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/rack.js"></script>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

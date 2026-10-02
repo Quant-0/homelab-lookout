@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Sign in · Homelab</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <div class="login-wrap">
+    <form class="card login" id="login-form" autocomplete="on">
+      <h1><img src="/static/favicon.svg" alt=""> Homelab</h1>
+      <label><span>Username</span><input id="username" name="username" autocomplete="username" required autofocus></label>
+      <label><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign in</button>
+      <p class="msg error" id="login-error" role="alert"></p>
+    </form>
+  </div>
+  <script src="/static/js/login.js"></script>
+</body>
+</html>
