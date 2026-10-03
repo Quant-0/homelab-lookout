@@ -2422,6 +2422,15 @@ function validateLink(v) {
   return u.href;
 }
 
+// For links that come from a file (config, backup) rather than the form: an http(s) link or nothing
+function safeLink(v) {
+  try {
+    return validateLink(v);
+  } catch {
+    return '';
+  }
+}
+
 function validateServiceInput(b) {
   const name = str(b.name, 48, 'Name', { required: true });
   const out = {
@@ -2500,7 +2509,7 @@ function servicesPayload(admin = false) {
       id: svc.id,
       name: svc.name,
       description: svc.description,
-      href: svc.href,
+      href: safeLink(svc.href),
       icon: iconUrl(svc.icon),
       device: config.devices.find((d) => d.id === svc.deviceId)?.name || null,
       integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
@@ -2828,7 +2837,7 @@ async function docsAuto() {
       disks: syno?.disks?.map((x) => `${x.id}: ${x.model || ''} (${x.health || x.status || ''})`) || [],
       pools: [...(syno?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(tn?.pools || []).map((p) => `${p.name}: ${p.status}`)],
       vms: pve ? pve.guests.filter((g) => !node || g.node === node).map((g) => ({ vmid: g.vmid, name: g.name, type: g.type, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu })) : [],
-      services: config.services.filter((s) => s.deviceId === d.id).map((s) => ({ name: s.name, href: s.href })),
+      services: config.services.filter((s) => s.deviceId === d.id).map((s) => ({ name: s.name, href: safeLink(s.href) })),
       unifiMac: d.unifi?.mac || null,
     };
   });
@@ -3900,6 +3909,9 @@ function readRawBody(req, maxBytes) {
   });
 }
 
+// Stored images are only ever sent as images (whatever a config file or backup might say)
+const imageType = (mime) => (['image/jpeg', 'image/png', 'image/webp'].includes(mime) ? mime : 'application/octet-stream');
+
 function backgroundVisible(session) {
   return Boolean(session) || config.settings.dashboard.public;
 }
@@ -3907,8 +3919,9 @@ function backgroundVisible(session) {
 // Per-request appearance: CSS custom properties and the background image URL.
 function appearanceCss(session) {
   const a = config.settings.appearance;
-  let css = `:root{--bg-blur:${a.blur}px;--bg-dim:${a.dim / 100};--card-alpha:${a.cardOpacity / 100};}\n`;
-  if (a.background.type === 'image' && a.background.imageId && backgroundVisible(session))
+  const n = (v, min, max, d) => (Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : d);
+  let css = `:root{--bg-blur:${n(a.blur, 0, 40, 0)}px;--bg-dim:${n(a.dim, 0, 90, 0) / 100};--card-alpha:${n(a.cardOpacity, 30, 100, 100) / 100};}\n`;
+  if (a.background.type === 'image' && /^[0-9a-f]{32}$/.test(a.background.imageId) && backgroundVisible(session))
     css += `.app-bg{background-image:url("/media/bg/${a.background.imageId}");}\n`;
   return css;
 }
@@ -3917,7 +3930,9 @@ function htmlAttrs(session) {
   const a = config.settings.appearance;
   const bg =
     a.background.type === 'builtin' ? a.background.builtin : a.background.type === 'image' && backgroundVisible(session) ? 'image' : 'none';
-  return `data-theme="${a.theme}" data-bg="${bg}"`; // both values come from fixed allow-lists
+  // Both go into the page's HTML: only values from the fixed lists, checked here as well
+  const theme = THEMES.includes(a.theme) ? a.theme : 'auto';
+  return `data-theme="${theme}" data-bg="${[...BUILTIN_BACKGROUNDS, 'image', 'none'].includes(bg) ? bg : 'none'}"`;
 }
 
 // The bar colour of the installed app follows the theme (its --surface colour)
@@ -4955,10 +4970,19 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
 
   if (p === '/api/admin/password' && m === 'POST') {
+    // Guessing the current password here is locked out like the login form
+    const ip = req.socket.remoteAddress || '?';
+    const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+    if (wait) {
+      res.setHeader('Retry-After', String(wait));
+      return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+    }
     const body = await readBody(req);
     const admin = readAdmin();
-    if (!(await verifyPassword(String(body.current || ''), admin.hash))) {
-      registerFailure('ip:' + (req.socket.remoteAddress || '?'), 5);
+    if (!(await verifyPassword(String(body.current || '').slice(0, 1024), admin.hash))) {
+      registerFailure('ip:' + ip, 5);
+      registerFailure('global', 20);
+      log(`Wrong current password on password change from ${ip}`);
       throw new UserError('Current password is incorrect');
     }
     const problem = passwordProblem(body.password);
@@ -5031,7 +5055,7 @@ async function handle(req, res) {
       if (!rec) return sendError(res, 404, 'Not found');
       if (!backgroundVisible(seer)) return sendError(res, 401, 'Login required');
       const data = fs.readFileSync(path.join(ICON_DIR, rec.id));
-      res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+      res.writeHead(200, { 'Content-Type': imageType(rec.mime), 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
       return res.end(data);
     }
     if (p === '/appearance.css') {
@@ -5046,7 +5070,7 @@ async function handle(req, res) {
       if (!backgroundVisible(seer)) return sendError(res, 401, 'Login required');
       const data = fs.readFileSync(path.join(BACKGROUND_DIR, rec.id));
       // Immutable: ids are random and never reused
-      res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+      res.writeHead(200, { 'Content-Type': imageType(rec.mime), 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
       return res.end(data);
     }
     if (STATIC[p] && p.startsWith('/static/')) {
@@ -5979,7 +6003,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     return out;
   });
   const services = arr(c.services).filter((x) => UUID.test(x?.id)).map(({ secretPlain, ...x }) => {
-    const out = { ...x, secret: null };
+    const out = { ...x, href: safeLink(x.href), secret: null };
     if (secretPlain) out.secret = encryptSecret(serviceSecretHost(out), secretPlain);
     return out;
   });
@@ -5999,30 +6023,57 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     }
   });
   const keepServer = config.settings.server;
+  // Uploaded images are checked like new uploads: the type comes from the content (JPEG, PNG or
+  // WebP only), never from the file, and metadata is stripped. Anything else is left out.
+  const images = (list, key, fields) => arr(list).filter((rec) => /^[0-9a-f]{32}$/.test(rec?.id) && typeof bundle.files?.[key]?.[rec.id] === 'string').flatMap((rec) => {
+    try {
+      const img = sanitizeImage(Buffer.from(bundle.files[key][rec.id], 'base64'));
+      return [{ rec: { id: rec.id, mime: img.mime, bytes: img.data.length, ...fields(rec) }, data: img.data }];
+    } catch {
+      return [];
+    }
+  });
+  const text = (v, max, fallback) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, max) : '') || fallback;
+  const time = (v) => (Number.isFinite(v) ? v : Date.now());
+  const restoredImages = {
+    backgrounds: images(c.backgrounds, 'backgrounds', (r) => ({ name: text(r.name, 80, 'Image'), uploadedAt: time(r.uploadedAt) })).slice(0, MAX_BACKGROUNDS),
+    icons: images(c.icons, 'icons', (r) => ({ source: text(r.source, 120, 'upload'), addedAt: time(r.addedAt) })),
+  };
   config = {
     version: 2,
     settings: deepMerge(DEFAULT_SETTINGS, c.settings),
     hosts,
-    backgrounds: arr(c.backgrounds),
+    backgrounds: restoredImages.backgrounds.map((x) => x.rec),
     layout: c.layout?.items ? c.layout : null,
     rack: { ...DEFAULT_RACK, ...(c.rack || {}), passive: cleanPassive(c.rack?.passive) },
     devices: arr(c.devices),
     services,
-    icons: arr(c.icons),
+    icons: restoredImages.icons.map((x) => x.rec),
     servicesLayout: Array.isArray(c.servicesLayout?.groups) ? { groups: c.servicesLayout.groups.filter((k) => typeof k === 'string').slice(0, 200), columns: c.servicesLayout.columns || {} } : null,
     backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
     alerts: normalizeAlerts(c.alerts, channels),
   };
   if (b.passphrasePlain) config.backup.passphrase = encryptSecret(passHost(), b.passphrasePlain);
-  if (!server) config.settings.server = keepServer;
+  // Settings are validated like changes made in Admin; a section that doesn't pass gets the defaults
+  const valid = (fn, v, fallback) => {
+    try {
+      return fn(v);
+    } catch {
+      return structuredClone(fallback);
+    }
+  };
+  const st = config.settings;
+  config.settings = {
+    dashboard: valid(validateDashboard, st.dashboard, DEFAULT_SETTINGS.dashboard),
+    power: valid(validatePower, st.power, DEFAULT_SETTINGS.power),
+    appearance: valid(validateAppearance, st.appearance, DEFAULT_SETTINGS.appearance), // after config.backgrounds is set
+    server: server ? valid(validateServerSettings, st.server, keepServer) : keepServer,
+  };
   // uploaded images
-  for (const [dir, list, key] of [[BACKGROUND_DIR, config.backgrounds, 'backgrounds'], [ICON_DIR, config.icons, 'icons']]) {
+  for (const [dir, key] of [[BACKGROUND_DIR, 'backgrounds'], [ICON_DIR, 'icons']]) {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    for (const rec of list) {
-      const data = bundle.files?.[key]?.[rec.id];
-      if (/^[0-9a-f]{32}$/.test(rec.id) && data) fs.writeFileSync(path.join(dir, rec.id), Buffer.from(data, 'base64'), { mode: 0o600 });
-    }
+    for (const { rec, data } of restoredImages[key]) fs.writeFileSync(path.join(dir, rec.id), data, { mode: 0o600 });
   }
   saveConfig();
   docs = normalizeDocs(bundle.docs);

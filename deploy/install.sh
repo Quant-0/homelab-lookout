@@ -84,7 +84,9 @@ install -o root -g root -m 0644 "$SRC_DIR/server.js" "$APP_DIR.new/server.js"
   install -D -o root -g root -m 0644 "$SRC_DIR/$f" "$APP_DIR.new/$f"
 done
 find "$APP_DIR.new" -type d -exec chmod 0755 {} +
-printf '%s (working tree)\n%s\n' "$(git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$APP_DIR.new/VERSION"
+# git runs as the repository's owner, never as root inside someone else's repository
+REPO_OWNER=$(stat -c %U "$SRC_DIR")
+printf '%s (working tree)\n%s\n' "$(runuser -u "$REPO_OWNER" -- env HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$APP_DIR.new/VERSION"
 rm -rf "$APP_DIR.prev"
 [ -d "$APP_DIR" ] && mv "$APP_DIR" "$APP_DIR.prev"
 mv "$APP_DIR.new" "$APP_DIR"

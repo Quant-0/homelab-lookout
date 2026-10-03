@@ -145,6 +145,7 @@ async function main() {
     { file: 'test/docs-history.test.js', fresh: true, seed: require('./docs-history.test.js').seed },
     { file: 'test/energy.test.js', fresh: true, seed: require('./energy.test.js').seed },
     { file: 'test/remember.test.js', fresh: true, seed: require('./remember.test.js').seed },
+    { file: 'test/security.test.js', fresh: true },
     // the alert mocks use the device mock's certificate, trusted here like a public CA would be
     { file: 'test/alerts.test.js', fresh: true, env: { NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), TELEGRAM_API_URL: 'https://127.0.0.1:18449', DISCORD_WEBHOOK_HOSTS: '127.0.0.1:18449' } },
   ];
