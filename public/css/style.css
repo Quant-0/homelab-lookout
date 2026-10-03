@@ -926,6 +926,33 @@ table.rules td:first-child { min-width: 220px; }
 .link-button { border: 0; background: none; padding: 2px 0; color: var(--accent); font-size: 12px; cursor: pointer; }
 .link-button:hover { text-decoration: underline; border: 0; }
 
+/* ---------- Docs: page history ---------- */
+
+.history-layout { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 18px; align-items: start; margin-top: 12px; }
+@media (max-width: 820px) { .history-layout { grid-template-columns: minmax(0, 1fr); } }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 70vh; overflow: auto; }
+.history-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; background: none; }
+.history-item:hover { background: var(--surface-2); border-color: transparent; }
+.history-item.active { background: var(--accent-wash); border-color: var(--accent); }
+.history-item .small { white-space: normal; }
+.history-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.history-body { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.diff { font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-x: auto; }
+.diff-line { display: grid; grid-template-columns: 1.5em minmax(0, 1fr); white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 6px; border-radius: 3px; }
+.diff-line.add { background: color-mix(in srgb, var(--good) 16%, transparent); }
+.diff-line.del { background: var(--critical-wash); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--critical) 60%, transparent); }
+.diff-op { color: var(--muted); user-select: none; }
+.diff-line.add .diff-op { color: var(--good); }
+.diff-line.del .diff-op { color: var(--critical); }
+.diff-fold { color: var(--muted); font-style: italic; padding: 2px 6px 2px 2em; }
+.history-body del { color: var(--critical); }
+.history-body ins { color: var(--good); text-decoration: none; }
+.deleted-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; }
+.deleted-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--grid); }
+.deleted-list li:first-child { border-top: 0; }
+.deleted-list .form-actions { margin: 0; }
+
 /* ---------- Updates ---------- */
 
 .led.info { background: var(--accent); box-shadow: 0 0 5px var(--accent); }

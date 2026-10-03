@@ -31,7 +31,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Network plan: networks and IP reservations, importable from UniFi, plus the live UniFi client list.
   - Switch ports: what is connected to each port.
   - Topology diagram drawn from UniFi uplinks.
-  - Your own Markdown pages.
+  - Your own Markdown pages, each with a **history**: the last 50 versions (saves within ten minutes count as one), with the changes since each version highlighted, the page as it was, and Restore. Deleted pages go to **Recently deleted** (the last 50) and can be restored with their history. Both are part of backups.
   - The menu has collapsible groups (remembered per browser). With **Edit menu** you create, rename and reorder groups and drag sheets and pages between them (or use the arrow keys). Network stays its own group.
   - Not meant for passwords: link to your password manager instead.
 - **History graphs**: small graphs on the device cards and in their Details, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the power card (remembered per browser). A graph appears once it has data.

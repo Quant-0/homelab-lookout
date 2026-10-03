@@ -125,7 +125,8 @@ function renderNav() {
     }),
     el('div', { class: 'form-actions' },
       el('a', { class: 'button primary', href: '#new-page', text: 'New page' }),
-      el('button', { type: 'button', id: 'nav-edit', text: 'Edit menu', onclick: () => { navEditing = true; renderNav(); } })));
+      el('button', { type: 'button', id: 'nav-edit', text: 'Edit menu', onclick: () => { navEditing = true; renderNav(); } })),
+    ...(D.deletedCount ? [link('#deleted', `Recently deleted (${D.deletedCount})`)] : []));
 }
 
 // --- Editing the menu: the DOM is the draft; Save reads it back ---
@@ -264,7 +265,7 @@ function route() {
   dirty = false;
   const [view, id] = location.hash.slice(1).split('/');
   renderNav();
-  const views = { server: () => serverView(id), network: networkView, ports: portsView, topology: topologyView, page: () => pageView(id), 'new-page': () => pageEdit(null) };
+  const views = { server: () => serverView(id), network: networkView, ports: portsView, topology: topologyView, page: () => pageView(id), 'new-page': () => pageEdit(null), history: () => historyView(id), deleted: deletedView };
   (views[view] || overview)();
   window.scrollTo(0, 0);
 }
@@ -658,7 +659,9 @@ function pageView(id) {
   const page = D.docs.pages.find((p) => p.id === id);
   if (!page) return show(el('p', { class: 'empty', text: 'Page not found.' }));
   show(
-    toolbar(el('h2', { text: page.title }), el('span', { class: 'spacer' }), el('button', { type: 'button', text: 'Edit', onclick: () => pageEdit(page) })),
+    toolbar(el('h2', { text: page.title }), el('span', { class: 'spacer' }),
+      el('a', { class: 'button', href: `#history/${page.id}`, text: 'History' }),
+      el('button', { type: 'button', text: 'Edit', onclick: () => pageEdit(page) })),
     el('p', { class: 'small muted', text: navGroups().find((g) => g.items?.includes(`page:${page.id}`))?.name || '' }),
     MD.render(page.body),
     el('p', { class: 'hint', text: when(page.updatedAt) }));
@@ -701,15 +704,180 @@ function pageEdit(page) {
       } }),
       el('button', { type: 'button', text: 'Cancel', onclick: () => (!dirty || confirm('Discard your changes?')) && (page ? pageView(page.id) : (location.hash = '#')) }),
       page ? el('button', { type: 'button', class: 'danger', text: 'Delete page', onclick: async () => {
-        if (!confirm(`Delete “${page.title}”?`)) return;
+        if (!confirm(`Delete “${page.title}”? It goes to Recently deleted, where you can restore it.`)) return;
         await api('DELETE', `/api/docs/pages/${page.id}`);
         D.docs.pages = D.docs.pages.filter((p) => p.id !== page.id);
+        D.deletedCount = (D.deletedCount || 0) + 1;
         dirty = false;
         location.hash = '#';
         route();
       } }) : null,
       msg));
   title.focus();
+}
+
+// --- Page history ---
+
+// Line diff from `a` (then) to `b` (now): common start and end are skipped, the middle is compared
+// with a longest-common-subsequence table. Returns [{ op: ' ' | '+' | '-', text }], or null when
+// the changed part is too big to compare.
+function diffLines(a, b) {
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  const x = a.slice(start, endA);
+  const y = b.slice(start, endB);
+  if (x.length * y.length > 4e6) return null;
+  const w = y.length + 1;
+  const lcs = new Uint32Array((x.length + 1) * w);
+  for (let i = x.length - 1; i >= 0; i--) {
+    for (let j = y.length - 1; j >= 0; j--) lcs[i * w + j] = x[i] === y[j] ? lcs[(i + 1) * w + j + 1] + 1 : Math.max(lcs[(i + 1) * w + j], lcs[i * w + j + 1]);
+  }
+  const out = a.slice(0, start).map((text) => ({ op: ' ', text }));
+  let i = 0;
+  let j = 0;
+  while (i < x.length || j < y.length) {
+    if (i < x.length && j < y.length && x[i] === y[j]) {
+      out.push({ op: ' ', text: x[i] });
+      i++;
+      j++;
+    } else if (i < x.length && (j === y.length || lcs[(i + 1) * w + j] >= lcs[i * w + j + 1])) out.push({ op: '-', text: x[i++] }); // old line first
+    else out.push({ op: '+', text: y[j++] });
+  }
+  return out.concat(a.slice(endA).map((text) => ({ op: ' ', text })));
+}
+
+// Changed lines with two lines of context; long unchanged stretches are folded
+function diffView(then, now) {
+  const lines = diffLines(then.split('\n'), now.split('\n'));
+  if (!lines) return el('p', { class: 'muted', text: 'Too many changes to compare line by line. Use “As it was” to see this version.' });
+  if (!lines.some((l) => l.op !== ' ')) return el('p', { class: 'muted', text: 'No changes in the text since this version.' });
+  const keep = lines.map((l, i) => l.op !== ' ' || lines.slice(Math.max(0, i - 2), i + 3).some((m) => m.op !== ' '));
+  const rows = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!keep[i]) {
+      let n = 0;
+      while (i + n < lines.length && !keep[i + n]) n++;
+      rows.push(el('div', { class: 'diff-fold', text: `… ${n} unchanged line${n === 1 ? '' : 's'}` }));
+      i += n - 1;
+      continue;
+    }
+    const l = lines[i];
+    rows.push(el('div', { class: `diff-line${l.op === '+' ? ' add' : l.op === '-' ? ' del' : ''}` },
+      el('span', { class: 'diff-op', 'aria-hidden': 'true', text: l.op }),
+      el('span', { class: 'sr-only', text: l.op === '+' ? 'Added: ' : l.op === '-' ? 'Removed: ' : '' }),
+      el('span', { class: 'diff-text', text: l.text || ' ' })));
+  }
+  return el('div', { class: 'diff' }, rows);
+}
+
+async function historyView(id, selected = null) {
+  const page = D.docs.pages.find((p) => p.id === id);
+  if (!page) return show(el('p', { class: 'empty', text: 'Page not found.' }));
+  show(toolbar(el('h2', { text: `History: ${page.title}` })), el('p', { class: 'muted', text: 'Loading…' }));
+  let versions;
+  try {
+    versions = (await api('GET', `/api/docs/pages/${id}/history`)).versions;
+  } catch (e) {
+    return show(el('p', { class: 'msg error', text: e.message }));
+  }
+  const current = versions[0];
+  const pick = selected ? versions.find((v) => v.v === selected) : versions[1] || current;
+  const note = (v) => (v.restoredFrom === 'deleted' ? 'Restored after it was deleted' : v.restoredFrom ? `Restored from version ${v.restoredFrom}` : '');
+  const list = el('ol', { class: 'history-list', 'aria-label': 'Versions, newest first' }, versions.map((v) => el('li', null,
+    el('button', { type: 'button', class: `history-item${v === pick ? ' active' : ''}`, 'aria-current': v === pick ? 'true' : null, onclick: () => historyView(id, v.v) },
+      el('strong', { text: v === current ? 'Current version' : fmt.time(v.at) }),
+      el('span', { class: 'small muted', text: [v === current ? fmt.time(v.at) : null, v.title !== page.title ? `“${v.title}”` : null, note(v)].filter(Boolean).join(' · ') || `version ${v.v}` })))));
+  const panel = el('div', { class: 'history-panel' });
+  show(
+    toolbar(el('h2', { text: `History: ${page.title}` }), el('span', { class: 'spacer' }), el('a', { class: 'button', href: `#page/${id}`, text: 'Back to the page' })),
+    el('p', { class: 'muted small', text: `The last ${versions.length} version${versions.length === 1 ? '' : 's'}. Saves within ten minutes of each other count as one. Up to 50 are kept.` }),
+    el('div', { class: 'history-layout' }, list, panel));
+  if (pick === current) return panel.replaceChildren(el('p', { class: 'muted', text: versions.length > 1 ? 'Pick an older version to see what has changed since then.' : 'This page has one version so far. Older versions appear here after you edit it.' }));
+  panel.replaceChildren(el('p', { class: 'muted', text: 'Loading…' }));
+  let ver;
+  try {
+    ver = (await api('GET', `/api/docs/pages/${id}/history/${pick.v}`)).version;
+  } catch (e) {
+    return panel.replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+  const tabs = el('div', { class: 'range-tabs', role: 'group', 'aria-label': 'Show' });
+  const body = el('div', { class: 'history-body' });
+  const showMode = (mode) => {
+    for (const b of tabs.children) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+    body.replaceChildren(mode === 'diff'
+      ? el('div', null, ver.title !== page.title ? el('p', { class: 'small' }, 'Title: ', el('del', { text: ver.title }), ' → ', el('ins', { text: page.title })) : null, diffView(ver.body, page.body))
+      : el('div', null, el('h3', { text: ver.title }), MD.render(ver.body)));
+  };
+  tabs.append(
+    el('button', { type: 'button', 'data-mode': 'diff', text: 'Changes since then', onclick: () => showMode('diff') }),
+    el('button', { type: 'button', 'data-mode': 'old', text: 'As it was', onclick: () => showMode('old') }));
+  const msg = el('span', { class: 'msg', role: 'status' });
+  panel.replaceChildren(
+    el('div', { class: 'history-head' },
+      el('div', null, el('strong', { text: fmt.time(ver.at) }), el('div', { class: 'small muted', text: 'Green lines were added since then, red lines removed.' })),
+      tabs),
+    body,
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: 'Restore this version', onclick: async () => {
+        if (!confirm(`Restore the version from ${fmt.time(ver.at)}? The current text stays in the history.`)) return;
+        try {
+          const r = await api('POST', `/api/docs/pages/${id}/history/${ver.v}/restore`, {});
+          D.docs.pages = D.docs.pages.map((p) => (p.id === id ? r.page : p));
+          location.hash = `#page/${id}`;
+          route();
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      msg));
+  showMode('diff');
+}
+
+async function deletedView() {
+  show(toolbar(el('h2', { text: 'Recently deleted' })), el('p', { class: 'muted', text: 'Loading…' }));
+  let list;
+  try {
+    list = (await api('GET', '/api/docs/deleted')).deleted;
+  } catch (e) {
+    return show(el('p', { class: 'msg error', text: e.message }));
+  }
+  D.deletedCount = list.length;
+  renderNav();
+  const msg = el('span', { class: 'msg', role: 'status' });
+  show(
+    toolbar(el('h2', { text: 'Recently deleted' })),
+    el('p', { class: 'muted small', text: 'Deleted pages, newest first, with their history. The last 50 are kept.' }),
+    list.length
+      ? el('ul', { class: 'deleted-list' }, list.map((d) => el('li', null,
+        el('div', null, el('strong', { text: d.title }), el('div', { class: 'small muted', text: `Deleted ${fmt.time(d.deletedAt)}${d.versions > 1 ? ` · ${d.versions} versions` : ''}` })),
+        el('div', { class: 'form-actions' },
+          el('button', { type: 'button', class: 'primary', text: 'Restore', onclick: async () => {
+            try {
+              const r = await api('POST', `/api/docs/deleted/${d.id}/restore`, {});
+              D.docs.pages = [...D.docs.pages, r.page];
+              D.docs.nav = r.nav;
+              D.deletedCount--;
+              location.hash = `#page/${r.page.id}`;
+              route();
+            } catch (e) {
+              msg.textContent = e.message;
+              msg.className = 'msg error';
+            }
+          } }),
+          el('button', { type: 'button', class: 'danger', text: 'Delete forever', onclick: async () => {
+            if (!confirm(`Delete “${d.title}” and its history for good? This can't be undone.`)) return;
+            await api('DELETE', `/api/docs/deleted/${d.id}`);
+            deletedView();
+          } })))))
+      : el('p', { class: 'empty', text: 'Nothing here.' }),
+    msg);
 }
 
 window.addEventListener('hashchange', route);

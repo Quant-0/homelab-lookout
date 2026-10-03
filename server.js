@@ -2681,6 +2681,57 @@ function validateDocsNav(b) {
   return { groups };
 }
 
+// --- Page history: the last versions of each page, and recently deleted pages ---
+// Kept in its own file so docs.json stays small. Saves within 10 minutes of each other are one
+// version; a restore always becomes a version of its own.
+const DOCS_HISTORY_FILE = path.join(DATA_DIR, 'docs-history.json');
+const PAGE_VERSIONS = 50;
+const MERGE_MS = 10 * 60e3;
+const MAX_DELETED = 50;
+let docsHistory = { pages: {}, deleted: [] };
+
+// From the file or a backup: well-formed entries only
+function cleanDocsHistory(h) {
+  const out = { pages: {}, deleted: [] };
+  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const version = (x) => (Number.isInteger(x?.v) && Number.isFinite(x?.at)
+    ? { v: x.v, at: x.at, title: text(x.title, 120), body: text(x.body, 200000), ...(Number.isInteger(x.restoredFrom) || x.restoredFrom === 'deleted' ? { restoredFrom: x.restoredFrom } : {}) }
+    : null);
+  for (const [id, list] of Object.entries(h?.pages && typeof h.pages === 'object' ? h.pages : {})) {
+    if (!UUID.test(id) || !Array.isArray(list)) continue;
+    const versions = list.map(version).filter(Boolean).slice(-PAGE_VERSIONS);
+    if (versions.length) out.pages[id] = versions;
+  }
+  for (const d of Array.isArray(h?.deleted) ? h.deleted : []) {
+    if (UUID.test(d?.id) && Number.isFinite(d.deletedAt)) out.deleted.push({ id: d.id, title: text(d.title, 120), body: text(d.body, 200000), group: text(d.group, 64), deletedAt: d.deletedAt });
+  }
+  out.deleted = out.deleted.slice(0, MAX_DELETED);
+  return out;
+}
+
+function loadDocsHistory() {
+  docsHistory = cleanDocsHistory(readJson(DOCS_HISTORY_FILE, null));
+}
+function saveDocsHistory() {
+  writeJsonAtomic(DOCS_HISTORY_FILE, docsHistory);
+}
+
+// After a page is saved: add its new state as a version (or update the last one, within 10 minutes).
+// `prev` is the page before the save, for pages that existed before history did.
+function recordPageVersion(page, { prev = null, restoredFrom = null } = {}) {
+  const list = (docsHistory.pages[page.id] ||= []);
+  if (!list.length && prev) list.push({ v: 1, at: prev.updatedAt || Date.now(), title: prev.title, body: prev.body });
+  const last = list[list.length - 1];
+  const now = Date.now();
+  if (last && !restoredFrom && last.title === page.title && last.body === page.body) return; // nothing changed
+  if (last && !restoredFrom && !last.restoredFrom && list.length > 1 && now - last.at < MERGE_MS) Object.assign(last, { at: now, title: page.title, body: page.body });
+  else list.push({ v: (last?.v || 0) + 1, at: now, title: page.title, body: page.body, ...(restoredFrom ? { restoredFrom } : {}) });
+  if (list.length > PAGE_VERSIONS) list.splice(0, list.length - PAGE_VERSIONS);
+  saveDocsHistory();
+}
+
+const pageGroup = (id) => docs.nav.groups.find((g) => g.items?.includes(`page:${id}`))?.id || 'pages';
+
 // Puts a sheet or page into a group (or back where unplaced ones go)
 function placeDocsItem(item, groupId) {
   for (const g of docs.nav.groups) if (g.items) g.items = g.items.filter((x) => x !== item);
@@ -4232,7 +4283,7 @@ async function handleApi(req, res, url, session) {
   }
 
   // --- Documentation (login required even when the dashboard is public) ---
-  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto() });
+  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto(), deletedCount: docsHistory.deleted.length });
   const ds = p.match(/^\/api\/docs\/servers\/([0-9a-f-]{36})$/);
   if (ds && m === 'PUT') {
     findDevice(ds[1]);
@@ -4257,7 +4308,54 @@ async function handleApi(req, res, url, session) {
     docs.pages.push(page);
     placeDocsItem(`page:${page.id}`, typeof body.group === 'string' ? body.group : 'pages');
     saveDocs();
+    recordPageVersion(page);
     return sendJson(res, 201, { page, nav: docs.nav });
+  }
+  // Recently deleted pages
+  if (p === '/api/docs/deleted' && m === 'GET') {
+    return sendJson(res, 200, { deleted: docsHistory.deleted.map((d) => ({ id: d.id, title: d.title, deletedAt: d.deletedAt, size: d.body.length, versions: docsHistory.pages[d.id]?.length || 0 })) });
+  }
+  const del = p.match(/^\/api\/docs\/deleted\/([0-9a-f-]{36})(\/restore)?$/);
+  if (del) {
+    const gone = docsHistory.deleted.find((x) => x.id === del[1]);
+    if (!gone) throw Object.assign(new UserError('Not in Recently deleted'), { status: 404 });
+    if (del[2] && m === 'POST') {
+      if (docs.pages.some((x) => x.id === gone.id)) throw new UserError('That page exists already');
+      if (docs.pages.length >= 500) throw new UserError('Too many pages');
+      docsHistory.deleted = docsHistory.deleted.filter((x) => x !== gone);
+      const page = { id: gone.id, title: gone.title, body: gone.body, updatedAt: Date.now() };
+      docs.pages.push(page);
+      placeDocsItem(`page:${page.id}`, docs.nav.groups.some((g) => g.items && g.id === gone.group) ? gone.group : 'pages');
+      saveDocs();
+      recordPageVersion(page, { restoredFrom: 'deleted' });
+      return sendJson(res, 200, { page, nav: docs.nav });
+    }
+    if (!del[2] && m === 'DELETE') {
+      docsHistory.deleted = docsHistory.deleted.filter((x) => x !== gone);
+      delete docsHistory.pages[gone.id];
+      saveDocsHistory();
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+  const dh = p.match(/^\/api\/docs\/pages\/([0-9a-f-]{36})\/history(?:\/(\d{1,6})(\/restore)?)?$/);
+  if (dh) {
+    const page = docs.pages.find((x) => x.id === dh[1]);
+    if (!page) throw Object.assign(new UserError('Page not found'), { status: 404 });
+    const list = docsHistory.pages[page.id] || [];
+    if (!dh[2] && m === 'GET') {
+      // pages from before history existed show their current state as the first version
+      const versions = list.length ? list : [{ v: 1, at: page.updatedAt || Date.now(), title: page.title, body: page.body }];
+      return sendJson(res, 200, { versions: versions.map((x) => ({ v: x.v, at: x.at, title: x.title, size: x.body.length, restoredFrom: x.restoredFrom ?? null })).reverse() });
+    }
+    const ver = list.find((x) => x.v === Number(dh[2]));
+    if (!ver) throw Object.assign(new UserError('That version is no longer kept'), { status: 404 });
+    if (!dh[3] && m === 'GET') return sendJson(res, 200, { version: ver });
+    if (dh[3] && m === 'POST') {
+      Object.assign(page, { title: ver.title, body: ver.body, updatedAt: Date.now() });
+      saveDocs();
+      recordPageVersion(page, { restoredFrom: ver.v });
+      return sendJson(res, 200, { page, nav: docs.nav });
+    }
   }
   const dp = p.match(/^\/api\/docs\/pages\/([0-9a-f-]{36})$/);
   if (dp) {
@@ -4265,16 +4363,23 @@ async function handleApi(req, res, url, session) {
     if (!page) throw Object.assign(new UserError('Page not found'), { status: 404 });
     if (m === 'PUT') {
       const body = await readBody(req);
+      const prev = { ...page };
       Object.assign(page, validatePage(body));
       delete page.folder; // replaced by menu groups
       if (typeof body.group === 'string') placeDocsItem(`page:${page.id}`, body.group);
       saveDocs();
+      recordPageVersion(page, { prev });
       return sendJson(res, 200, { page, nav: docs.nav });
     }
     if (m === 'DELETE') {
+      // to Recently deleted, with its history, so it can come back
+      if (!docsHistory.pages[page.id]) recordPageVersion(page);
+      docsHistory.deleted.unshift({ id: page.id, title: page.title, body: page.body, group: pageGroup(page.id), deletedAt: Date.now() });
+      for (const old of docsHistory.deleted.splice(MAX_DELETED)) delete docsHistory.pages[old.id];
       docs.pages = docs.pages.filter((x) => x !== page);
       placeDocsItem(`page:${page.id}`);
       saveDocs();
+      saveDocsHistory();
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -5502,6 +5607,7 @@ function backupBundle() {
       alerts: { ...config.alerts, channels: config.alerts.channels.map((c) => ({ ...c, secret: undefined, secretPlain: c.secret ? secretOrNull(channelHost(c)) : null })) },
     },
     docs,
+    docsHistory,
     energy,
     history,
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
@@ -5590,6 +5696,8 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   saveConfig();
   docs = normalizeDocs(bundle.docs);
   saveDocs();
+  docsHistory = cleanDocsHistory(bundle.docsHistory);
+  saveDocsHistory();
   energy = bundle.energy?.buckets ? bundle.energy : { buckets: {} };
   energyDirty = true;
   saveEnergy();
@@ -6134,6 +6242,7 @@ async function main() {
   loadAlertState();
   loadUpdates();
   loadDocs();
+  loadDocsHistory();
   loadStatic();
   initAllowedHosts();
   DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
