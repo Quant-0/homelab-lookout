@@ -1,0 +1,82 @@
+'use strict';
+// Search (Ctrl K and /) across services, devices, docs and settings; the admin's six tabs.
+const { chromium } = require('playwright');
+const S = process.env.SCREENSHOT_DIR || require('node:os').tmpdir();
+const B = process.env.BASE_URL || 'http://127.0.0.1:18080';
+const M = 'http://127.0.0.1:18090';
+const FP = process.env.MOCK_FP;
+const problems = [];
+const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) problems.push(m); };
+(async () => {
+  const browser = await chromium.launch();
+  const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  page.on('console', (m) => (m.type() === 'error' || m.type() === 'warning') && problems.push(`console: ${m.text()}`));
+  page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
+  await page.goto(B + '/login');
+  await page.fill('#username', 'admin');
+  await page.fill('#password', 'correct horse battery');
+  await page.click('button[type=submit]');
+  await page.waitForURL(B + '/');
+  const csrf = await page.evaluate(async () => (await (await fetch('/api/session')).json()).csrf);
+  const post = (p, body) => page.evaluate(async ([c, p, body]) => (await fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': c }, body: JSON.stringify(body) })).json(), [csrf, p, body]);
+  await post('/api/admin/devices', { name: 'titan', kind: 'server', location: 'rack', u: 10, height: 2, connections: [{ type: 'idrac', address: '127.0.0.1:18443', username: 'root', tlsMode: 'pin', fingerprint: FP, secret: 'calvin' }] });
+  await post('/api/admin/services', { name: 'Jellyfin', group: 'Media', href: 'https://jellyfin.example.lan', connection: { url: `${M}/jellyfin` }, integration: { type: 'jellyfin', options: {} }, secret: 'svc-key-123' });
+  await post('/api/docs/pages', { title: 'Restore from backup', body: 'Stop the VM, then restore it from PBS and start it again.', group: 'pages' });
+  await page.reload();
+  await page.waitForSelector('.device-card');
+
+  const results = () => page.$$eval('#search-results li[role=option]', (n) => n.map((x) => `${x.querySelector('.kind').textContent}: ${x.querySelector('.title').textContent}`));
+  check(await page.isVisible('.topbar .search-button'), 'search button in the top bar');
+  await page.keyboard.press('Control+k');
+  await page.waitForSelector('dialog.search-dialog[open]');
+  await page.keyboard.type('jelly');
+  await page.waitForFunction(() => document.querySelector('#search-results li[role=option] .title')?.textContent === 'Jellyfin');
+  check((await results())[0] === 'Service: Jellyfin', 'Ctrl K, "jelly": the service comes first');
+  await page.fill('dialog input', 'pbs');
+  await page.waitForFunction(() => /Restore from backup/.test(document.getElementById('search-results').textContent));
+  check(/PBS/.test(await page.textContent('#search-results .sub')), 'finds text inside a docs page and shows where');
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\/docs#page\//);
+  await page.waitForSelector('.docs-content h2');
+  check(await page.textContent('.docs-content h2') === 'Restore from backup', 'Enter opens the page');
+
+  await page.keyboard.press('/');
+  await page.waitForSelector('dialog.search-dialog[open]');
+  await page.keyboard.type('titan');
+  await page.waitForFunction(() => document.querySelectorAll('#search-results li[role=option]').length >= 2);
+  const titan = await results();
+  check(titan.includes('Device: titan') && titan.includes('Docs: titan sheet'), `"/" then "titan": the device and its sheet (${titan.join(', ')})`);
+  await page.keyboard.press('Escape');
+  check(!(await page.isVisible('dialog.search-dialog[open]')), 'Esc closes');
+  await page.keyboard.press('Control+k');
+  await page.keyboard.type('titan');
+  await page.waitForFunction(() => /Device/.test(document.getElementById('search-results').textContent));
+  await page.locator('#search-results li', { hasText: 'Device' }).click();
+  await page.waitForURL(B + '/');
+  await page.waitForTimeout(1200);
+  check(await page.evaluate(() => document.querySelector('.widget.flash h3')?.textContent) === 'titan', 'choosing the device opens the Overview at its card');
+  await page.keyboard.press('Control+k');
+  await page.keyboard.type('backup');
+  await page.waitForFunction(() => /Settings/.test(document.getElementById('search-results').textContent));
+  check((await results()).includes('Settings: System'), 'settings are found too ("backup" → System)');
+  await page.screenshot({ path: `${S}/search.png` });
+  await page.keyboard.press('Escape');
+
+  // admin: six tabs, old links still work, no up/down buttons
+  await page.goto(B + '/admin#backup');
+  await page.waitForSelector('#tab-system:not([hidden])');
+  const tabs = await page.$$eval('.page-tabs [role=tab]', (n) => n.map((x) => x.textContent));
+  check(tabs.join() === 'Devices,Services,Alerts,Power & cost,Dashboard & look,System', `six tabs (${tabs.join(', ')}); #backup opens System`);
+  check(await page.isVisible('#web-form') && await page.isVisible('#bk-schedule') && await page.isVisible('#pw-form, form:has(input[name=current])'), 'System: web server, backup and password together');
+  await page.goto(B + '/admin#appearance');
+  await page.waitForSelector('#tab-dashboard:not([hidden])');
+  check(await page.isVisible('#appearance-card'), '#appearance opens Dashboard & look');
+  await page.goto(B + '/admin#services');
+  await page.waitForSelector('#svc-list .svc-row');
+  check(await page.locator('#svc-list button:has-text("↑")').count() === 0, 'no up/down buttons (Customize does the order)');
+
+  await browser.close();
+  for (const p of problems.filter((x) => x.startsWith('console') || x.startsWith('pageerror'))) console.log(`FAIL  ${p}`);
+  console.log(problems.length ? `\n${problems.length} PROBLEM(S)` : '\nALL SEARCH UI TESTS PASSED');
+  process.exit(problems.length ? 1 : 0);
+})();

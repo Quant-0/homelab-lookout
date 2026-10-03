@@ -389,5 +389,145 @@ const HD = (() => {
     addEventListener('pointercancel', onUp);
   }
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText };
+  // --- Search (Ctrl K or /): services, VMs, devices, docs and settings in one list ---
+  // Built from the same APIs the pages use, so it only finds what you may see: docs and settings
+  // appear only when you're logged in.
+  let searchCache = null;
+  async function searchItems() {
+    if (searchCache && Date.now() - searchCache.at < 60000) return searchCache.items;
+    const get = async (p) => {
+      try {
+        const r = await fetch(p, { credentials: 'same-origin', cache: 'no-store' });
+        return r.ok ? r.json() : null;
+      } catch {
+        return null;
+      }
+    };
+    const [svc, dash, docs] = await Promise.all([get('/api/services'), get('/api/dashboard'), get('/api/docs')]);
+    const items = [];
+    for (const g of svc?.groups || []) {
+      for (const x of g.services || []) items.push({ kind: 'Service', title: x.name, sub: [g.name, x.description].filter(Boolean).join(' · '), href: x.href || '/services', external: Boolean(x.href), words: [g.name, x.description, x.integration].join(' ') });
+      for (const v of g.vms?.items || []) items.push({ kind: v.type === 'lxc' ? 'Container' : 'VM', title: v.name, sub: `${v.vmid} on ${v.node} · ${v.status}`, href: '/services#vms', words: `${v.vmid} ${v.node}` });
+    }
+    for (const d of dash?.devices || []) items.push({ kind: 'Device', title: d.name, sub: 'On the Overview', href: `/#device-${d.id}`, words: d.kind });
+    if (docs) {
+      for (const d of docs.auto.devices) items.push({ kind: 'Docs', title: `${d.name} sheet`, sub: [d.model, ...d.ips].filter(Boolean).join(' · '), href: `/docs#server/${d.id}`, words: [d.name, d.model, d.serviceTag, d.hostName, ...d.ips].join(' ') });
+      for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
+      for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
+      for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection idrac proxmox truenas synology unifi'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
+        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
+        items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
+      }
+    }
+    searchCache = { at: Date.now(), items };
+    return items;
+  }
+
+  function searchMatch(items, query) {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return items.filter((x) => x.kind === 'Service' || x.kind === 'Device').slice(0, 10);
+    const out = [];
+    for (const it of items) {
+      const title = it.title.toLowerCase();
+      const words = `${title} ${it.sub || ''} ${it.words || ''}`.toLowerCase();
+      const body = (it.body || '').toLowerCase();
+      if (!terms.every((t) => words.includes(t) || body.includes(t))) continue;
+      let score = terms.every((t) => words.includes(t)) ? 2 : 0;
+      if (title.startsWith(terms[0])) score += 3;
+      else if (title.includes(terms[0])) score += 1;
+      let snippet = null;
+      if (!score && body) {
+        const i = body.indexOf(terms.find((t) => body.includes(t)));
+        snippet = `…${it.body.slice(Math.max(0, i - 30), i + 60).replace(/\s+/g, ' ')}…`;
+      }
+      out.push({ ...it, score, snippet });
+    }
+    return out.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title)).slice(0, 12);
+  }
+
+  let searchDialog = null;
+  function openSearch() {
+    if (!searchDialog) {
+      const input = el('input', { type: 'search', placeholder: 'Search services, devices, docs…', 'aria-label': 'Search', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'search-results', 'aria-autocomplete': 'list', autocomplete: 'off', spellcheck: 'false' });
+      const list = el('ul', { id: 'search-results', role: 'listbox', class: 'search-results', 'aria-label': 'Results' });
+      const box = el('dialog', { class: 'search-dialog', 'aria-label': 'Search' },
+        el('div', { class: 'search-box' }, input, list, el('p', { class: 'search-hint', text: '↑ ↓ to choose · Enter to open · Esc to close' })));
+      document.body.append(box);
+      let results = [];
+      let active = 0;
+      const go = (r) => {
+        if (!r) return;
+        box.close();
+        if (r.external) window.open(r.href, '_blank', 'noopener,noreferrer');
+        else location.href = r.href;
+      };
+      const draw = () => {
+        list.replaceChildren(...results.map((r, i) => {
+          const li = el('li', { id: `search-${i}`, role: 'option', 'aria-selected': String(i === active), class: i === active ? 'active' : null },
+            el('span', { class: 'kind', text: r.kind }),
+            el('span', { class: 'what' }, el('span', { class: 'title', text: r.title }), r.snippet || r.sub ? el('span', { class: 'sub', text: r.snippet || r.sub }) : null),
+            r.external ? el('span', { class: 'ext', text: '↗', 'aria-label': 'opens in a new tab' }) : null);
+          li.addEventListener('mousemove', () => {
+            if (active !== i) {
+              active = i;
+              draw();
+            }
+          });
+          li.addEventListener('click', () => go(r));
+          return li;
+        }));
+        if (!results.length) list.append(el('li', { class: 'none', text: input.value.trim() ? 'Nothing found' : 'Nothing to search yet' }));
+        input.setAttribute('aria-activedescendant', results.length ? `search-${active}` : '');
+        list.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+      };
+      const update = async () => {
+        const q = input.value;
+        const found = searchMatch(await searchItems(), q);
+        if (q !== input.value) return; // typed on meanwhile
+        results = found;
+        active = 0;
+        draw();
+      };
+      input.addEventListener('input', update);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (!results.length) return;
+          active = (active + (e.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length;
+          draw();
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          go(results[active]);
+        } else if (e.key === 'Escape') {
+          e.preventDefault(); // a search field would only clear its text on the first Esc
+          box.close();
+        }
+      });
+      box.addEventListener('click', (e) => e.target === box && box.close());
+      searchDialog = { box, input, update };
+    }
+    searchDialog.input.value = '';
+    searchDialog.box.showModal();
+    searchDialog.input.focus();
+    searchDialog.update();
+  }
+
+  function initSearch() {
+    const bar = document.querySelector('.topbar');
+    if (!bar || !document.querySelector('.topbar .spacer') || location.pathname === '/login') return;
+    const button = el('button', { type: 'button', class: 'search-button', 'aria-keyshortcuts': 'Control+K', title: 'Search (Ctrl K or /)', onclick: openSearch },
+      el('span', { text: 'Search' }), el('kbd', { text: 'Ctrl K' }));
+    bar.querySelector('.spacer').after(button);
+    document.addEventListener('keydown', (e) => {
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
+      if ((e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey)) {
+        e.preventDefault();
+        openSearch();
+      }
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSearch);
+  else initSearch();
+
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

@@ -257,5 +257,5 @@ echo
 echo "Local CA fingerprint (compare when importing): $(openssl x509 -in "$TLS_DIR/ca.crt" -noout -fingerprint -sha256 | cut -d= -f2)"
 echo "Server certificate valid until: $(openssl x509 -in "$TLS_DIR/server.crt" -noout -enddate | cut -d= -f2)"
 echo
-echo "Dashboard: https://$HOST:8443/  (ports can be changed in Admin → Dashboard → Web server)"
+echo "Dashboard: https://$HOST:8443/  (ports can be changed in Admin → System → Web server)"
 echo "Import the CA once on each device: download it from http://$HOST:$(sed -n 's/^PORT=//p' "$ETC_DIR/env")/ca.crt or https://$HOST:8443/ca.crt"

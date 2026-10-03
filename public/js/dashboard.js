@@ -887,6 +887,16 @@ function render(d) {
   $('empty-hint').replaceChildren('No hosts configured yet. ', d.loggedIn ? el('a', { href: '/admin', text: 'Add hosts in Admin' }) : '');
 }
 
+// Search results link to /#device-<id>
+let hashHandled = false;
+function jumpToHash() {
+  const m = /^#device-([0-9a-f-]{36})$/.exec(location.hash);
+  if (!m) return;
+  jumpToWidget(`device:${m[1]}`);
+  history.replaceState(null, '', location.pathname);
+}
+window.addEventListener('hashchange', jumpToHash);
+
 function tickUpdated() {
   $('updated').textContent = lastData ? `Updated ${fmt.ago(lastData.generatedAt)}` : '';
 }
@@ -905,6 +915,10 @@ async function refresh() {
     delay = lastData.refreshSeconds;
     $('global-error').classList.add('hidden');
     render(lastData);
+    if (!hashHandled) {
+      hashHandled = true;
+      setTimeout(jumpToHash, 300); // after the cards have their size
+    }
   } catch (e) {
     $('global-error').textContent = `Could not load dashboard data: ${e.message}`;
     $('global-error').classList.remove('hidden');

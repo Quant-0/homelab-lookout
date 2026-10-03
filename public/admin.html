@@ -27,17 +27,15 @@
       <button type="button" role="tab" id="tabbtn-services" aria-controls="tab-services" aria-selected="false" tabindex="-1">Services</button>
       <button type="button" role="tab" id="tabbtn-alerts" aria-controls="tab-alerts" aria-selected="false" tabindex="-1">Alerts</button>
       <button type="button" role="tab" id="tabbtn-power" aria-controls="tab-power" aria-selected="false" tabindex="-1">Power &amp; cost</button>
-      <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard</button>
-      <button type="button" role="tab" id="tabbtn-appearance" aria-controls="tab-appearance" aria-selected="false" tabindex="-1">Appearance</button>
-      <button type="button" role="tab" id="tabbtn-backup" aria-controls="tab-backup" aria-selected="false" tabindex="-1">Backup</button>
-      <button type="button" role="tab" id="tabbtn-account" aria-controls="tab-account" aria-selected="false" tabindex="-1">Account</button>
+      <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard &amp; look</button>
+      <button type="button" role="tab" id="tabbtn-system" aria-controls="tab-system" aria-selected="false" tabindex="-1">System</button>
     </nav>
     <div class="tab-panel" role="tabpanel" id="tab-devices" aria-labelledby="tabbtn-devices" hidden>
     <section class="card">
       <div class="card-head">
         <div class="title">
           <h3>Devices</h3>
-          <p class="hint">A device is a physical box: server, NAS, switch, patch panel… Its monitoring connections (iDRAC, Proxmox, TrueNAS, Synology, UniFi) are added on the device itself. Passwords, tokens and keys are encrypted and write-only: only whether one is set is ever shown.</p>
+          <p class="hint">A device is one physical box, with its connections (iDRAC, Proxmox, TrueNAS, Synology, UniFi). Passwords and keys are stored encrypted and never shown again.</p>
         </div>
         <div class="head-actions">
           <select id="passive-add" aria-label="Add a panel to the rack"></select>
@@ -177,7 +175,7 @@
     </section>
     <section class="card">
       <div class="card-head">
-        <div class="title"><h3>Services</h3><p class="hint">Shown on the dashboard's Services tab. API keys and passwords are encrypted and write-only, like device credentials.</p></div>
+        <div class="title"><h3>Services</h3><p class="hint">Shown on the Services page, where Customize sets the order and groups. API keys and passwords are stored encrypted and never shown again.</p></div>
         <button type="button" class="primary" id="svc-new">Add service</button>
       </div>
       <div class="svc-list" id="svc-list"></div>
@@ -289,6 +287,27 @@
         <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
       </form>
     </section>
+    <section class="card" id="appearance-card">
+      <h3>Appearance</h3>
+      <p class="hint">Changes preview on this page right away; save to apply them everywhere. To move and resize widgets, use <a href="/">Customize</a> on the dashboard.</p>
+      <h4>Theme</h4>
+      <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
+      <h4>Background</h4>
+      <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
+      <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
+      <div class="form-grid">
+        <label><span>Background blur</span><div class="range-row"><input type="range" id="ap-blur" min="0" max="40" step="1"><output id="ap-blur-out"></output></div></label>
+        <label><span>Dim background (towards the theme color)</span><div class="range-row"><input type="range" id="ap-dim" min="0" max="90" step="1"><output id="ap-dim-out"></output></div></label>
+        <label><span>Card opacity (lower = frosted glass)</span><div class="range-row"><input type="range" id="ap-opacity" min="30" max="100" step="1"><output id="ap-opacity-out"></output></div></label>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="primary" id="ap-save">Save appearance</button>
+        <button type="button" id="ap-revert">Revert</button>
+        <span class="msg" id="ap-msg" role="status"></span>
+      </div>
+    </section>
+    </div>
+    <div class="tab-panel" role="tabpanel" id="tab-system" aria-labelledby="tabbtn-system" hidden>
     <section class="card" id="web-card">
       <h3>Web server</h3>
       <p class="hint">How the dashboard is reached. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.</p>
@@ -313,29 +332,6 @@
       <h4>Certificate</h4>
       <div id="web-cert"></div>
     </section>
-    </div>
-    <div class="tab-panel" role="tabpanel" id="tab-appearance" aria-labelledby="tabbtn-appearance" hidden>
-    <section class="card" id="appearance-card">
-      <h3>Appearance</h3>
-      <p class="hint">Changes preview on this page right away; save to apply them everywhere. To move and resize widgets, use <a href="/">Customize</a> on the dashboard.</p>
-      <h4>Theme</h4>
-      <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
-      <h4>Background</h4>
-      <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
-      <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
-      <div class="form-grid">
-        <label><span>Background blur</span><div class="range-row"><input type="range" id="ap-blur" min="0" max="40" step="1"><output id="ap-blur-out"></output></div></label>
-        <label><span>Dim background (towards the theme color)</span><div class="range-row"><input type="range" id="ap-dim" min="0" max="90" step="1"><output id="ap-dim-out"></output></div></label>
-        <label><span>Card opacity (lower = frosted glass)</span><div class="range-row"><input type="range" id="ap-opacity" min="30" max="100" step="1"><output id="ap-opacity-out"></output></div></label>
-      </div>
-      <div class="form-actions">
-        <button type="button" class="primary" id="ap-save">Save appearance</button>
-        <button type="button" id="ap-revert">Revert</button>
-        <span class="msg" id="ap-msg" role="status"></span>
-      </div>
-    </section>
-    </div>
-    <div class="tab-panel" role="tabpanel" id="tab-backup" aria-labelledby="tabbtn-backup" hidden>
     <section class="card">
       <h3>Download or restore a backup</h3>
       <p class="hint">A backup contains settings, devices with their credentials, services, docs, energy history and uploaded images, encrypted with a passphrase you choose. Keep the passphrase somewhere safe: without it the backup cannot be opened.</p>
@@ -387,8 +383,6 @@
       <p class="hint">Kept on this server (newest first); restore from one, or download it to keep elsewhere.</p>
       <div id="bk-local"></div>
     </section>
-    </div>
-    <div class="tab-panel" role="tabpanel" id="tab-account" aria-labelledby="tabbtn-account" hidden>
     <section class="card">
       <h3>Admin password</h3>
       <form id="pw-form" autocomplete="off">

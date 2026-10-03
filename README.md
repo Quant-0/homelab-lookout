@@ -44,7 +44,8 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - When a host stops answering, its other alerts (e.g. a degraded pool) are kept as they are, not reported as resolved. Deleting a device drops its alerts without a "resolved" message.
   - Tokens, passwords and webhook URLs are encrypted and write-only, like device credentials, and bound to where they are sent: changing the server or user without retyping deletes them.
   - E-mail uses TLS or STARTTLS before logging in (refused if the server doesn't offer it). ntfy and SMTP can pin a certificate fingerprint. Discord messages can't mention anyone.
-- **Admin** is organised in tabs: Devices, Services, Alerts, Power & cost, Dashboard, Appearance, Backup, Account.
+- **Search**: press **Ctrl K** (or **/**) on any page to find services, VMs, devices, Docs sheets and pages (also text inside pages), IP reservations and settings. Docs and settings only show up when you're logged in.
+- **Admin** is organised in six tabs: Devices, Services, Alerts, Power & cost, Dashboard & look, and System (web server, backup, password).
 - **Power cost**:
   - Price plans: spot price per price area (NO1–NO5, from [hvakosterstrommen.no](https://www.hvakosterstrommen.no/strompris-api)), or Norgespris (40 øre/kWh excl. VAT, 50 incl.).
   - Optional supplier markup and strømstøtte.
@@ -128,7 +129,7 @@ The systemd unit, config, key and certificates are never changed by it: the comm
 
 ### HTTPS and the local CA
 
-The dashboard listens on **https://HOST:8443** by default, and on **http://HOST:8080** with a redirect to HTTPS. In Admin → Dashboard → Web server you can turn HTTP and HTTPS on or off, change their ports, and choose whether HTTP redirects or serves. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.
+The dashboard listens on **https://HOST:8443** by default, and on **http://HOST:8080** with a redirect to HTTPS. In Admin → System → Web server you can turn HTTP and HTTPS on or off, change their ports, and choose whether HTTP redirects or serves. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.
 
 The certificates live in `/etc/homelab-dashboard/tls/`. The CA key is readable by root only; the service only gets the server certificate and key, through systemd credentials.
 
@@ -141,7 +142,7 @@ Import the CA certificate once on each device to get rid of browser warnings. Do
 
 ## Backups
 
-In Admin → Backup:
+In Admin → System → Backup:
 
 - **Download now:** one encrypted `.hldb` file with your own passphrase. It contains settings, devices and their credentials, services, alert channels, docs, energy and graph history, and uploaded images.
 - **Restore** from such a file, or from a local copy. The current state is first saved as a local copy. The admin login and port settings are only restored if you tick them.

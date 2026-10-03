@@ -772,31 +772,13 @@ function renderServiceList() {
         serviceIcon(svc),
         el('div', { class: 'device-main' },
           el('strong', { text: svc.name }),
-          el('span', { class: 'small muted', text: [integ, svc.description].filter(Boolean).join(' · ') || 'Link' }),
+          el('span', { class: 'small muted', text: [integ !== svc.name ? integ : null, svc.description, svc.hidden ? 'hidden on the Services page' : null].filter(Boolean).join(' · ') || (integ ? '' : 'Link') }),
           r?.error ? el('span', { class: 'small msg error', text: r.error }) : null),
         st,
         el('span', { class: 'svc-row-actions' },
-          el('button', { type: 'button', text: '↑', 'aria-label': `Move ${svc.name} up`, onclick: () => moveService(svc, -1) }),
-          el('button', { type: 'button', text: '↓', 'aria-label': `Move ${svc.name} down`, onclick: () => moveService(svc, 1) }),
           el('button', { type: 'button', text: 'Edit', onclick: () => openService(svc) })));
     }),
   ]));
-}
-
-async function moveService(svc, dir) {
-  const list = svcState.services;
-  const same = list.filter((x) => x.group === svc.group);
-  const other = same[same.indexOf(svc) + dir];
-  if (!other) return;
-  const a = list.indexOf(svc);
-  const b = list.indexOf(other);
-  [list[a], list[b]] = [list[b], list[a]];
-  renderServiceList();
-  try {
-    await api('PUT', '/api/admin/services/order', { ids: list.map((x) => x.id) });
-  } catch (e) {
-    showMsg('svc-list-msg', e.message, false);
-  }
 }
 
 function openService(svc) {
@@ -1892,10 +1874,11 @@ $('ap-revert').addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // Tabs (remembered in the URL, e.g. /admin#devices)
 
-const TABS = ['devices', 'services', 'alerts', 'power', 'dashboard', 'appearance', 'backup', 'account'];
+const TABS = ['devices', 'services', 'alerts', 'power', 'dashboard', 'system'];
+const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'dashboard', backup: 'system', account: 'system' }; // links from before
 
 function showTab(name, focus) {
-  if (name === 'hosts' || name === 'rack') name = 'devices'; // old links
+  name = OLD_TABS[name] || name;
   if (!TABS.includes(name)) name = 'devices';
   for (const t of TABS) {
     const on = t === name;
@@ -1907,8 +1890,10 @@ function showTab(name, focus) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
   if (name === 'services') loadServices();
-  if (name === 'dashboard') loadWeb();
-  if (name === 'backup') loadBackup();
+  if (name === 'system') {
+    loadWeb();
+    loadBackup();
+  }
   if (name === 'alerts') loadAlerts();
 }
 
