@@ -248,7 +248,7 @@ function deviceCard(dev, sections, d) {
   });
   const fans = ctx.idrac?.fans || [];
   const badFans = fans.filter((f) => (f.health && statusClass(f.health) !== 'good') || f.rpm === 0).length;
-  const update = ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable;
+  const update = ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable || d.updates?.devices?.includes(dev.id);
   return el('article', { class: `card device-card${stateCls ? ` st-${stateCls}` : ''}` },
     el('div', { class: 'card-head' },
       el('div', { class: 'title' },
@@ -262,7 +262,7 @@ function deviceCard(dev, sections, d) {
     el('div', { class: 'dc-foot' },
       el('div', { class: 'dc-foot-left' },
         fans.length ? el('span', { class: 'fans mini', role: 'img', 'aria-label': `${fans.length} fans${badFans ? `, ${badFans} not OK` : ', all OK'}` }, fans.map((f, i) => fanNode(`mini|${dev.id}|${i}`, f))) : null,
-        update ? el('span', { class: 'small muted', text: 'Update available' }) : null),
+        update ? (d.loggedIn ? el('a', { class: 'dc-update', href: '/updates' }, el('span', { class: 'led info', 'aria-hidden': 'true' }), 'Update available') : el('span', { class: 'small muted', text: 'Update available' })) : null),
       el('div', { class: 'dc-links' },
         d.loggedIn ? el('a', { href: `/docs#server/${dev.id}`, text: 'Sheet' }) : null,
         sections.length ? toggle : null)),
@@ -810,7 +810,8 @@ function renderAttention(d) {
         ? el('ul', { class: 'attn-list', 'aria-label': 'Needs attention' }, shown.map(item))
         : el('p', { class: 'attn-ok' }, el('span', { class: 'led good', 'aria-hidden': 'true' }), 'Everything is OK'),
       list.length > 5 ? el('button', { type: 'button', class: 'link-button', text: attentionOpen ? 'Show fewer' : `Show all ${list.length}`, onclick: () => { attentionOpen = !attentionOpen; renderAttention(d); } }) : null),
-    el('div', { class: 'attn-counts num' }, counts.map((c) => el('span', { text: c }))));
+    el('div', { class: 'attn-counts num' }, counts.map((c) => el('span', { text: c })),
+      d.updates?.available ? el('a', { class: 'attn-updates', href: '/updates', text: `${d.updates.available} update${d.updates.available === 1 ? '' : 's'} available` }) : null));
 }
 let attentionOpen = false;
 

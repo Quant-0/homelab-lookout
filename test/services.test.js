@@ -42,7 +42,7 @@ const CASES = [
   ['adguard', 'adguard', 'admin', {}, { Queries: 20000, Blocked: 3000, 'Block rate': 15, Latency: 12.3 }],
   ['npm', 'npm', 'admin@example.com', {}, { Enabled: 2, Disabled: 1, Total: 3 }],
   ['traefik', 'traefik', '', {}, { Routers: 14, Services: 12, Middleware: 5, Errors: 1 }],
-  ['homeassistant', 'homeassistant', '', {}, { 'People home': 1, 'Lights on': 1, 'Switches on': 1, Entities: 6 }],
+  ['homeassistant', 'homeassistant', '', {}, { 'People home': 1, 'Lights on': 1, 'Switches on': 1, Entities: 8 }],
   ['nextcloud', 'nextcloud', '', {}, { 'Active users (24 h)': 3, Files: 123456, 'CPU load': 0.42 }],
   ['immich', 'immich', '', {}, { Photos: 30000, Videos: 1200, Users: 2 }],
   ['paperless', 'paperless', '', {}, { Documents: 1500, Inbox: 7 }],

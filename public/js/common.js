@@ -178,7 +178,7 @@ const HD = (() => {
 
   // Overview · Services · Docs (Docs only when logged in: it always requires login)
   function viewTabs(active, loggedIn) {
-    const tabs = [['overview', 'Overview', '/'], ['services', 'Services', '/services'], ...(loggedIn ? [['docs', 'Docs', '/docs']] : [])];
+    const tabs = [['overview', 'Overview', '/'], ['services', 'Services', '/services'], ...(loggedIn ? [['docs', 'Docs', '/docs'], ['updates', 'Updates', '/updates']] : [])];
     return tabs.map(([key, label, href]) => el('a', { href, class: key === active ? 'active' : null, 'aria-current': key === active ? 'page' : null, text: label }));
   }
 
@@ -414,6 +414,7 @@ const HD = (() => {
       for (const d of docs.auto.devices) items.push({ kind: 'Docs', title: `${d.name} sheet`, sub: [d.model, ...d.ips].filter(Boolean).join(' · '), href: `/docs#server/${d.id}`, words: [d.name, d.model, d.serviceTag, d.hostName, ...d.ips].join(' ') });
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
+      items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
       for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection idrac proxmox truenas synology unifi'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
         ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });

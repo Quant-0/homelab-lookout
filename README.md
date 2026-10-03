@@ -44,6 +44,8 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - When a host stops answering, its other alerts (e.g. a degraded pool) are kept as they are, not reported as resolved. Deleting a device drops its alerts without a "resolved" message.
   - Tokens, passwords and webhook URLs are encrypted and write-only, like device credentials, and bound to where they are sent: changing the server or user without retyping deletes them.
   - E-mail uses TLS or STARTTLS before logging in (refused if the server doesn't offer it). ntfy and SMTP can pin a certificate fingerprint. Discord messages can't mention anyone.
+- **Updates** (logged in only): one list of what can be updated, with the installed and the new version, release notes, and the package list for Proxmox. Checked once a night (04:00) and with "Check now": Proxmox pending packages, TrueNAS and its apps, Sonarr, Radarr, Lidarr, Prowlarr, Seerr, Pi-hole, Paperless-ngx, authentik, Portainer, Home Assistant, Tautulli, Plex and AdGuard Home. UniFi firmware and Synology DSM come with every refresh. The Overview shows the count, and device cards say "Update available". Nothing is ever installed from the dashboard. A public dashboard shows visitors no versions at all.
+  - Proxmox only lets a read-only (PVEAuditor) token list pending updates on newer versions; older ones show "not allowed".
 - **Search**: press **Ctrl K** (or **/**) on any page to find services, VMs, devices, Docs sheets and pages (also text inside pages), IP reservations and settings. Docs and settings only show up when you're logged in.
 - **Admin** is organised in six tabs: Devices, Services, Alerts, Power & cost, Dashboard & look, and System (web server, backup, password).
 - **Power cost**:

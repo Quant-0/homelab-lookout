@@ -1578,7 +1578,8 @@ async function collectProxmox(h, secret) {
   };
 }
 
-async function collectTruenas(h, secret) {
+// Connects, logs in and hands the JSON-RPC client to `fn`; the socket is always closed
+async function truenasSession(h, secret, fn) {
   const ws = await wsConnect(h, '/api/current');
   const rpc = new JsonRpc(ws);
   try {
@@ -1597,7 +1598,14 @@ async function collectTruenas(h, secret) {
       const ok = await rpc.call('auth.login_with_api_key', [secret]);
       if (ok !== true) throw new UserError('Authentication failed (check API key)');
     }
+    return await fn(rpc);
+  } finally {
+    ws.close();
+  }
+}
 
+function collectTruenas(h, secret) {
+  return truenasSession(h, secret, async (rpc) => {
     const poolFields = ['name', 'status', 'healthy', 'warning', 'status_detail', 'size', 'allocated', 'free'];
     const [info, pools, alerts] = await Promise.all([
       rpc.call('system.info'),
@@ -1647,9 +1655,7 @@ async function collectTruenas(h, secret) {
         .map((a) => ({ level: a.level, text: String(a.formatted || a.text || a.klass || '').slice(0, 1000), time: ts(a.datetime) }))
         .sort((a, b) => (b.time || 0) - (a.time || 0)),
     };
-  } finally {
-    ws.close();
-  }
+  });
 }
 
 
@@ -1821,6 +1827,7 @@ function unifiDevice(d) {
     state: d.state === 1 ? 'Online' : d.state === 0 ? 'Offline' : d.state === 4 ? 'Upgrading' : d.state === 5 ? 'Provisioning' : `State ${d.state}`,
     version: d.version || null,
     upgradable: Boolean(d.upgradable),
+    upgradeTo: d.upgradable && typeof d.upgrade_to_firmware === 'string' ? d.upgrade_to_firmware.slice(0, 40) : null,
     ip: d.ip || null,
     uptime: num0(d.uptime),
     cpu: num0(stats.cpu) !== null ? num0(stats.cpu) / 100 : null,
@@ -1967,6 +1974,13 @@ function integrationCtx(svc, secret) {
 }
 
 const svcSessions = new Map(); // `${service id}|${url}|${user}` -> session token/cookie (memory only)
+
+// Pi-hole v6 sessions are limited, so the stats and the update check share one
+const piholeLogin = (x) => async () => {
+  const r = await x.post('/api/auth', { password: x.secret });
+  if (!r.session?.valid || !r.session.sid) throw Object.assign(new UserError('Pi-hole login failed'), { status: 401 });
+  return r.session.sid;
+};
 async function withSession(x, login, use) {
   const key = `${x.svc.id}|${x.svc.connection.url}|${x.username}`;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -2125,11 +2139,7 @@ const INTEGRATIONS = {
     async fetch(x) {
       // Pi-hole v6: session API (sessions are reused; v6 limits concurrent sessions)
       try {
-        return await withSession(x, async () => {
-          const r = await x.post('/api/auth', { password: x.secret });
-          if (!r.session?.valid || !r.session.sid) throw Object.assign(new UserError('Pi-hole login failed'), { status: 401 });
-          return r.session.sid;
-        }, async (sid) => {
+        return await withSession(x, piholeLogin(x), async (sid) => {
           const s = await x.get('/api/stats/summary', { headers: { 'X-FTL-SID': sid } });
           return [stat('Queries', s.queries?.total), stat('Blocked', s.queries?.blocked), stat('Block rate', s.queries?.percent_blocked, '%'), stat('On blocklist', s.gravity?.domains_being_blocked)];
         });
@@ -3458,6 +3468,8 @@ function loadStatic() {
     'admin.html': 'admin.html',
     'services.html': 'services.html',
     'docs.html': 'docs.html',
+    'updates.html': 'updates.html',
+    '/static/js/updates.js': 'js/updates.js',
     '/static/js/services.js': 'js/services.js',
     '/static/js/docs.js': 'js/docs.js',
     '/static/js/markdown.js': 'js/markdown.js',
@@ -3658,16 +3670,19 @@ function sendPage(res, key, session) {
 // ---------------------------------------------------------------------------
 // Routes
 
-// A public dashboard shows names and status, never addresses (UniFi reports WAN and LAN IPs)
-function withoutAddresses(payload) {
+// What visitors of a public dashboard don't get: addresses (UniFi reports WAN and LAN IPs) and
+// software versions, which tell an attacker what to try. Names and status stay.
+function forVisitors(payload) {
   payload.unifi = payload.unifi.map((h) => (h.data ? {
     ...h,
     data: {
       ...h.data,
       health: h.data.health ? { ...h.data.health, wan: h.data.health.wan ? { ...h.data.health.wan, ip: null } : null } : null,
-      devices: h.data.devices.map(({ ip, ...d }) => d),
+      devices: h.data.devices.map(({ ip, version, upgradable, upgradeTo, ...d }) => d),
     },
   } : h));
+  payload.synology = payload.synology.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, version: null, upgradeAvailable: false } } } : h));
+  payload.truenas = payload.truenas.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, version: null } } } : h));
   return payload;
 }
 
@@ -3799,7 +3814,11 @@ async function handleApi(req, res, url, session) {
   if (p === '/api/dashboard' && m === 'GET') {
     if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
     const payload = dashboardPayload();
-    if (!session) withoutAddresses(payload);
+    if (!session) forVisitors(payload);
+    else {
+      const up = updatesPayload().rows.filter((r) => r.available);
+      payload.updates = { available: up.length, devices: [...new Set(up.filter((r) => r.ownerType === 'device' && r.owner).map((r) => r.owner))] };
+    }
     return sendJson(res, 200, { ...payload, loggedIn: Boolean(session) });
   }
 
@@ -4261,6 +4280,15 @@ async function handleApi(req, res, url, session) {
   }
 
   // --- Backup ---
+  // --- Updates (admin only: versions help an attacker) ---
+  if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, updatesPayload());
+  if (p === '/api/admin/updates/check' && m === 'POST') {
+    if (!updatesRunning && Date.now() - updatesManualAt < 60000) throw Object.assign(new UserError('Checked less than a minute ago; try again shortly'), { status: 429 });
+    updatesManualAt = Date.now();
+    await checkUpdates();
+    return sendJson(res, 200, updatesPayload());
+  }
+
   // --- Alerts ---
   if (p === '/api/admin/alerts' && m === 'GET') return sendJson(res, 200, alertsStatus());
   if (p === '/api/admin/alerts' && m === 'PUT') {
@@ -4560,6 +4588,7 @@ async function handle(req, res) {
       return sendPage(res, 'services.html', session);
     }
     if (p === '/docs') return session ? sendPage(res, 'docs.html', session) : redirect(res, '/login?next=docs');
+    if (p === '/updates') return session ? sendPage(res, 'updates.html', session) : redirect(res, '/login?next=updates');
     const im = p.match(/^\/media\/icon\/([0-9a-f]{32})$/);
     if (im) {
       const rec = config.icons.find((i) => i.id === im[1]);
@@ -5156,6 +5185,252 @@ function alertsStatus() {
       .map(([key, a]) => ({ key, type: a.type, severity: a.severity, title: a.title, detail: a.detail, since: a.since, firedAt: a.firedAt }))
       .sort((a, b) => b.since - a.since),
     log: alertState.log.slice(0, 100),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+//
+// What can be updated, and to which version. UniFi firmware and Synology DSM come with every poll;
+// Proxmox packages, TrueNAS (and its apps) and the apps' own update APIs are checked once a day at
+// night, or with "Check now". Read-only: nothing is ever installed from here. Software versions
+// help an attacker, so this is shown to the logged-in admin only, even on a public dashboard.
+
+const UPDATES_FILE = path.join(DATA_DIR, 'updates.json');
+const UPDATE_HOUR = 4; // 04:00–04:59 Europe/Oslo, after the nightly backup
+let updates = { checkedAt: null, lastAutoDate: null, items: [] };
+let updatesRunning = null; // promise while a check runs
+let updatesManualAt = 0;
+
+const RELEASE_NOTES = {
+  sonarr: 'https://github.com/Sonarr/Sonarr/releases', radarr: 'https://github.com/Radarr/Radarr/releases', lidarr: 'https://github.com/Lidarr/Lidarr/releases',
+  prowlarr: 'https://github.com/Prowlarr/Prowlarr/releases', overseerr: 'https://github.com/seerr-team/seerr/releases', pihole: 'https://github.com/pi-hole/pi-hole/releases',
+  paperless: 'https://github.com/paperless-ngx/paperless-ngx/releases', authentik: 'https://goauthentik.io/docs/releases', portainer: 'https://github.com/portainer/portainer/releases',
+  homeassistant: 'https://www.home-assistant.io/blog/', tautulli: 'https://github.com/Tautulli/Tautulli/releases', plex: 'https://forums.plex.tv/t/plex-media-server/30447',
+  adguard: 'https://github.com/AdguardTeam/AdGuardHome/releases',
+  proxmox: 'https://pve.proxmox.com/wiki/Roadmap', truenas: 'https://www.truenas.com/docs/softwarereleases/', unifi: 'https://community.ui.com/releases', synology: 'https://www.synology.com/releaseNote/DSM',
+};
+
+const cleanVersion = (v) => (v === null || v === undefined || v === '' ? null : String(v).slice(0, 60));
+
+// Sonarr, Radarr, Lidarr, Prowlarr: the newest release first, the installed one marked
+const servarrUpdate = (api) => async (x) => {
+  const list = await x.get(`${api}/update`, { headers: { 'X-Api-Key': x.secret } });
+  if (!Array.isArray(list) || !list.length) return { current: null, latest: null, available: false };
+  const installed = list.find((u) => u.installed);
+  return { current: installed?.version, latest: list[0].version, available: !list[0].installed };
+};
+
+// Per integration: { current, latest, available, detail?, list?, url? }
+const UPDATE_CHECKS = {
+  sonarr: servarrUpdate('/api/v3'),
+  radarr: servarrUpdate('/api/v3'),
+  lidarr: servarrUpdate('/api/v1'),
+  prowlarr: servarrUpdate('/api/v1'),
+  async overseerr(x) {
+    const s = await x.get('/api/v1/status', { headers: { 'X-Api-Key': x.secret } });
+    return { current: s.version, latest: null, available: Boolean(s.updateAvailable), detail: s.commitsBehind ? `${s.commitsBehind} commits behind` : '' };
+  },
+  async pihole(x) {
+    try {
+      return await withSession(x, piholeLogin(x), async (sid) => {
+        const v = (await x.get('/api/info/version', { headers: { 'X-FTL-SID': sid } })).version || {};
+        const parts = [['Core', v.core], ['Web', v.web], ['FTL', v.ftl]].filter(([, p]) => p?.local?.version);
+        const behind = parts.filter(([, p]) => p.remote?.version && p.remote.version !== p.local.version);
+        return { current: parts.map(([n, p]) => `${n} ${p.local.version}`).join(', '), latest: behind.map(([n, p]) => `${n} ${p.remote.version}`).join(', '), available: behind.length > 0 };
+      });
+    } catch (e) {
+      if (e.status !== 404) throw e;
+    }
+    const v = await x.get(`/admin/api.php?versions&auth=${encodeURIComponent(x.secret)}`); // v5
+    const parts = [['Core', v.core_current, v.core_latest, v.core_update], ['Web', v.web_current, v.web_latest, v.web_update], ['FTL', v.FTL_current, v.FTL_latest, v.FTL_update]];
+    return { current: parts.map(([n, c]) => `${n} ${c}`).join(', '), latest: parts.filter((p) => p[3]).map(([n, , l]) => `${n} ${l}`).join(', '), available: parts.some((p) => p[3]) };
+  },
+  async paperless(x) {
+    const r = await x.get('/api/remote_version/', { headers: { Authorization: `Token ${x.secret}` } });
+    return { current: null, latest: r.version, available: Boolean(r.update_available) };
+  },
+  async authentik(x) {
+    const r = await x.get('/api/v3/admin/version/', { headers: { Authorization: `Bearer ${x.secret}` } });
+    return { current: r.version_current, latest: r.version_latest, available: Boolean(r.outdated) };
+  },
+  async portainer(x) {
+    const r = await x.get('/api/system/version', { headers: { 'X-API-Key': x.secret } });
+    return { current: r.ServerVersion, latest: r.LatestVersion, available: Boolean(r.UpdateAvailable) };
+  },
+  async homeassistant(x) {
+    const states = await x.get('/api/states', { headers: { Authorization: `Bearer ${x.secret}` } });
+    const list = (Array.isArray(states) ? states : []).filter((e) => e.entity_id?.startsWith('update.'));
+    const pending = list.filter((e) => e.state === 'on');
+    const core = list.find((e) => e.entity_id === 'update.home_assistant_core_update');
+    return {
+      current: core?.attributes?.installed_version, latest: pending.length === 1 ? pending[0].attributes?.latest_version : null, available: pending.length > 0,
+      detail: list.length ? `${pending.length} of ${list.length} update entities` : 'No update entities',
+      list: pending.map((e) => ({ name: String(e.attributes?.title || e.attributes?.friendly_name || e.entity_id).slice(0, 80), current: cleanVersion(e.attributes?.installed_version), latest: cleanVersion(e.attributes?.latest_version) })),
+    };
+  },
+  async tautulli(x) {
+    const r = await x.get(`/api/v2?apikey=${encodeURIComponent(x.secret)}&cmd=update_check`);
+    const d = r.response?.data || {};
+    return { current: null, latest: d.latest_release || null, available: Boolean(d.update) };
+  },
+  async plex(x) {
+    const r = await x.get('/updater/status', { headers: { 'X-Plex-Token': x.secret, Accept: 'application/json' } });
+    const rel = r.MediaContainer?.Release?.[0];
+    return { current: null, latest: rel?.version || null, available: Boolean(rel) };
+  },
+  async adguard(x) {
+    const [st, v] = await Promise.all([x.get('/control/status', { headers: x.basic() }), x.post('/control/version.json', { recheck_now: false }, { headers: x.basic() })]);
+    return { current: st.version, latest: v.new_version || null, available: Boolean(v.new_version) && v.new_version !== st.version, url: /^https:\/\//.test(v.announcement_url || '') ? v.announcement_url : null };
+  },
+};
+
+// Which device a Proxmox node is: the one whose connection represents that node, else the connection's device
+function nodeDevice(h, node) {
+  for (const d of config.devices) {
+    if (deviceHosts(d).some((x) => x.type === 'proxmox' && effectiveNode(x, d) === node)) return d.id;
+  }
+  return h.deviceId;
+}
+
+async function proxmoxUpdates(h, node) {
+  const headers = { Authorization: `PVEAPIToken=${h.username}=${decryptSecret(h)}` };
+  const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers }).then((r) => r.data);
+  const n = encodeURIComponent(node);
+  let list;
+  try {
+    list = await get(`/api2/json/nodes/${n}/apt/update`);
+  } catch (e) {
+    if (/403/.test(e.message)) throw new UserError('Proxmox did not let this read-only token list updates (newer Proxmox VE versions allow it with Sys.Audit)');
+    throw e;
+  }
+  const ver = await get(`/api2/json/nodes/${n}/version`).catch(() => null);
+  const pkgs = (Array.isArray(list) ? list : []).map((p) => ({ name: String(p.Package || '').slice(0, 80), current: cleanVersion(p.OldVersion), latest: cleanVersion(p.Version) }));
+  const mgr = pkgs.find((p) => p.name === 'pve-manager');
+  return { current: ver?.version ? `Proxmox VE ${ver.version}` : null, latest: mgr ? `Proxmox VE ${mgr.latest}` : null, available: pkgs.length > 0, count: pkgs.length, detail: pkgs.length ? `${pkgs.length} package${pkgs.length === 1 ? '' : 's'}` : '', list: pkgs.slice(0, 300) };
+}
+
+function truenasUpdates(h) {
+  return truenasSession(h, decryptSecret(h), async (rpc) => {
+    let os;
+    try {
+      const r = await rpc.call('update.check_available');
+      os = { latest: r?.version || null, available: r?.status === 'AVAILABLE', detail: r?.status === 'REBOOT_REQUIRED' ? 'Installed; restart to finish' : '' };
+    } catch (e) {
+      if (e.rpcCode !== -32601) throw e;
+      const st = await rpc.call('update.status'); // newer releases
+      const nv = st?.status?.new_version ?? st?.new_version ?? null;
+      os = { latest: typeof nv === 'string' ? nv : nv?.version || null, available: Boolean(nv) };
+    }
+    const out = [{ part: 'TrueNAS', current: results.get(h.id)?.data?.system?.version || null, ...os, url: RELEASE_NOTES.truenas }];
+    const apps = await rpc.call('app.query').catch(() => null);
+    if (Array.isArray(apps) && apps.length) {
+      const up = apps.filter((a) => a.upgrade_available);
+      out.push({
+        part: 'TrueNAS apps', sub: 'apps', current: `${apps.length} app${apps.length === 1 ? '' : 's'}`, latest: null, available: up.length > 0, count: up.length,
+        detail: up.length ? `${up.length} can be updated` : '',
+        list: up.slice(0, 100).map((a) => ({ name: String(a.name).slice(0, 80), current: cleanVersion(a.human_version || a.version), latest: cleanVersion(a.latest_app_version || a.latest_version) })),
+      });
+    }
+    return out;
+  });
+}
+
+async function serviceUpdate(svc) {
+  const secret = svc.secret ? decryptSecret(serviceSecretHost(svc)) : null;
+  return UPDATE_CHECKS[svc.integration.type](integrationCtx(svc, secret));
+}
+
+const updateError = (e) => (e instanceof UserError ? e.message : 'Check failed').slice(0, 300);
+
+async function runUpdateChecks() {
+  const jobs = [];
+  const now = Date.now();
+  const seenNodes = new Set();
+  for (const h of config.hosts.filter((x) => x.type === 'proxmox' && x.secret)) {
+    const dev = config.devices.find((d) => d.id === h.deviceId);
+    const mine = dev ? effectiveNode(h, dev) : null;
+    const nodes = mine ? [mine] : (results.get(h.id)?.data?.nodes || []).filter((n) => n.status === 'online').map((n) => n.name);
+    for (const node of nodes) {
+      if (seenNodes.has(node)) continue; // two connections to one cluster
+      seenNodes.add(node);
+      const base = { key: `pve:${h.id}:${node}`, source: 'proxmox', ownerType: 'device', owner: nodeDevice(h, node), part: `Proxmox node ${node}`, url: RELEASE_NOTES.proxmox };
+      jobs.push(withTimeout(proxmoxUpdates(h, node), 45000, 'Update check').then((r) => [{ ...base, ...r }], (e) => [{ ...base, error: updateError(e) }]));
+    }
+  }
+  for (const h of config.hosts.filter((x) => x.type === 'truenas' && x.secret)) {
+    const base = { source: 'truenas', ownerType: 'device', owner: h.deviceId };
+    jobs.push(withTimeout(truenasUpdates(h), 60000, 'Update check').then(
+      (list) => list.map((r) => ({ ...base, key: `truenas:${h.id}${r.sub ? `:${r.sub}` : ''}`, ...r })),
+      (e) => [{ ...base, key: `truenas:${h.id}`, part: 'TrueNAS', url: RELEASE_NOTES.truenas, error: updateError(e) }]));
+  }
+  for (const svc of config.services.filter((x) => x.connection && x.integration && UPDATE_CHECKS[x.integration.type])) {
+    const base = { key: `svc:${svc.id}`, source: svc.integration.type, ownerType: 'service', owner: svc.id, part: INTEGRATIONS[svc.integration.type].label, url: RELEASE_NOTES[svc.integration.type] || null };
+    jobs.push(withTimeout(serviceUpdate(svc), 30000, 'Update check').then((r) => [{ ...base, ...r }], (e) => [{ ...base, error: updateError(e) }]));
+  }
+  const items = (await Promise.all(jobs)).flat().map((it) => ({
+    ...it,
+    current: cleanVersion(it.current), latest: cleanVersion(it.latest), available: Boolean(it.available), checkedAt: now,
+    url: it.url && /^https:\/\//.test(it.url) ? it.url : null,
+  }));
+  updates = { ...updates, checkedAt: now, items };
+  writeJsonAtomic(UPDATES_FILE, updates);
+  const n = items.filter((x) => x.available).length;
+  log(`Update check: ${n} can be updated, ${items.filter((x) => x.error).length} could not be checked`);
+}
+
+function checkUpdates() {
+  if (!updatesRunning) updatesRunning = runUpdateChecks().catch((e) => log('Update check failed:', e.message)).finally(() => (updatesRunning = null));
+  return updatesRunning;
+}
+
+function loadUpdates() {
+  const u = readJson(UPDATES_FILE, null);
+  if (u && Array.isArray(u.items)) updates = { checkedAt: u.checkedAt || null, lastAutoDate: u.lastAutoDate || null, items: u.items };
+}
+
+// Every few minutes: once a night, and soon after start if the last check is more than a day old
+function updatesTick() {
+  const now = Date.now();
+  const z = zoned(now);
+  const stale = !updates.checkedAt || now - updates.checkedAt > 26 * 3600e3;
+  if ((z.hour === UPDATE_HOUR && updates.lastAutoDate !== z.date) || stale) {
+    updates.lastAutoDate = z.date;
+    checkUpdates();
+  }
+}
+
+// Everything that can be checked, live and daily, named after its device or service as it is now
+function updatesPayload() {
+  const rows = [];
+  const devName = (id) => config.devices.find((d) => d.id === id)?.name || null;
+  for (const h of config.hosts.filter((x) => x.type === 'unifi')) {
+    const r = results.get(h.id);
+    for (const d of r?.data?.devices || []) {
+      const dev = config.devices.find((v) => v.unifi?.hostId === h.id && v.unifi.mac === d.mac);
+      if (dev?.hidden) continue;
+      rows.push({ key: `unifi:${h.id}:${d.mac}`, source: 'unifi', ownerType: 'device', owner: dev?.id || null, name: dev?.name || d.name, part: 'UniFi firmware', current: d.version || null, latest: d.upgradeTo || null, available: d.upgradable, url: RELEASE_NOTES.unifi, checkedAt: r.updatedAt });
+    }
+  }
+  for (const h of config.hosts.filter((x) => x.type === 'synology')) {
+    const r = results.get(h.id);
+    const s = r?.data?.system;
+    if (s) rows.push({ key: `dsm:${h.id}`, source: 'synology', ownerType: 'device', owner: h.deviceId, name: devName(h.deviceId) || h.name, part: 'DSM', current: s.version || null, latest: null, available: Boolean(s.upgradeAvailable), url: RELEASE_NOTES.synology, checkedAt: r.updatedAt });
+  }
+  for (const it of updates.items) {
+    const svc = it.ownerType === 'service' ? config.services.find((x) => x.id === it.owner) : null;
+    if (it.ownerType === 'service' && !svc) continue; // removed since the check
+    if (it.ownerType === 'device' && !config.devices.some((d) => d.id === it.owner)) continue;
+    rows.push({ ...it, name: svc ? svc.name : devName(it.owner) });
+  }
+  rows.sort((a, b) => Number(b.available) - Number(a.available) || Number(Boolean(b.error)) - Number(Boolean(a.error)) || String(a.name).localeCompare(String(b.name)));
+  const z = zoned(Date.now());
+  return {
+    checkedAt: updates.checkedAt,
+    running: Boolean(updatesRunning),
+    nextCheck: `${z.hour >= UPDATE_HOUR + 1 || updates.lastAutoDate === z.date ? 'tomorrow' : 'tonight'} at 0${UPDATE_HOUR}:00`,
+    available: rows.filter((r) => r.available).length,
+    rows,
   };
 }
 
@@ -5857,6 +6132,7 @@ async function main() {
   loadEnergy();
   loadHistory();
   loadAlertState();
+  loadUpdates();
   loadDocs();
   loadStatic();
   initAllowedHosts();
@@ -5877,6 +6153,8 @@ async function main() {
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
   setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(backupTick, 30 * 1000).unref();
+  setTimeout(updatesTick, 2 * 60 * 1000).unref(); // after the first polls, so Proxmox nodes are known
+  setInterval(updatesTick, 5 * 60 * 1000).unref();
   const shutdown = () => {
     try {
       saveEnergy();

@@ -149,7 +149,7 @@ const server = https.createServer(opts, (req, res) => {
       return res.end(R({ meta: { rc: 'ok' }, data: [
         { mac: '24:5A:4C:11:22:33', name: 'U7 Pro Hallway', model: 'U7PRO', type: 'uap', state: 1, version: '8.0.19', uptime: 86400, 'system-stats': { cpu: '4.1', mem: '38.2' }, num_sta: 14, radio_table_stats: [{ radio: 'ng', channel: 6, num_sta: 3, satisfaction: 98 }, { radio: 'na', channel: 36, num_sta: 9 }, { radio: '6e', channel: 37, num_sta: 2 }], uplink: { uplink_mac: 'f4:e2:c6:aa:bb:cc', uplink_remote_port: 3 } },
         { mac: 'f4:e2:c6:aa:bb:cc', name: 'USW-24-POE Rack', model: 'USL24P', type: 'usw', state: 1, version: '7.1.26', uptime: 1209600, 'system-stats': { cpu: '9.0', mem: '41.0' }, general_temperature: 46, fan_level: 0, total_max_power: 95, port_table: sw, num_sta: 23 },
-        { mac: '74:ac:b9:dd:ee:ff', name: 'UDM Pro', model: 'UDMPRO', type: 'udm', state: 1, version: '4.1.13', upgradable: true, uptime: 2592000, 'system-stats': { cpu: '18.5', mem: '72.3' }, temperatures: [{ name: 'CPU', type: 'cpu', value: 61.2 }, { name: 'Local', type: 'board', value: 48.0 }, { name: 'PHY', type: 'phy', value: 57.5 }], fan_level: 30, port_table: udm, num_sta: 37 },
+        { mac: '74:ac:b9:dd:ee:ff', name: 'UDM Pro', model: 'UDMPRO', type: 'udm', state: 1, version: '4.1.13', upgradable: true, upgrade_to_firmware: '4.1.22', uptime: 2592000, 'system-stats': { cpu: '18.5', mem: '72.3' }, temperatures: [{ name: 'CPU', type: 'cpu', value: 61.2 }, { name: 'Local', type: 'board', value: 48.0 }, { name: 'PHY', type: 'phy', value: 57.5 }], fan_level: 30, port_table: udm, num_sta: 37 },
       ] }));
     }
   }
@@ -165,6 +165,12 @@ const server = https.createServer(opts, (req, res) => {
       { vmid: 102, name: 'win11', type: 'qemu', status: 'stopped', node: 'pve1', maxmem: 8e9 },
       { vmid: 9000, name: 'tmpl', type: 'qemu', status: 'stopped', node: 'pve1', template: 1 },
     ] }));
+    if (u === '/api2/json/nodes/pve1/apt/update') return res.end(R({ data: [
+      { Package: 'pve-manager', OldVersion: '8.2.4', Version: '8.2.7', Title: 'Proxmox Virtual Environment management tools' },
+      { Package: 'proxmox-kernel-6.8', OldVersion: '6.8.8-2', Version: '6.8.12-1', Title: 'Latest Proxmox kernel' },
+      { Package: 'openssl', OldVersion: '3.0.13-1', Version: '3.0.14-1', Title: 'Secure Sockets Layer toolkit' },
+    ] }));
+    if (u === '/api2/json/nodes/pve1/version') return res.end(R({ data: { version: '8.2.4', release: '8.2' } }));
   }
   res.writeHead(404);
   res.end('{}');
@@ -208,6 +214,11 @@ server.on('upgrade', (req, sock) => {
       if (msg.method === 'pool.query') return reply([
         { name: 'tank', status: 'ONLINE', healthy: true, warning: false, size: 40e12, allocated: 30e12, free: 10e12 },
         { name: 'fast', status: 'DEGRADED', healthy: false, warning: true, size: 2e12, allocated: 0.5e12, free: 1.5e12, status_detail: 'One or more devices faulted' },
+      ]);
+      if (msg.method === 'update.check_available') return reply({ status: 'AVAILABLE', version: '26.04.1' });
+      if (msg.method === 'app.query') return reply([
+        { name: 'jellyfin', version: '1.2.3', human_version: '10.10.3_1.2.3', upgrade_available: true, latest_app_version: '10.10.6' },
+        { name: 'immich', version: '1.0.9', human_version: 'v1.120.0_1.0.9', upgrade_available: false },
       ]);
       if (msg.method === 'alert.list') return reply([
         { level: 'WARNING', formatted: 'Pool fast state is DEGRADED', dismissed: false, datetime: { $date: Date.now() - 60000 } },

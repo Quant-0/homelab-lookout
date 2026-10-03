@@ -21,9 +21,11 @@ const routes = {
     if (p === '/library/sections') return send(res, 200, { MediaContainer: { Directory: [{ key: '1', type: 'movie' }, { key: '2', type: 'show' }, { key: '3', type: 'artist' }] } });
     if (p.startsWith('/library/sections/1/all')) return send(res, 200, { MediaContainer: { totalSize: 640 } });
     if (p.startsWith('/library/sections/2/all')) return send(res, 200, { MediaContainer: { totalSize: 55 } });
+    if (p === '/updater/status') return send(res, 200, { MediaContainer: { canInstall: false, Release: [{ version: '1.41.3.9314-a0bfb8370', added: 'New things' }] } });
   },
   tautulli(req, res, p, q) {
     if (q.get('apikey') !== KEY) return send(res, 200, { response: { result: 'error' } });
+    if (q.get('cmd') === 'update_check') return send(res, 200, { response: { result: 'success', data: { update: false } } });
     return send(res, 200, { response: { data: { stream_count: '2', stream_count_transcode: 1, total_bandwidth: 24500 } } });
   },
   sonarr(req, res, p) {
@@ -31,23 +33,27 @@ const routes = {
     if (p === '/api/v3/series') return send(res, 200, new Array(42).fill({}));
     if (p.startsWith('/api/v3/wanted/missing')) return send(res, 200, { totalRecords: 17 });
     if (p.startsWith('/api/v3/queue')) return send(res, 200, { totalRecords: 3 });
+    if (p === '/api/v3/update') return send(res, 200, [{ version: '4.0.11.2680', installed: false, installable: true, latest: true }, { version: '4.0.10.2544', installed: true, installable: false }]);
   },
   radarr(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 401, {});
     if (p === '/api/v3/movie') return send(res, 200, [{ hasFile: true }, { hasFile: true }, { hasFile: false }]);
     if (p.startsWith('/api/v3/wanted/missing')) return send(res, 200, { totalRecords: 1 });
     if (p.startsWith('/api/v3/queue')) return send(res, 200, { totalRecords: 0 });
+    if (p === '/api/v3/update') return send(res, 200, [{ version: '5.14.0.9383', installed: true, installable: false, latest: true }]);
   },
   lidarr(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 401, {});
     if (p === '/api/v1/artist') return send(res, 200, [{}, {}]);
     if (p.startsWith('/api/v1/wanted/missing')) return send(res, 200, { totalRecords: 9 });
     if (p.startsWith('/api/v1/queue')) return send(res, 200, { totalRecords: 1 });
+    if (p === '/api/v1/update') return send(res, 200, [{ version: '2.8.2.4493', installed: true, latest: true }]);
   },
   prowlarr(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 401, {});
     if (p === '/api/v1/indexer') return send(res, 200, [{ enable: true }, { enable: true }, { enable: false }]);
     if (p === '/api/v1/indexerstats') return send(res, 200, { indexers: [{ numberOfGrabs: 10, numberOfQueries: 300, numberOfFailedQueries: 2 }, { numberOfGrabs: 5, numberOfQueries: 120, numberOfFailedQueries: 1 }] });
+    if (p === '/api/v1/update') return send(res, 200, [{ version: '1.28.2.4885', installed: false, latest: true }, { version: '1.27.0.4852', installed: true }]);
   },
   bazarr(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 401, {});
@@ -57,6 +63,7 @@ const routes = {
   overseerr(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 403, {});
     if (p === '/api/v1/request/count') return send(res, 200, { pending: 2, processing: 1, approved: 30, available: 25, total: 58 });
+    if (p === '/api/v1/status') return send(res, 200, { version: '2.1.0', commitTag: 'v2.1.0', updateAvailable: true, commitsBehind: 0 });
   },
   qbittorrent(req, res, p) {
     if (p === '/api/v2/auth/login') {
@@ -96,6 +103,10 @@ const routes = {
       });
       return true;
     }
+    if (p === '/api/info/version') {
+      if (req.headers['x-ftl-sid'] !== 'phsid') return send(res, 401, {});
+      return send(res, 200, { version: { core: { local: { version: 'v6.0.4' }, remote: { version: 'v6.0.5' } }, web: { local: { version: 'v6.0.1' }, remote: { version: 'v6.0.1' } }, ftl: { local: { version: 'v6.0.3' }, remote: { version: 'v6.0.3' } } } });
+    }
     if (p === '/api/stats/summary') {
       if (req.headers['x-ftl-sid'] !== 'phsid') return send(res, 401, {});
       return send(res, 200, { queries: { total: 54000, blocked: 8100, percent_blocked: 15 }, gravity: { domains_being_blocked: 210000 } });
@@ -103,11 +114,14 @@ const routes = {
   },
   pihole5(req, res, p, q) {
     if (p === '/api/auth') return send(res, 404, 'Not found');
+    if (p === '/admin/api.php' && q.get('auth') === KEY && q.has('versions')) return send(res, 200, { core_update: false, web_update: false, FTL_update: true, core_current: 'v5.18.3', core_latest: 'v5.18.3', web_current: 'v5.21', web_latest: 'v5.21', FTL_current: 'v5.25.1', FTL_latest: 'v5.25.2' });
     if (p === '/admin/api.php' && q.get('auth') === KEY) return send(res, 200, { dns_queries_today: 900, ads_blocked_today: 90, ads_percentage_today: 10, domains_being_blocked: 100000 });
   },
   adguard(req, res, p) {
     if (!basicOk(req)) return send(res, 401, {});
     if (p === '/control/stats') return send(res, 200, { num_dns_queries: 20000, num_blocked_filtering: 3000, avg_processing_time: 0.0123 });
+    if (p === '/control/status') return send(res, 200, { version: 'v0.107.54' });
+    if (p === '/control/version.json' && req.method === 'POST') return send(res, 200, { new_version: 'v0.107.55', announcement_url: 'https://github.com/AdguardTeam/AdGuardHome/releases/tag/v0.107.55', can_autoupdate: true });
   },
   npm(req, res, p) {
     if (p === '/api/tokens' && req.method === 'POST') {
@@ -130,7 +144,9 @@ const routes = {
     if (req.headers.authorization !== `Bearer ${KEY}`) return send(res, 401, {});
     if (p === '/api/states') return send(res, 200, [
       { entity_id: 'person.alice', state: 'home' }, { entity_id: 'person.bob', state: 'not_home' },
-      { entity_id: 'light.kitchen', state: 'on' }, { entity_id: 'light.hall', state: 'off' }, { entity_id: 'switch.fan', state: 'on' }, { entity_id: 'sensor.temp', state: '21' }]);
+      { entity_id: 'light.kitchen', state: 'on' }, { entity_id: 'light.hall', state: 'off' }, { entity_id: 'switch.fan', state: 'on' }, { entity_id: 'sensor.temp', state: '21' },
+      { entity_id: 'update.home_assistant_core_update', state: 'on', attributes: { title: 'Home Assistant Core', installed_version: '2026.9.3', latest_version: '2026.10.0', release_url: 'https://www.home-assistant.io/blog/' } },
+      { entity_id: 'update.home_assistant_operating_system_update', state: 'off', attributes: { title: 'Home Assistant Operating System', installed_version: '16.2', latest_version: '16.2' } }]);
   },
   nextcloud(req, res, p) {
     if (req.headers['nc-token'] !== KEY || req.headers['ocs-apirequest'] !== 'true') return send(res, 401, {});
@@ -144,6 +160,7 @@ const routes = {
   paperless(req, res, p) {
     if (req.headers.authorization !== `Token ${KEY}`) return send(res, 401, {});
     if (p === '/api/statistics/') return send(res, 200, { documents_total: 1500, documents_inbox: 7 });
+    if (p === '/api/remote_version/') return send(res, 200, { version: 'v2.18.4', update_available: false });
   },
   uptimekuma(req, res, p) {
     if (p === '/api/status-page/heartbeat/homelab') return send(res, 200, {
@@ -158,6 +175,7 @@ const routes = {
   portainer(req, res, p) {
     if (req.headers['x-api-key'] !== KEY) return send(res, 401, {});
     if (p === '/api/endpoints') return send(res, 200, [{ Id: 2 }]);
+    if (p === '/api/system/version') return send(res, 200, { ServerVersion: '2.21.4', LatestVersion: '2.27.1', UpdateAvailable: true });
     if (p.startsWith('/api/endpoints/2/docker/containers/json')) return send(res, 200, [{ State: 'running' }, { State: 'running' }, { State: 'exited' }]);
   },
   speedtest(req, res, p) {
@@ -172,6 +190,7 @@ const routes = {
   authentik(req, res, p) {
     if (req.headers.authorization !== `Bearer ${KEY}`) return send(res, 403, {});
     if (p.startsWith('/api/v3/core/users/')) return send(res, 200, { pagination: { count: 5 } });
+    if (p === '/api/v3/admin/version/') return send(res, 200, { version_current: '2025.8.1', version_latest: '2025.8.1', outdated: false });
     if (p.includes('action=login_failed')) return send(res, 200, { pagination: { count: 2 } });
     if (p.startsWith('/api/v3/events/events/')) return send(res, 200, { pagination: { count: 14 } });
   },
