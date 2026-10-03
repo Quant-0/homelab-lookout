@@ -28,9 +28,14 @@ function cardBody(svc) {
       statusBadge(svc)),
   ];
   if (svc.stats?.length) {
-    body.push(el('div', { class: 'svc-stats' }, svc.stats.map((st) => el('div', { class: 'svc-stat' },
-      el('span', { class: 'v num', text: HD.statValue(st) }),
-      el('span', { class: 'l', text: st.label })))));
+    // one row; the unit is set smaller so "912 Mbit/s" fits a quarter of a card
+    body.push(el('div', { class: 'svc-stats' }, svc.stats.map((st) => {
+      const text = HD.statValue(st);
+      const m = /^(.*\d)\s+(\D+)$/.exec(text);
+      return el('div', { class: 'svc-stat', title: `${st.label}: ${text}` },
+        el('span', { class: 'v num' }, m ? m[1] : text, m ? el('small', { text: ` ${m[2]}` }) : null),
+        el('span', { class: 'l', text: st.label }));
+    })));
   }
   if (svc.error) body.push(el('p', { class: 'svc-error small', text: `${svc.integration}: ${svc.error}` }));
   if (svc.device) body.push(el('div', { class: 'svc-device small muted', text: `on ${svc.device}` }));

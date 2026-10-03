@@ -103,7 +103,20 @@ const CASES = [
   ok(!r.text.includes('127.0.0.1:18090'), 'services API does not expose connection URLs');
   const media = r.json.groups.find((g) => g.name === 'Media');
   const jfOut = media.services.find((s) => s.name === 'Jellyfin');
-  ok(jfOut.check.up && jfOut.stats.length === 4 && jfOut.href === 'https://jellyfin.example.lan/', 'Jellyfin card: up, 4 numbers, link');
+  ok(jfOut.check.up && jfOut.stats.map((x) => x.label).join() === 'Movies,Series,Streaming' && jfOut.href === 'https://jellyfin.example.lan/', `Jellyfin card: up, the default numbers (${jfOut.stats.map((x) => x.label)}), link`);
+  // choose the numbers yourself
+  const jfAdmin = (await req('GET', '/api/admin/services')).json.services.find((x) => x.name === 'Jellyfin');
+  ok(jfAdmin.result.labels.join() === 'Movies,Series,Episodes,Streaming', 'admin sees which numbers the service reports');
+  const jfBody = { ...jfAdmin, integration: { ...jfAdmin.integration, fields: ['Episodes', 'Streaming'] } };
+  r = await req('PUT', `/api/admin/services/${jfAdmin.id}`, jfBody);
+  ok(r.status === 200 && r.json.service.integration.fields.join() === 'Episodes,Streaming', 'numbers chosen per service');
+  await sleep(1200); // polled again after saving
+  r = await req('GET', '/api/services');
+  ok(r.json.groups.find((g) => g.name === 'Media').services.find((x) => x.name === 'Jellyfin').stats.map((x) => x.label).join() === 'Episodes,Streaming', 'the card shows the chosen numbers');
+  r = await req('PUT', `/api/admin/services/${jfAdmin.id}`, { ...jfBody, integration: { ...jfBody.integration, fields: ['A', 'B', 'C', 'D', 'E'] } });
+  ok(r.status === 400 && /at most 4/.test(r.json.error), 'at most four numbers');
+  r = await req('PUT', `/api/admin/services/${jfAdmin.id}`, { ...jfBody, integration: { ...jfBody.integration, fields: [] } });
+  ok(r.status === 200 && !r.json.service.integration.fields, 'back to the defaults');
   ok(media.services.find((s) => s.name === 'Wiki').check === undefined, 'link-only card has no status check');
   r = await req('GET', '/api/admin/services');
   noSecrets(r.text, 'admin services');

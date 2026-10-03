@@ -801,7 +801,7 @@ async function moveService(svc, dir) {
 
 function openService(svc) {
   svcDraft = svc
-    ? { ...structuredClone(svc), secret: '', clearSecret: false }
+    ? { ...structuredClone(svc), secret: '', clearSecret: false, labels: svc.result?.labels || [] }
     : { id: null, name: '', group: '', description: '', href: '', deviceId: null, icon: { kind: 'letter' }, connection: null, integration: null, secret: '', clearSecret: false, hasSecret: false };
   const f = svcForm();
   f.name.value = svcDraft.name;
@@ -878,7 +878,35 @@ function renderIntegrationFields() {
     clear.addEventListener('change', () => (svcDraft.clearSecret = clear.checked));
     fields.push(el('label', { class: 'check wide' }, clear, ' Delete the stored secret'));
   }
+  fields.push(el('fieldset', { class: 'wide numbers-choice', id: 'svc-numbers' }));
   box.replaceChildren(...fields);
+  renderNumbersChoice();
+}
+
+// Which numbers the card shows: from what the service reported (or Test), at most four
+function renderNumbersChoice() {
+  const box = $('svc-numbers');
+  if (!box || !svcDraft?.integration) return;
+  const def = svcState.integrations[svcDraft.integration.type];
+  const labels = svcDraft.labels || [];
+  const chosen = svcDraft.integration.fields?.length ? svcDraft.integration.fields : def?.fields || labels.slice(0, 4);
+  const legend = el('legend', { text: 'Numbers on the card' });
+  if (!labels.length) return box.replaceChildren(legend, el('p', { class: 'hint', text: 'Use Test to see which numbers this service reports, then pick up to four.' }));
+  const boxes = labels.map((label) => {
+    const cb = el('input', { type: 'checkbox', checked: chosen.includes(label) });
+    cb.addEventListener('change', () => {
+      const now = boxes.filter((b) => b.cb.checked).map((b) => b.label);
+      svcDraft.integration.fields = now;
+      for (const b of boxes) b.cb.disabled = !b.cb.checked && now.length >= 4;
+    });
+    return { label, cb };
+  });
+  for (const b of boxes) b.cb.disabled = !b.cb.checked && boxes.filter((x) => x.cb.checked).length >= 4;
+  box.replaceChildren(legend,
+    el('div', { class: 'numbers-list' }, boxes.map((b) => el('label', { class: 'check' }, b.cb, ` ${b.label}`))),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', text: 'Use the defaults', onclick: () => { svcDraft.integration.fields = []; renderNumbersChoice(); } }),
+      el('span', { class: 'hint', text: svcDraft.integration.fields?.length ? 'Your choice' : 'Defaults: the ones that say something is waiting' })));
 }
 
 function syncService() {
@@ -909,7 +937,7 @@ function serviceBody() {
     deviceId: f.deviceId.value || null,
     icon: svcDraft.icon,
     connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
-    integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {} } : null,
+    integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {}, fields: svcDraft.integration?.type === type ? svcDraft.integration.fields || [] : [] } : null,
     secret: svcDraft.secret,
     clearSecret: svcDraft.clearSecret,
   };
@@ -975,6 +1003,7 @@ $('svc-integration').addEventListener('change', async () => {
   const type = f.integration.value;
   const prev = svcState.integrations[svcPrevIntegration];
   svcPrevIntegration = type;
+  svcDraft.labels = []; // the numbers another integration reported don't apply
   renderIntegrationFields();
   const def = svcState.integrations[type];
   // Choosing an integration fills in name, group and icon; they follow later changes of the
@@ -1022,7 +1051,11 @@ $('svc-test').addEventListener('click', async () => {
     const r = await api('POST', '/api/admin/services/test', serviceBody());
     const parts = [];
     if (r.check) parts.push(r.check.up ? HD.status(`Up · HTTP ${r.check.code} · ${r.check.ms} ms`, 'good') : HD.status(`Down${r.check.error ? `: ${r.check.error}` : r.check.code ? ` (HTTP ${r.check.code})` : ''}`, 'critical'));
-    if (r.stats) parts.push(el('span', { class: 'small' }, r.stats.map((st) => `${st.label}: ${HD.statValue(st)}`).join(' · ')));
+    if (r.stats) {
+      parts.push(el('span', { class: 'small' }, r.stats.map((st) => `${st.label}: ${HD.statValue(st)}`).join(' · ')));
+      svcDraft.labels = r.stats.map((st) => st.label);
+      renderNumbersChoice();
+    }
     if (r.error) parts.push(el('span', { class: 'msg error', text: r.error }));
     out.replaceChildren(...(parts.length ? parts.flatMap((n) => [n, ' ']) : [el('span', { class: 'small muted', text: 'Nothing to test: add a connection URL.' })]));
   } catch (e) {

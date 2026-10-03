@@ -54,6 +54,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForFunction(() => /Movies/.test(document.getElementById('svc-test-result').textContent));
   const tr = await page.textContent('#svc-test-result');
   check(/Up/.test(tr) && /Movies: 812/.test(tr), `Test before saving: ${tr.trim()}`);
+  const picked = await page.$$eval('#svc-numbers input[type=checkbox]', (n) => n.map((x) => [x.parentElement.textContent.trim(), x.checked]));
+  check(picked.length === 4 && picked.filter(([, c]) => c).map(([l]) => l).join() === 'Movies,Series,Streaming', `after Test you can pick the numbers (defaults ticked: ${picked.filter(([, c]) => c).map(([l]) => l)})`);
   // icon search shows thumbnails served by this server
   await page.fill('#icon-search', 'sonarr');
   await page.waitForSelector('#icon-results .icon-choice img');
@@ -75,7 +77,12 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   })));
   console.log('  cards:', JSON.stringify(cards));
   const jf = cards.find((c) => c.name === 'Jellyfin');
-  check(jf && jf.img && jf.stats === 4 && jf.up, 'Jellyfin card: icon, 4 numbers, up');
+  check(jf && jf.img && jf.stats === 3 && jf.up, 'Jellyfin card: icon, its 3 default numbers, up');
+  const rows = await page.$$eval('.svc-stats', (list) => list.map((r) => {
+    const tiles = [...r.children];
+    return { oneRow: tiles.every((t) => t.offsetTop === tiles[0].offsetTop), fits: tiles.every((t) => t.querySelector('.v').scrollWidth <= t.querySelector('.v').clientWidth + 1) };
+  }));
+  check(rows.length && rows.every((r) => r.oneRow && r.fits), `numbers in one row, nothing overflowing (${rows.length} cards)`);
   check(cards.every((c) => !c.href || c.rel === 'noopener noreferrer'), 'links open with noopener noreferrer');
   check((await page.$$eval('.svc-group h2', (h) => h.map((x) => x.textContent))).length === 3, 'grouped (Network, Home, Media)');
   await page.screenshot({ path: `${S}/ui6-services.png` });

@@ -2299,9 +2299,30 @@ const INTEGRATIONS = {
 };
 
 // What the admin form needs to know about each integration (no code)
+// The numbers a card shows unless you pick others: first the ones that say something is waiting for you
+const DEFAULT_FIELDS = {
+  jellyfin: ['Streaming', 'Movies', 'Series'], emby: ['Streaming', 'Movies', 'Series'], plex: ['Streams', 'Movies', 'TV shows'],
+  tautulli: ['Streams', 'Transcoding', 'Bandwidth'], sonarr: ['Wanted', 'Queued', 'Series'], radarr: ['Wanted', 'Queued', 'Movies'],
+  lidarr: ['Wanted', 'Queued', 'Artists'], prowlarr: ['Failed', 'Grabs', 'Indexers'], bazarr: ['Missing episodes', 'Missing movies'],
+  overseerr: ['Pending', 'Processing', 'Available'], qbittorrent: ['Download', 'Upload', 'Leeching'], transmission: ['Download', 'Active', 'Torrents'],
+  sabnzbd: ['Speed', 'Queue', 'Time left'], pihole: ['Queries', 'Blocked', 'Block rate'], adguard: ['Queries', 'Blocked', 'Block rate'],
+  npm: ['Enabled', 'Disabled'], traefik: ['Routers', 'Services', 'Errors'], homeassistant: ['People home', 'Lights on', 'Switches on'],
+  nextcloud: ['Active users (24 h)', 'Files', 'Free space'], immich: ['Photos', 'Videos', 'Storage'], paperless: ['Inbox', 'Documents'],
+  uptimekuma: ['Up', 'Down', 'Uptime 24 h'], grafana: ['Dashboards', 'Alert rules'], portainer: ['Running', 'Stopped'],
+  speedtest: ['Download', 'Upload', 'Ping'], prometheus: ['Targets up', 'Down'], authentik: ['Logins (24 h)', 'Failed (24 h)', 'Users'],
+};
+const MAX_FIELDS = 4;
+
+// The integration's own order; the ones you picked, or the defaults
+function shownStats(svc, stats) {
+  if (!stats) return null;
+  const want = svc.integration?.fields?.length ? svc.integration.fields : DEFAULT_FIELDS[svc.integration?.type];
+  return (want ? stats.filter((x) => want.includes(x.label)) : stats).slice(0, MAX_FIELDS);
+}
+
 function integrationDefs() {
   return Object.fromEntries(Object.entries(INTEGRATIONS).map(([k, v]) => [k, {
-    label: v.label, group: v.group, user: v.user || null, secret: v.secret, optionalSecret: Boolean(v.optionalSecret), icon: v.icon, options: v.options || [],
+    label: v.label, group: v.group, user: v.user || null, secret: v.secret, optionalSecret: Boolean(v.optionalSecret), icon: v.icon, options: v.options || [], fields: DEFAULT_FIELDS[k] || null,
   }]));
 }
 
@@ -2417,7 +2438,10 @@ function validateServiceInput(b) {
     }
     const username = def.user ? str(b.integration.username, 128, def.user) : '';
     if (def.user && !/optional|empty/i.test(def.user) && !username) throw new UserError(`${def.user} is required for ${def.label}`);
-    out.integration = { type, username, options };
+    // which numbers to show (none chosen = the defaults)
+    const fields = Array.isArray(b.integration.fields) ? [...new Set(b.integration.fields.map((f) => str(f, 40, 'Number')).filter(Boolean))] : [];
+    if (fields.length > MAX_FIELDS) throw new UserError(`Pick at most ${MAX_FIELDS} numbers`);
+    out.integration = { type, username, options, ...(fields.length ? { fields } : {}) };
   }
   return out;
 }
@@ -2468,7 +2492,7 @@ function servicesPayload(admin = false) {
       device: config.devices.find((d) => d.id === svc.deviceId)?.name || null,
       integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
       check: svc.connection ? r?.check ?? null : undefined,
-      stats: r?.stats ?? null,
+      stats: shownStats(svc, r?.stats ?? null),
       error: r?.error ?? null,
       updatedAt: r?.updatedAt ?? null,
     };
@@ -4083,7 +4107,7 @@ async function handleApi(req, res, url, session) {
     return sendJson(res, 200, {
       services: [...config.services].sort((a, b) => (a.order || 0) - (b.order || 0)).map((x) => {
         const r = serviceResults.get(x.id);
-        return { ...publicService(x), result: r ? { check: r.check, error: r.error } : null };
+        return { ...publicService(x), result: r ? { check: r.check, error: r.error, labels: r.stats?.map((st) => st.label) || [] } : null };
       }),
       integrations: integrationDefs(),
       devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
