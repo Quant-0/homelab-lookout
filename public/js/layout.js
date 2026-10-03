@@ -47,12 +47,15 @@ const GridLayout = (() => {
     load(layout) {
       this.items.clear();
       this.hidden = new Set(layout?.hidden || []);
-      for (const i of layout?.items || []) this.items.set(i.id, { ...i, auto: false });
+      // layouts saved before the compact cards keep their places; their heights are measured again
+      const fresh = layout?.v === 2;
+      for (const i of layout?.items || []) this.items.set(i.id, { ...i, auto: !fresh });
     }
 
     snapshot() {
       return {
-        items: [...this.items.values()].map(({ id, x, y, w, h }) => ({ id, x, y, w, h })),
+        v: 2,
+        items: [...this.items.values()].map(({ id, x, y, w, h, saved }) => ({ id, x, y, w, h: saved ?? h })),
         hidden: [...this.hidden].filter((id) => this.defs.some((d) => d.id === id)),
       };
     }
@@ -85,7 +88,31 @@ const GridLayout = (() => {
         }
       }
       this.apply();
-      this.measure([...this.items.values()].filter((i) => i.auto));
+      this.measure([...this.items.values()].filter((i) => i.auto || i.saved != null));
+    }
+
+    // Content changed size after rendering (e.g. graphs arrived): measure the auto-sized widgets again
+    remeasure() {
+      if (!this.editing && !this.drag) this.measure([...this.items.values()].filter((i) => i.auto || i.saved != null));
+    }
+
+    // A widget whose details are open grows to its content; closing gives back its own size
+    grow(id) {
+      const it = this.items.get(id);
+      if (!it || this.mobile.matches) return;
+      if (!it.auto && it.saved == null) it.saved = it.h;
+      this.measure([it]);
+    }
+
+    shrink(id) {
+      const it = this.items.get(id);
+      if (!it || this.mobile.matches) return;
+      if (it.saved != null) {
+        it.h = it.saved;
+        delete it.saved;
+        compact([...this.items.values()]);
+        this.apply();
+      } else if (it.auto) this.measure([it]);
     }
 
     widget(id) {
@@ -192,7 +219,13 @@ const GridLayout = (() => {
 
     startEdit() {
       this.before = this.snapshot();
-      for (const it of this.items.values()) it.auto = false;
+      for (const it of this.items.values()) {
+        if (it.saved != null) {
+          it.h = it.saved; // edit the widget's own size, not the opened-up one
+          delete it.saved;
+        }
+        it.auto = false;
+      }
       this.editing = true;
       document.body.classList.add('editing');
       this.onEditChange();

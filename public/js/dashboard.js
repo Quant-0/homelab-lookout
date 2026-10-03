@@ -84,30 +84,189 @@ function hostCard(type, h, sub, statusNode, bodyFn) {
   return { type, h, sub, statusNode, bodyFn };
 }
 
-const STATUS_RANK = { '': 0, good: 1, warning: 2, serious: 3, critical: 4 };
-const statusOf = (node) => ['critical', 'serious', 'warning', 'good'].find((c) => node?.classList.contains(c)) || '';
-
-function sectionNode(sec, titled) {
+// A connection's full view, shown under Details. The card itself carries the one status.
+function sectionNode(sec) {
   const h = sec.h;
-  const node = el('section', { class: 'device-section' });
-  if (titled) node.append(el('div', { class: 'section-head' }, el('h4', { text: sec.title || sec.type }), sec.statusNode));
+  const node = el('section', { class: 'device-section' }, el('h4', { class: 'section-title', text: sec.title || sec.type }));
   if (h.error) node.append(el('p', { class: 'banner', role: 'alert' }, h.error, h.data ? ` · showing data from ${fmt.ago(h.lastOkAt)}` : ''));
   if (h.ok === null && !h.data) node.append(el('p', { class: 'empty', text: 'Waiting for first update…' }));
   if (h.data) node.append(el('div', { class: `body${h.error ? ' stale' : ''}` }, sec.bodyFn(h.data)));
   return node;
 }
 
-// A device card: name, type and worst status, then one section per connection.
-function deviceCard(dev, sections) {
-  const worst = sections.reduce((a, x) => (STATUS_RANK[statusOf(x.statusNode)] > STATUS_RANK[statusOf(a)] ? x.statusNode : a), null);
-  const single = sections.length === 1;
-  const head = single ? sections[0].statusNode : worst ? status(statusOf(worst) === 'good' ? 'OK' : statusOf(worst) === 'critical' ? 'Problems' : 'Warnings', statusOf(worst)) : null;
-  const sub = sections.map((x) => x.sub).find(Boolean) || '';
-  return el('article', { class: 'card' },
+// ---------------------------------------------------------------------------
+// Device cards: one status, a few key numbers and what is wrong. Details opens the full
+// sections; facts that never change (service tag, firmware, cores…) live on the Docs sheet.
+
+let attention = []; // what needs attention, from the server (worst first)
+const deviceStates = new Map(); // device id -> state label, for the summary counts
+const expanded = new Set(); // device ids (and 'power') with details open, remembered per browser
+try {
+  for (const id of JSON.parse(localStorage.getItem('hd.expanded') || '[]')) expanded.add(id);
+} catch {
+  /* only a convenience */
+}
+function storeExpanded() {
+  try {
+    localStorage.setItem('hd.expanded', JSON.stringify([...expanded]));
+  } catch {
+    /* only a convenience */
+  }
+}
+
+// Everything the card needs about a device, from its connections
+function deviceContext(dev, d) {
+  const conn = (type) => dev.connections.find((c) => c.type === type);
+  const host = (type) => conn(type) && (d[type] || []).find((h) => h.id === conn(type).id);
+  const idracH = host('idrac');
+  const pveH = host('proxmox');
+  const pveNode = conn('proxmox')?.node;
+  const nodes = pveH?.data?.nodes || [];
+  const node = pveNode ? nodes.find((n) => n.name === pveNode) : nodes.length === 1 ? nodes[0] : null;
+  const tnH = host('truenas');
+  const synoH = host('synology');
+  const uniH = host('unifi');
+  const linkHost = dev.unifi && (d.unifi || []).find((h) => h.id === dev.unifi.hostId);
+  const ud = linkHost?.data?.devices?.find((x) => x.mac === dev.unifi.mac) || null;
+  return {
+    idracH, idrac: idracH?.data, pveH, node, guests: pveH?.data?.guests?.filter((g) => !node || g.node === node.name) || [],
+    tnH, tn: tnH?.data, synoH, syno: synoH?.data, uniH, health: uniH?.data?.health, linkHost, ud,
+    hosts: [idracH, pveH, tnH, synoH, uniH].filter(Boolean),
+  };
+}
+
+function deviceState(dev, ctx, issues) {
+  if (!ctx.hosts.length && !dev.unifi) return ['Not monitored', ''];
+  // Offline when every part we can see is down: connections, the Proxmox node, the UniFi device
+  const parts = [
+    ...ctx.hosts.filter((h) => h !== ctx.pveH || !ctx.node).map((h) => (h.ok === null ? null : h.ok)),
+    ...(ctx.node ? [ctx.node.status === 'online'] : []),
+    ...(dev.unifi && ctx.linkHost?.data ? [Boolean(ctx.ud?.online)] : []),
+  ].filter((x) => x !== null);
+  if (parts.length && parts.every((x) => !x)) return ['Offline', 'critical'];
+  if (issues.some((a) => a.severity === 'critical')) return ['Problem', 'critical'];
+  if (issues.some((a) => a.severity === 'warning')) return ['Warning', 'warning'];
+  if (!parts.length) return ['Waiting', ''];
+  return ['OK', 'good'];
+}
+
+// Up to four numbers that answer "how is it doing?"
+function keyMetrics(dev, ctx) {
+  const out = [];
+  const add = (v, l) => {
+    if (v !== null && v !== undefined && v !== '' && out.length < 4) out.push([v, l]);
+  };
+  const pct = (a, b) => (b ? fmt.pct(a / b) : null);
+  const hl = ctx.health;
+  if (hl) {
+    add(hl.wan ? (hl.wan.status === 'ok' ? 'Up' : 'Down') : null, 'Internet');
+    add(hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : null, 'Latency');
+    add(hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` : null, 'Mbps ↓/↑');
+    add(hl.clients != null ? String(hl.clients) : null, 'Clients');
+  }
+  if (ctx.idrac) {
+    const t = ctx.idrac.temps;
+    const inlet = t.find((x) => /inlet/i.test(x.name));
+    add(ctx.idrac.watts != null ? `${fmt.n(ctx.idrac.watts)} W` : null, 'Power');
+    if (inlet) add(`${fmt.n(inlet.celsius)} °C`, 'Inlet');
+    else if (t.length) add(`${fmt.n(Math.max(...t.map((x) => x.celsius)))} °C`, 'Hottest');
+  }
+  if (ctx.node?.status === 'online') {
+    add(fmt.pct(ctx.node.cpu), 'CPU');
+    add(pct(ctx.node.mem, ctx.node.maxmem), 'Memory');
+    if (!ctx.idrac) add(`${ctx.guests.filter((g) => g.status === 'running').length} of ${ctx.guests.length}`, 'VMs running');
+  }
+  if (ctx.tn) {
+    for (const p of ctx.tn.pools.slice(0, 3)) add(pct(p.allocated, p.size), p.name);
+    add(String(ctx.tn.alerts.length), 'Alerts');
+  }
+  if (ctx.syno) {
+    const s = ctx.syno.system;
+    add(s.temp != null ? `${s.temp} °C` : null, 'Temperature');
+    const v = ctx.syno.volumes[0];
+    add(v ? pct(v.used, v.size) : null, v ? v.name.replace('/', '') : 'Volume');
+    add(pct(s.memUsed, s.memTotal), 'Memory');
+    add(String(ctx.syno.disks.length), 'Disks');
+  }
+  const ud = ctx.ud;
+  if (ud?.online && !hl) {
+    if (ud.ports.length) add(`${ud.ports.filter((p) => p.up).length} of ${ud.ports.length}`, 'Ports up');
+    if (ud.poe) add(`${fmt.n(ud.poe.usedW)}${ud.poe.budgetW ? `/${fmt.n(ud.poe.budgetW)}` : ''} W`, 'PoE');
+    add(ud.clients != null ? String(ud.clients) : null, 'Clients');
+    const temps = ud.temps.map((x) => x.value);
+    add(temps.length ? `${fmt.n(Math.max(...temps))} °C` : null, 'Temperature');
+    add(ud.cpu != null ? fmt.pct(ud.cpu) : null, 'CPU');
+  }
+  if (!out.length && dev.estimateW) add(`~${fmt.n(dev.estimateW)} W`, 'Estimated');
+  return out;
+}
+
+// The one history graph on the card
+function mainSpark(ctx) {
+  if (ctx.idrac) return [`idrac:${ctx.idracH.id}:watts`, 'Power', ' W'];
+  if (ctx.node) return [`pve:${ctx.pveH.id}:${ctx.node.name}:cpu`, 'CPU', ' %'];
+  if (ctx.syno) return [`syno:${ctx.synoH.id}:temp`, 'Temperature', ' °C'];
+  if (ctx.tn) return [`nas:${ctx.tnH.id}:load`, 'Load (1 min)', '', 2];
+  if (ctx.ud && !ctx.health) {
+    const k = `unifi:${ctx.linkHost.id}:${ctx.ud.mac}`;
+    return ctx.ud.poe ? [`${k}:poe`, 'PoE draw', ' W', 1] : [`${k}:clients`, 'Clients', ''];
+  }
+  return null;
+}
+
+function issueLine(a) {
+  return el('li', { class: a.severity, title: a.detail ? `${a.text} · ${a.detail}` : a.text },
+    el('span', { class: `led ${a.severity}`, 'aria-hidden': 'true' }),
+    el('span', { class: 'txt', text: a.text }),
+    a.type === 'offline' && a.detail ? el('span', { class: 'why', text: a.detail }) : null);
+}
+
+function deviceCard(dev, sections, d) {
+  const ctx = deviceContext(dev, d);
+  const issues = attention.filter((a) => a.deviceId === dev.id);
+  const [stateText, stateCls] = deviceState(dev, ctx, issues);
+  deviceStates.set(dev.id, stateText);
+  const model = ctx.idrac?.model || ctx.syno?.system?.model || ctx.ud?.model || (ctx.tn ? ctx.tn.system.version || 'TrueNAS' : '') || (ctx.node ? `Proxmox node ${ctx.node.name}` : '');
+  const metrics = keyMetrics(dev, ctx);
+  const spark = mainSpark(ctx);
+  const open = expanded.has(dev.id);
+  const widget = `device:${dev.id}`;
+  const details = el('div', { class: 'card-details', id: `details-${dev.id}`, hidden: !open }, sections.map((x) => sectionNode(x)));
+  const toggle = el('button', { type: 'button', class: 'link-button details-toggle', 'aria-expanded': String(open), 'aria-controls': `details-${dev.id}`, text: open ? 'Hide details' : 'Details' });
+  toggle.addEventListener('click', () => {
+    const now = details.hidden;
+    details.hidden = !now;
+    toggle.setAttribute('aria-expanded', String(now));
+    toggle.textContent = now ? 'Hide details' : 'Details';
+    if (now) expanded.add(dev.id);
+    else expanded.delete(dev.id);
+    storeExpanded();
+    if (now) {
+      board.grow(widget);
+      HD.fillSparks().then(() => board.grow(widget));
+    } else board.shrink(widget);
+  });
+  const fans = ctx.idrac?.fans || [];
+  const badFans = fans.filter((f) => (f.health && statusClass(f.health) !== 'good') || f.rpm === 0).length;
+  const update = ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable;
+  return el('article', { class: `card device-card${stateCls ? ` st-${stateCls}` : ''}` },
     el('div', { class: 'card-head' },
-      el('div', { class: 'title' }, el('div', { class: 'card-type', text: Rack.KIND_LABELS[dev.kind] || dev.kind }), el('h3', { text: dev.name }), sub ? el('div', { class: 'sub', text: sub }) : null),
-      head),
-    sections.map((x) => sectionNode(x, !single)));
+      el('div', { class: 'title' },
+        el('div', { class: 'card-type', text: Rack.KIND_LABELS[dev.kind] || dev.kind }),
+        el('h3', { text: dev.name }),
+        model ? el('div', { class: 'sub', text: model }) : null),
+      status(stateText, stateCls)),
+    metrics.length ? el('div', { class: 'dc-metrics' }, metrics.map(([v, l]) => el('div', null, el('span', { class: 'v num', text: v }), el('span', { class: 'l', text: l })))) : null,
+    spark ? sparks([spark]) : null,
+    issues.length ? el('ul', { class: 'dc-issues' }, issues.map(issueLine)) : null,
+    el('div', { class: 'dc-foot' },
+      el('div', { class: 'dc-foot-left' },
+        fans.length ? el('span', { class: 'fans mini', role: 'img', 'aria-label': `${fans.length} fans${badFans ? `, ${badFans} not OK` : ', all OK'}` }, fans.map((f, i) => fanNode(`mini|${dev.id}|${i}`, f))) : null,
+        update ? el('span', { class: 'small muted', text: 'Update available' }) : null),
+      el('div', { class: 'dc-links' },
+        d.loggedIn ? el('a', { href: `/docs#server/${dev.id}`, text: 'Sheet' }) : null,
+        sections.length ? toggle : null)),
+    details);
 }
 
 // Values a device doesn't report are left out instead of shown as "–"
@@ -130,12 +289,7 @@ function renderIdrac(hosts) {
     const sub = d ? [d.model, d.serviceTag && `Service tag ${d.serviceTag}`].filter(Boolean).join(' · ') : '';
     const st = d ? status(d.health || 'unknown') : status(h.ok === false ? 'unreachable' : 'pending', h.ok === false ? 'critical' : '');
     const card = hostCard('iDRAC', h, sub, st, (d) => {
-      const parts = [kv([
-        ['Power draw', d.watts != null ? `${fmt.n(d.watts)} W` : '–'],
-        ['Power state', d.powerState || '–'],
-        ['PSUs', `${d.psus.length}`],
-        ['Fans', `${d.fans.length}`],
-      ]), sparks([
+      const parts = [sparks([
         [`idrac:${h.id}:watts`, 'Power draw', ' W'],
         d.temps.some((t) => /inlet/i.test(t.name)) ? [`idrac:${h.id}:inlet`, 'Inlet temperature', ' °C'] : null,
         d.temps.length ? [`idrac:${h.id}:tmax`, 'Hottest sensor', ' °C'] : null,
@@ -229,15 +383,7 @@ function renderTruenas(hosts) {
       st = status(bad ? 'Problems' : warn ? 'Warnings' : 'Healthy', bad ? 'critical' : warn ? 'warning' : 'good');
     } else st = status(h.ok === false ? 'unreachable' : 'pending', h.ok === false ? 'critical' : '');
     const card = hostCard('TrueNAS', h, sub, st, (d) => {
-      const s = d.system;
       return [
-        kv([
-          ['Model', s.model || '–'],
-          ['CPU cores', s.cores != null ? String(s.cores) : '–'],
-          ['Memory', fmt.bytes(s.memory)],
-          ['Uptime', fmt.uptime(s.uptime)],
-          ['Load (1/5/15)', s.loadavg ? s.loadavg.map((l) => fmt.n(l, 2)).join(' / ') : '–'],
-        ]),
         sparks([[`nas:${h.id}:load`, 'Load (1 min)', '', 2]]),
         el('h4', { text: 'Pools' }),
         d.pools.length
@@ -281,21 +427,13 @@ function renderSynology(hosts) {
       const memF = s.memTotal ? s.memUsed / s.memTotal : null;
       const diskClass = (x) => (['Critical', 'Failing'].includes(x.health) || x.status === 'Crashed' ? 'critical' : x.health === 'Warning' ? 'warning' : 'good');
       return [
-        kv([
-          ['Temperature', s.temp != null ? `${s.temp} °C` : '–'],
-          ['CPU', s.cpu != null ? fmt.pct(s.cpu) : '–'],
-          ['Memory', memF != null ? `${fmt.pct(memF)} of ${fmt.bytes(s.memTotal)}` : '–'],
-          ['Uptime', fmt.uptime(s.uptime)],
-        ]),
         sparks([
           s.temp != null ? [`syno:${h.id}:temp`, 'Temperature', ' °C'] : null,
           s.cpu != null ? [`syno:${h.id}:cpu`, 'CPU', ' %'] : null,
           memF != null ? [`syno:${h.id}:mem`, 'Memory', ' %'] : null,
         ]),
         el('div', { class: 'status-line' },
-          status(`System ${s.status || 'unknown'}`, s.status === 'Normal' ? 'good' : s.status ? 'critical' : ''),
-          status(`Fans ${[s.systemFan, s.cpuFan].includes('Failed') ? 'failed' : s.systemFan ? 'normal' : 'unknown'}`, [s.systemFan, s.cpuFan].includes('Failed') ? 'critical' : s.systemFan ? 'good' : ''),
-          status(`Power ${s.powerStatus || 'unknown'}`, s.powerStatus === 'Normal' ? 'good' : s.powerStatus ? 'critical' : ''),
+          ...[['System', s.status], ['Fans', [s.systemFan, s.cpuFan].includes('Failed') ? 'Failed' : s.systemFan], ['Power', s.powerStatus]].map(([label, v]) => status(`${label} ${v === 'Failed' ? 'failed' : v ? 'OK' : 'unknown'}`, v === 'Failed' ? 'critical' : v ? 'good' : '')),
           s.upgradeAvailable ? status('DSM update available', 'warning') : null),
         d.volumes.length ? el('h4', { text: 'Volumes' }) : null,
         d.volumes.map((v) => {
@@ -330,48 +468,18 @@ function renderSynology(hosts) {
 function renderUnifi(hosts) {
   return hosts.map((h) => {
     const d = h.data;
-    let st;
-    if (d) {
-      const offline = d.devices.filter((x) => !x.online).length;
-      st = status(offline ? `${offline} offline` : 'All online', offline ? 'critical' : 'good');
-    } else st = status(h.ok === false ? 'unreachable' : 'pending', h.ok === false ? 'critical' : '');
     const sub = d ? `${d.devices.length} device${d.devices.length === 1 ? '' : 's'}${d.health ? ` · ${d.health.clients} clients` : ''}` : '';
-    const card = hostCard('UniFi', h, sub, st, (d) => {
+    const card = hostCard('UniFi', h, sub, null, (d) => {
       const hl = d.health;
-      const parts = [];
-      if (hl) {
-        parts.push(kv([
-          ['WAN', hl.wan ? `${hl.wan.status === 'ok' ? 'Up' : hl.wan.status}${hl.wan.ip ? ` · ${hl.wan.ip}` : ''}` : '–'],
-          ['Internet latency', hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : '–'],
-          ['Speed test ↓/↑', hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)} / ${fmt.n(hl.internet.upMbps)} Mbps` : '–'],
-          ['Clients (Wi-Fi / wired)', `${hl.wifiClients ?? '–'} / ${hl.wiredClients ?? '–'}`],
-        ]));
-      }
-      const maxTemp = (x) => (x.temps.length ? Math.max(...x.temps.map((t) => t.value)) : null);
-      parts.push(el('h4', { text: 'Devices' }));
-      parts.push(el('div', { class: 'table-wrap' }, el('table', null,
-        el('thead', null, el('tr', null, ['Device', 'Model', 'Status'].map((t) => el('th', { text: t })), ['CPU', 'Memory', 'Temp', 'Clients', 'PoE', 'Uptime'].map((t) => el('th', { class: 'r', text: t })))),
-        el('tbody', null, d.devices.map((x) => el('tr', null,
-          el('td', { text: x.name }),
-          el('td', { class: 'small', text: x.model || '–' }),
-          el('td', null, status(x.state, x.online ? 'good' : 'critical'), x.upgradable ? el('div', { class: 'small muted', text: 'Update available' }) : null),
-          el('td', { class: 'r', text: x.cpu != null ? fmt.pct(x.cpu) : '–' }),
-          el('td', { class: 'r', text: x.mem != null ? fmt.pct(x.mem) : '–' }),
-          el('td', { class: 'r', text: maxTemp(x) != null ? `${fmt.n(maxTemp(x))} °C` : '–', title: x.temps.map((t) => `${t.name}: ${t.value} °C`).join(', ') || null }),
-          el('td', { class: 'r', text: x.clients != null ? String(x.clients) : '–' }),
-          el('td', { class: 'r', text: x.poe ? `${fmt.n(x.poe.usedW, 1)}${x.poe.budgetW ? ` / ${fmt.n(x.poe.budgetW)}` : ''} W` : '–' }),
-          el('td', { class: 'r', text: x.online ? fmt.uptime(x.uptime) : '–' })))))));
-      const poePorts = d.devices.flatMap((x) => x.ports.filter((p) => p.poeW > 0).map((p) => ({ dev: x.name, ...p })));
-      if (poePorts.length) {
-        parts.push(el('h4', { text: 'PoE consumers' }));
-        parts.push(el('div', null, poePorts.map((p) => el('div', { class: 'meter-row' },
-          el('span', { class: 'label', text: `${p.dev} · ${p.name}` }),
-          meter(p.poeW / 30),
-          el('span', { class: 'value', text: `${fmt.n(p.poeW, 1)} W` })))));
-      }
-      return parts;
+      if (!hl) return el('p', { class: 'small muted', text: 'The console reports no network summary.' });
+      return kv([
+        ['Internet', hl.wan ? `${hl.wan.status === 'ok' ? 'Up' : hl.wan.status}${hl.wan.ip ? ` · ${hl.wan.ip}` : ''}` : null],
+        ['Latency', hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : null],
+        ['Speed test ↓/↑', hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)} / ${fmt.n(hl.internet.upMbps)} Mbps` : null],
+        ['Clients Wi-Fi / wired', `${hl.wifiClients ?? '–'} / ${hl.wiredClients ?? '–'}`],
+      ]);
     });
-    return [h.id, { ...card, title: 'UniFi network' }];
+    return [h.id, { ...card, title: 'Network · UniFi' }];
   });
 }
 
@@ -387,14 +495,10 @@ function unifiDeviceSection(ud, consoleHost) {
     sub: ud ? [ud.model, ud.version && `firmware ${ud.version}`].filter(Boolean).join(' · ') : '',
     statusNode: st,
     bodyFn: (x) => {
-      const up = x.ports.filter((p) => p.up).length;
       const parts = [kv([
-        ['Uptime', x.online ? fmt.uptime(x.uptime) : '–'],
-        ['CPU / memory', x.cpu != null ? `${fmt.pct(x.cpu)} / ${fmt.pct(x.mem)}` : '–'],
-        ['Temperature', maxTemp(x) != null ? `${fmt.n(maxTemp(x))} °C` : '–'],
-        ['Clients', x.clients != null ? String(x.clients) : '–'],
-        ...(x.ports.length ? [['Ports up', `${up} of ${x.ports.length}`]] : []),
-        ...(x.poe ? [['PoE', `${fmt.n(x.poe.usedW, 1)}${x.poe.budgetW ? ` of ${fmt.n(x.poe.budgetW)}` : ''} W`]] : []),
+        ['Uptime', x.online ? fmt.uptime(x.uptime) : null],
+        ['CPU / memory', x.cpu != null ? `${fmt.pct(x.cpu)} / ${fmt.pct(x.mem)}` : null],
+        ['Firmware', x.version || null],
       ])];
       const k = `unifi:${consoleHost.id}:${x.mac}`;
       if (x.online) parts.push(sparks([
@@ -403,7 +507,6 @@ function unifiDeviceSection(ud, consoleHost) {
         x.clients != null ? [`${k}:clients`, 'Clients', ''] : null,
         x.poe ? [`${k}:poe`, 'PoE draw', ' W', 1] : null,
       ]));
-      if (x.upgradable) parts.push(el('div', { class: 'status-line' }, status('Firmware update available', 'warning')));
       const poe = x.ports.filter((p) => p.poeW > 0);
       if (poe.length) {
         parts.push(el('h4', { text: 'PoE consumers' }));
@@ -448,10 +551,9 @@ function renderDevices(d) {
       if (dev.unifi) {
         const host = consoles.get(dev.unifi.hostId);
         const ud = host?.data?.devices?.find((x) => x.mac === dev.unifi.mac);
-        secs.splice(secs.findIndex((x) => x.title === 'UniFi network') + 1 || secs.length, 0, unifiDeviceSection(ud, host));
+        secs.splice(secs.findIndex((x) => x.title === 'Network · UniFi') + 1 || secs.length, 0, unifiDeviceSection(ud, host));
       }
-      const wide = dev.connections.some((c) => c.type === 'proxmox' || c.type === 'unifi');
-      return { id: `device:${dev.id}`, title: dev.name, w: wide ? 12 : 6, h: 18, node: deviceCard(dev, secs) };
+      return { id: `device:${dev.id}`, title: dev.name, w: 6, h: 9, node: deviceCard(dev, secs, d) };
     });
 }
 
@@ -473,9 +575,28 @@ function renderRackPanel(d) {
   $('dash').classList.toggle('no-rack', !enabled);
   if (!enabled) return panel.replaceChildren();
   const inner = el('div', { class: 'rack-view' });
+  // On narrow screens the rack comes after everything else, so it starts folded
+  let open = false;
+  try {
+    open = localStorage.getItem('hd.rackOpen') === '1';
+  } catch {
+    /* only a convenience */
+  }
+  panel.classList.toggle('collapsed', !open);
+  const toggle = el('button', { type: 'button', class: 'rack-toggle', 'aria-expanded': String(open), text: open ? 'Hide rack' : 'Show rack' });
+  toggle.addEventListener('click', () => {
+    const now = panel.classList.toggle('collapsed') === false;
+    toggle.setAttribute('aria-expanded', String(now));
+    toggle.textContent = now ? 'Hide rack' : 'Show rack';
+    try {
+      localStorage.setItem('hd.rackOpen', now ? '1' : '0');
+    } catch {
+      /* only a convenience */
+    }
+  });
   const title = el('div', { class: 'card-head' },
     el('div', { class: 'title' }, el('div', { class: 'card-type', text: 'Rack' }), el('h3', { text: `${rack.units} U` })),
-    rack.items.length ? null : el('span', { class: 'small muted', text: 'Add equipment in Admin' }));
+    rack.items.length ? toggle : el('span', { class: 'small muted', text: 'Add equipment in Admin' }));
   panel.replaceChildren(title, inner);
   const opts = (u) => ({ uPx: u, onSelect: (item) => jumpToWidget(`device:${item.id}`) });
   const draw = () => {
@@ -534,12 +655,12 @@ function barPath(x, y, w, h, r) {
 
 let chartObserver = null;
 
-function renderDailyChart(days) {
+function renderDailyChart(days, H = 170) {
   const wrap = el('div', { class: 'chart' });
+  wrap.style.minHeight = `${H}px`;
   const tip = el('div', { class: 'tooltip hidden', role: 'status' });
   const draw = () => {
     const W = Math.max(wrap.clientWidth || 600, 280);
-    const H = 170;
     const padL = 44;
     const padB = 22;
     const padT = 8;
@@ -593,60 +714,105 @@ function renderDailyChart(days) {
   return wrap;
 }
 
-function tile(label, value, detail) {
-  return el('div', { class: 'tile' }, el('div', { class: 'label', text: label }), el('div', { class: 'value', text: value }), detail ? el('div', { class: 'detail', text: detail }) : null);
-}
-
-function renderPowerSummary(p, idracCount) {
-  const plan = p.plan === 'norgespris' ? 'Norgespris' : `Spot price ${p.area}`;
+// One card: the draw now with its graph, then what it costs. The 30-day chart appears once there
+// are two days to compare; yearly figures and the price breakdown sit under Details.
+function renderPower(p) {
   const pn = p.priceNow;
   const est = p.estimate;
   const u = p.usage;
   const m = p.measured;
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const elapsed = now.getDate() - 1 + (now.getHours() * 60 + now.getMinutes()) / 1440;
+  const forecast = est ? u.month.cost + est.day * (daysInMonth - elapsed) : null;
+  const plan = p.plan === 'norgespris' ? 'Norgespris' : `Spot ${p.area}`;
+  const loggedDays = u.days.filter((x) => x.kwh > 0).length;
+  const open = expanded.has('power');
   const breakdown = [
     m.idrac != null ? `iDRAC ${fmt.n(m.idrac)} W` : null,
     m.poe != null ? `PoE ${fmt.n(m.poe, 1)} W` : null,
     p.estimatedW > 0 ? `estimated ${fmt.n(p.estimatedW)} W${p.includeEstimates ? '' : ' (not in cost)'}` : null,
   ].filter(Boolean).join(' · ');
-  const left = el('div', { class: 'hero' },
-    el('div', { class: 'label', text: p.includeEstimates && p.estimatedW > 0 ? 'Current draw (measured + estimated)' : 'Current draw (measured)' }),
-    el('div', { class: 'value' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
-    el('div', { class: 'muted small', text: breakdown || (idracCount ? '' : 'Add an iDRAC host to measure power') }),
-    el('div', { class: 'muted small', text: `${plan}${p.vat ? ' · incl. VAT' : ''}` }),
-    p.watts != null ? sparks([['power:total', 'Measured draw', ' W']]) : null);
-  const tiles = el('div', { class: 'tiles' },
-    tile('Price now', pn ? `${fmt.n(pn.total, 1)} øre/kWh` : '–', pn ? `Energy ${fmt.n(pn.energy, 1)} + grid ${fmt.n(pn.grid, 1)} (${pn.period})` : p.plan === 'spot' ? 'Spot price unavailable' : ''),
-    tile('Estimated per day', est ? fmt.kr(est.day) : '–', est ? `${fmt.n(est.kwhDay, 1)} kWh at current draw` : ''),
-    tile('Estimated per month', est ? fmt.kr(est.month, 0) : '–', est ? `${fmt.n(est.kwhDay * 30.4375, 0)} kWh` : ''),
-    tile('Estimated per year', est ? fmt.kr(est.year, 0) : '–', est ? `${fmt.n(est.kwhDay * 365, 0)} kWh` : ''),
-    tile('Logged today', `${fmt.n(u.today.kwh, 2)} kWh`, fmt.kr(u.today.cost)),
-    tile('Logged this month', `${fmt.n(u.month.kwh, 1)} kWh`, fmt.kr(u.month.cost)),
-    tile('Logged this year', `${fmt.n(u.year.kwh, 0)} kWh`, fmt.kr(u.year.cost, 0)));
   const notes = [];
-  if (p.fixed.monthlyKr > 0)
-    notes.push(p.fixed.included ? `Costs include fixed fees of ${fmt.kr(p.fixed.monthlyKr, 0)}/month.` : `Fixed fees (${fmt.kr(p.fixed.monthlyKr, 0)}/month) are not included.`);
-  notes.push('Estimates use today’s prices and the current draw; logged values integrate actual readings.');
-  return el('article', { class: 'card' },
-    el('div', { class: 'card-type', text: 'Power & cost' }),
-    el('div', { class: 'power-grid' }, left, tiles),
-    el('p', { class: 'hint', text: notes.join(' ') }));
-}
-
-function renderPowerChart(p) {
-  const u = p.usage;
-  const notes = [];
+  if (p.fixed.monthlyKr > 0) notes.push(p.fixed.included ? `Costs include fixed fees of ${fmt.kr(p.fixed.monthlyKr, 0)}/month.` : `Fixed fees (${fmt.kr(p.fixed.monthlyKr, 0)}/month) are not included.`);
   if (u.since) notes.push(`Logging since ${fmt.time(u.since)}.`);
-  if (u.year.unpricedKwh > 0.01) notes.push(`${fmt.n(u.year.unpricedKwh, 2)} kWh this year was logged while no price was available and is not included in cost.`);
-  return el('article', { class: 'card' },
-    el('div', { class: 'card-type', text: 'Daily energy use, last 30 days (kWh)' }),
-    renderDailyChart(u.days),
+  if (u.year.unpricedKwh > 0.01) notes.push(`${fmt.n(u.year.unpricedKwh, 2)} kWh this year was logged without a price and is not in the cost.`);
+  const details = el('div', { class: 'card-details', id: 'details-power', hidden: !open },
+    kv([
+      ['Price now', pn ? `${fmt.n(pn.energy, 1)} energy + ${fmt.n(pn.grid, 1)} grid (${pn.period})` : null],
+      ['Draw', breakdown || null],
+      ['Logged this year', `${fmt.n(u.year.kwh, 0)} kWh · ${fmt.kr(u.year.cost, 0)}`],
+      ['Per year at this draw', est ? `${fmt.n(est.kwhDay * 365, 0)} kWh · ${fmt.kr(est.year, 0)}` : null],
+    ]),
     el('details', { class: 'table-view' },
-      el('summary', { text: 'Show as table' }),
+      el('summary', { text: 'Last 30 days as a table' }),
       el('div', { class: 'table-wrap' }, el('table', null,
         el('thead', null, el('tr', null, el('th', { text: 'Date' }), el('th', { class: 'r', text: 'kWh' }), el('th', { class: 'r', text: 'Cost' }))),
-        el('tbody', null, u.days.slice().reverse().map((d) => el('tr', null, el('td', { text: d.date }), el('td', { class: 'r', text: fmt.n(d.kwh, 2) }), el('td', { class: 'r', text: fmt.kr(d.cost) }))))))),
+        el('tbody', null, u.days.slice().reverse().map((x) => el('tr', null, el('td', { text: x.date }), el('td', { class: 'r', text: fmt.n(x.kwh, 2) }), el('td', { class: 'r', text: fmt.kr(x.cost) }))))))),
     notes.length ? el('p', { class: 'hint', text: notes.join(' ') }) : null);
+  const toggle = el('button', { type: 'button', class: 'link-button details-toggle', 'aria-expanded': String(open), 'aria-controls': 'details-power', text: open ? 'Hide details' : 'Details' });
+  toggle.addEventListener('click', () => {
+    const show = details.hidden;
+    details.hidden = !show;
+    toggle.setAttribute('aria-expanded', String(show));
+    toggle.textContent = show ? 'Hide details' : 'Details';
+    if (show) expanded.add('power');
+    else expanded.delete('power');
+    storeExpanded();
+    if (show) board.grow('power-summary');
+    else board.shrink('power-summary');
+  });
+  const metric = (v, l) => el('div', null, el('span', { class: 'v num', text: v }), el('span', { class: 'l', text: l }));
+  return el('article', { class: 'card power-card' },
+    el('div', { class: 'card-head' },
+      el('div', { class: 'title' }, el('div', { class: 'card-type', text: 'Power & cost' }), el('div', { class: 'sub', text: `${plan}${pn ? ` · ${fmt.n(pn.total, 1)} øre/kWh now` : ''}${p.vat ? ' · incl. VAT' : ''}` })),
+      HD.rangeTabs()),
+    el('div', { class: 'power-now' },
+      el('div', { class: 'hero' }, el('div', { class: 'value' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
+        el('div', { class: 'label', text: p.includeEstimates && p.estimatedW > 0 ? 'measured + estimated' : 'measured' })),
+      p.watts != null ? sparks([['power:total', 'Measured draw', ' W']]) : el('p', { class: 'muted small', text: 'Add an iDRAC or a UniFi switch with PoE to measure power.' })),
+    el('div', { class: 'dc-metrics' },
+      metric(fmt.kr(u.today.cost), `Today · ${fmt.n(u.today.kwh, 1)} kWh`),
+      metric(fmt.kr(u.month.cost, 0), 'This month'),
+      forecast != null ? metric(fmt.kr(forecast, 0), 'Month forecast') : null,
+      est ? metric(`${fmt.n(est.kwhDay, 1)} kWh`, 'Per day at this draw') : null),
+    loggedDays >= 2 ? el('div', { class: 'power-chart' }, el('div', { class: 'small muted', text: 'Daily use, last 30 days (kWh)' }), renderDailyChart(u.days, 110)) : null,
+    el('div', { class: 'dc-foot' }, el('div'), el('div', { class: 'dc-links' }, toggle)),
+    details);
 }
+
+// "Needs attention": the alert engine's current findings, worst first, with the totals
+function renderAttention(d) {
+  const box = $('attention');
+  const list = d.attention || [];
+  const monitored = d.devices.filter((dev) => dev.connections.length || dev.unifi);
+  const online = monitored.filter((dev) => !['Offline', 'Waiting'].includes(deviceStates.get(dev.id))).length;
+  const sv = d.services;
+  const counts = [
+    monitored.length ? `Devices ${online} of ${monitored.length} online` : null,
+    sv?.up + sv?.down ? `Services ${sv.up} of ${sv.up + sv.down} up` : null,
+    d.power.watts != null ? `${fmt.n(d.power.watts)} W · ${fmt.kr(d.power.usage.today.cost)} today` : null,
+  ].filter(Boolean);
+  if (!monitored.length && !sv?.total) return box.replaceChildren();
+  const worst = list.some((a) => a.severity === 'critical') ? 'critical' : list.length ? 'warning' : 'good';
+  box.className = `attention ${worst}`;
+  const item = (a) => {
+    const text = [a.subject ? el('strong', { text: a.subject }) : null, el('span', { class: 'attn-text', text: a.text })];
+    const target = a.deviceId
+      ? el('button', { type: 'button', class: 'attn-link', onclick: () => jumpToWidget(`device:${a.deviceId}`) }, text)
+      : a.serviceId ? el('a', { class: 'attn-link', href: '/services' }, text) : el('span', null, text);
+    return el('li', { title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') }, el('span', { class: `led ${a.severity}`, 'aria-hidden': 'true' }), el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }), target);
+  };
+  const shown = attentionOpen ? list : list.slice(0, 5);
+  box.replaceChildren(
+    el('div', { class: 'attn-main' },
+      list.length
+        ? el('ul', { class: 'attn-list', 'aria-label': 'Needs attention' }, shown.map(item))
+        : el('p', { class: 'attn-ok' }, el('span', { class: 'led good', 'aria-hidden': 'true' }), 'Everything is OK'),
+      list.length > 5 ? el('button', { type: 'button', class: 'link-button', text: attentionOpen ? 'Show fewer' : `Show all ${list.length}`, onclick: () => { attentionOpen = !attentionOpen; renderAttention(d); } }) : null),
+    el('div', { class: 'attn-counts num' }, counts.map((c) => el('span', { text: c }))));
+}
+let attentionOpen = false;
 
 // ---------------------------------------------------------------------------
 // Board & customize mode
@@ -656,7 +822,6 @@ let layoutLoaded = false;
 
 function renderNav(d) {
   $('view-tabs').replaceChildren(...HD.viewTabs('overview', d.loggedIn));
-  if (!$('range').firstChild) $('range').append(HD.rangeTabs());
   const items = [];
   if (d.loggedIn) {
     items.push(el('button', { type: 'button', id: 'customize', text: 'Customize', disabled: board.editing, onclick: () => board.startEdit() }));
@@ -706,13 +871,15 @@ function render(d) {
     layoutLoaded = true;
   }
   renderNav(d);
+  attention = d.attention || [];
+  deviceStates.clear();
   const defs = [
-    { id: 'power-summary', title: 'Power & cost', w: 12, h: 8, node: renderPowerSummary(d.power, d.idrac.length) },
-    { id: 'power-chart', title: 'Energy use, 30 days', w: 12, h: 9, node: renderPowerChart(d.power) },
+    { id: 'power-summary', title: 'Power & cost', w: 12, h: 8, node: renderPower(d.power) },
     ...renderDevices(d),
   ];
   board.render(defs);
-  HD.fillSparks();
+  renderAttention(d);
+  HD.fillSparks().then(() => board.remeasure());
   renderRackPanel(d);
   pruneFans();
   const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi'].every((k) => !(d[k] || []).length);

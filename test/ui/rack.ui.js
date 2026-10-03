@@ -75,8 +75,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForSelector('#passive-editor:not([hidden])');
   check(!(await page.isVisible('#passive-form select[name=ports]')), 'no ports field for a brush panel');
   await page.click('#passive-delete');
-  await page.waitForSelector('#passive-editor[hidden]', { state: 'attached' });
-  check(await page.locator('#rack-preview .p-brush').count() === 0, 'panel removed');
+  await page.waitForFunction(() => !document.querySelector('#rack-preview .p-brush'), null, { timeout: 5000 }).catch(() => {});
+  check(await page.locator('#rack-preview .p-brush').count() === 0 && await page.locator('#passive-editor').isHidden(), 'panel removed');
 
   // device editor: front setting
   await page.locator('#rack-preview .front-dell13').click();
@@ -94,6 +94,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   // dark theme and a narrow rack panel
   const dark = await (await browser.newContext({ viewport: { width: 1100, height: 900 }, colorScheme: 'dark', storageState: await ctx.storageState() })).newPage();
   await dark.goto(B + '/');
+  await dark.click('#rack-panel .rack-toggle'); // below the cards at this width, so folded at first
   await dark.waitForSelector('#rack-panel .rack-item.front-udm-pro');
   await dark.locator('#rack-panel').screenshot({ path: `${S}/rack-dashboard-narrow.png` });
 

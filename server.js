@@ -762,7 +762,8 @@ function validateLayout(b) {
     return { id: i.id, x: i.x, y: i.y, w: i.w, h: i.h };
   });
   const hidden = Array.isArray(b.hidden) ? b.hidden.filter((id) => typeof id === 'string' && WIDGET_ID.test(id)).slice(0, 300) : [];
-  return { items, hidden: [...new Set(hidden)] };
+  // v2: sizes made for the compact cards; older layouts keep their places but re-measure heights
+  return { v: b.v === 2 ? 2 : 1, items, hidden: [...new Set(hidden)] };
 }
 
 // ---------------------------------------------------------------------------
@@ -3646,6 +3647,29 @@ function withoutAddresses(payload) {
   return payload;
 }
 
+// What needs attention, worst first, tied to the device or service it is about
+function attentionList() {
+  const rank = { critical: 0, warning: 1 };
+  return [...alertConditions(true)].map(([key, c]) => {
+    const host = config.hosts.find((h) => h.id === c.owner);
+    const deviceId = c.device || host?.deviceId || null;
+    const dev = deviceId && config.devices.find((d) => d.id === deviceId);
+    const svc = c.type === 'service' ? config.services.find((x) => x.id === c.owner) : null;
+    const subject = dev?.name || svc?.name || null;
+    // titles read "titan: PS2 failed"; the subject is shown separately
+    const text = subject && c.title.startsWith(`${subject}: `) ? c.title.slice(subject.length + 2) : c.title;
+    // a TrueNAS alert's own text says more than "TrueNAS critical"
+    const own = c.type === 'nas' && c.detail;
+    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null };
+  }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
+    .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
+}
+
+function servicesSummary() {
+  const checked = config.services.filter((s) => s.connection && !s.hidden).map((s) => serviceResults.get(s.id)?.check).filter(Boolean);
+  return { total: config.services.filter((s) => !s.hidden).length, up: checked.filter((c) => c.up).length, down: checked.filter((c) => !c.up).length };
+}
+
 function dashboardPayload() {
   const s = config.settings.dashboard;
   const group = (type) =>
@@ -3692,6 +3716,8 @@ function dashboardPayload() {
     devices,
     rack: { ...config.rack, items: devices },
     power: powerSummary(),
+    attention: attentionList(),
+    services: servicesSummary(),
   };
 }
 
@@ -4910,6 +4936,7 @@ const testMessage = () => ({ site: config.settings.dashboard.title, severity: 't
 let alertState = { active: {}, log: [], channels: {} };
 let alertsDirty = false;
 let alertsRunning = false;
+let alertsAgain = false; // a check was asked for while one was running
 
 function loadAlertState() {
   const s = readJson(ALERTS_FILE, null);
@@ -4924,11 +4951,13 @@ function saveAlertState() {
 }
 
 // Everything that is wrong right now: Map of key -> { type, severity, title, detail, owner, fromData }
-function alertConditions() {
+// `all`: for the dashboard's "needs attention" list, every kind counts whether or not notifications
+// are on (except the power limit, which only exists when you set it).
+function alertConditions(all = false) {
   const rules = config.alerts.rules;
   const out = new Map();
   const add = (type, id, severity, title, detail, owner, fromData = true, device = null) => {
-    if (rules[type]?.enabled) out.set(`${type}:${id}`, { type, severity, title: String(title).slice(0, 200), detail: String(detail || '').slice(0, 300), owner, fromData, device });
+    if (all ? type !== 'power' || rules.power.enabled : rules[type]?.enabled) out.set(`${type}:${id}`, { type, severity, title: String(title).slice(0, 200), detail: String(detail || '').slice(0, 300), owner, fromData, device });
   };
   // Over a limit; once active it only clears below the limit minus a margin, so it doesn't flap
   const over = (type, id, value, limit, margin) => typeof value === 'number' && (value >= limit || (Boolean(alertState.active[`${type}:${id}`]) && value > limit - margin));
@@ -4960,7 +4989,10 @@ function alertConditions() {
           add('temperature', `${h.id}:${t.name}`, t.crit && t.celsius >= t.crit ? 'critical' : 'warning', `${name}: ${t.name} at ${t.celsius} °C`, `Limit ${limit} °C${t.crit ? `, critical at ${t.crit} °C` : ''}`, own);
       }
     } else if (h.type === 'proxmox') {
-      for (const n of d.nodes) if (n.status !== 'online') add('offline', `${h.id}:node:${n.name}`, 'critical', `Proxmox node ${n.name} is ${n.status || 'offline'}`, name, own);
+      // a connection that represents one node only reports that node, so a cluster isn't reported twice
+      const dev = config.devices.find((x) => x.id === h.deviceId);
+      const mine = dev ? effectiveNode(h, dev) : null;
+      for (const n of d.nodes) if (n.status !== 'online' && (!mine || n.name === mine)) add('offline', `${h.id}:node:${n.name}`, 'critical', `${name}: Proxmox node ${n.name} is ${n.status || 'offline'}`, '', own);
     } else if (h.type === 'truenas') {
       for (const p of d.pools) {
         if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, 'critical', `${name}: pool ${p.name} is ${p.status}`, p.detail || '', own);
@@ -5009,7 +5041,10 @@ function alertConditions() {
 }
 
 async function evaluateAlerts(now = Date.now()) {
-  if (alertsRunning) return; // the next poll catches up
+  if (alertsRunning) {
+    alertsAgain = true; // run once more when this one is done
+    return;
+  }
   alertsRunning = true;
   try {
     const cond = alertConditions();
@@ -5047,6 +5082,10 @@ async function evaluateAlerts(now = Date.now()) {
   } finally {
     alertsRunning = false;
     saveAlertState();
+    if (alertsAgain) {
+      alertsAgain = false;
+      setImmediate(() => evaluateAlerts().catch((e) => log('Alert check failed:', e.message)));
+    }
   }
 }
 

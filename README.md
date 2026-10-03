@@ -11,6 +11,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
 - **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
+- **Overview**: a "needs attention" line at the top lists what is wrong right now (the same findings the alerts use, whether or not they notify), with totals for devices, services and power. Each device has a compact card: one status (OK, Warning, Problem, Offline), up to four key numbers, one history graph and its problems. **Details** opens the full view per connection; fixed facts such as service tag and firmware are on the device's Docs sheet. On phones the rack starts folded.
 - **Devices**: everything is organised around physical devices (server, NAS, switch, patch panel…).
   - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
   - The dashboard shows one widget per device, with a section per connection.
@@ -33,7 +34,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Your own Markdown pages.
   - The menu has collapsible groups (remembered per browser). With **Edit menu** you create, rename and reorder groups and drag sheets and pages between them (or use the arrow keys). Network stays its own group.
   - Not meant for passwords: link to your password manager instead.
-- **History graphs**: small graphs in the widgets and service cards, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the top bar (remembered per browser).
+- **History graphs**: small graphs on the device cards and in their Details, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the power card (remembered per browser). A graph appears once it has data.
   - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw.
   - Stored in `history.json` in the data directory: 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. That's roughly 75 kB per graph once full. Graphs for removed devices are dropped after 30 days.
   - Only numbers are kept (no names or addresses). The graphs follow the dashboard's visibility: they need login unless the dashboard is public.
@@ -50,6 +51,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Grid tariff with day/night energy rates.
   - Estimated cost per day/month/year at the current draw.
   - Actual logged usage, from integrating iDRAC readings into hourly buckets, priced at the time of use.
+  - All in one card: the draw now with its graph, today, this month and a forecast for the month; the 30-day chart appears once there are two days of data, and yearly figures are under Details.
 
 - **Appearance**:
   - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night.

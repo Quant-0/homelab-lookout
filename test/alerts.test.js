@@ -258,6 +258,17 @@ const smtpServers = [smtpMock(18025), smtpMock(18026, { starttls: false }), smtp
   const svcMail = await until(() => mails.slice(m0).find((x) => /Wiki is down/.test(Buffer.from(x.body.split('\n\n').slice(1).join('').replace(/\s/g, ''), 'base64').toString())));
   ok(svcMail, 'e-mail: "Wiki is down"');
 
+  // the dashboard's "needs attention" list: the same findings, even for kinds that don't notify
+  const offRules = structuredClone(rules);
+  offRules.hardware.enabled = false;
+  await req('PUT', '/api/admin/alerts', { rules: offRules, settings: { resolved: true, repeatHours: 0 } });
+  r = await req('GET', '/api/dashboard');
+  const ps2 = r.json.attention.find((x) => /PS2/.test(x.text) && x.subject === 'Orion');
+  ok(ps2 && ps2.subject === 'Orion' && ps2.deviceId === orion.id && ps2.severity === 'critical' && !ps2.text.startsWith('Orion'), `attention: "${ps2?.subject} ${ps2?.text}", tied to the device`);
+  ok(r.json.attention[0].severity === 'critical' && r.json.attention.some((x) => x.severity === 'warning' && /CPU2/.test(x.text)), 'worst first; warnings included');
+  ok(r.json.services.total >= 1 && r.json.services.down >= 1, `services summary (${r.json.services.up} up, ${r.json.services.down} down)`);
+  await req('PUT', '/api/admin/alerts', { rules, settings: { resolved: true, repeatHours: 0 } });
+
   // a deleted device's alerts go away quietly
   const n2 = posts.length;
   await req('DELETE', `/api/admin/devices/${orion.id}`);

@@ -94,7 +94,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForTimeout(800);
   const widgets = await page.$$eval('.widget[data-id^="device:"]', (ws) => ws.map((w) => ({
     name: w.querySelector('h3')?.textContent,
-    sections: [...w.querySelectorAll('.section-head h4')].map((h) => h.textContent),
+    sections: [...w.querySelectorAll('.section-title')].map((h) => h.textContent),
   })));
   console.log('  widgets:', JSON.stringify(widgets));
   const odinW = widgets.find((w) => w.name === 'Orion');
@@ -109,7 +109,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await vmPage.screenshot({ path: `${S}/vms-services.png`, fullPage: true });
   await vmPage.close();
   const udmW = widgets.find((w) => w.name === 'UDM Pro');
-  check(udmW && udmW.sections.includes('UniFi network') && udmW.sections.some((x) => /UniFi · UDMPRO/.test(x)), 'UDM Pro: network overview + its own gateway section');
+  check(udmW && udmW.sections.includes('Network · UniFi') && udmW.sections.some((x) => /UniFi · UDMPRO/.test(x)), 'UDM Pro: network overview + its own gateway section');
   check(widgets.some((w) => w.name === 'USW-24-POE Rack'), 'switch gets its own widget');
   await page.click('.rack-item.kind-server');
   await page.waitForTimeout(700);
