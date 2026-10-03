@@ -145,6 +145,13 @@ const pve = { type: 'proxmox', address: '127.0.0.1:18443', username: 'root@pam!d
   ok(r.status === 200 && c.hosts.length === before - 1 && !c.devices.some((d) => d.id === orion.id), 'deleting a device deletes its connections');
   noSecrets(JSON.stringify(c), 'admin config at the end');
 
+  // two connections to the same Proxmox cluster: each VM is listed once on the Services page
+  await req('POST', '/api/admin/devices', { name: 'Second node', kind: 'server', location: 'none', connections: [{ ...pve, options: { node: 'pve2' }, secret: '11111111-2222-3333-4444-555555555555' }] });
+  await sleep(1500);
+  r = await req('GET', '/api/services');
+  const vmids = r.json.groups.find((g) => g.key === '@vms')?.vms.items.map((g) => `${g.node}/${g.vmid}`) || [];
+  ok(vmids.length > 0 && new Set(vmids).size === vmids.length, `VMs listed once across connections (${vmids.join(', ')})`);
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL DEVICE TESTS PASSED');
   process.exit(failures ? 1 : 0);
 })();

@@ -45,8 +45,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const hb = await page.locator('.hero .spark-area').boundingBox();
   check(hb.x > box.x + box.width * 0.7, 'five hours of data fill only the right part of a 24 h graph');
 
-  const empty = page.locator('.card', { hasText: 'Orion' }).locator('.spark-slot').first();
-  check(/Collecting history/.test(await empty.textContent()), 'a new connection shows "Collecting history…"');
+  const cells = page.locator('.card', { hasText: 'Orion' }).locator('.spark-cell');
+  check(await cells.count() > 0 && await cells.evaluateAll((n) => n.every((c) => c.hidden)) && !/Collecting history/.test(await page.textContent('body')), 'a new connection shows no graph (and no placeholder) until it has history');
 
   // range switch: refetches and is remembered
   const req = page.waitForRequest((r) => r.url().includes('/api/history') && r.url().includes('range=30d'));

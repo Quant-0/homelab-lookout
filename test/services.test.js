@@ -180,6 +180,8 @@ const CASES = [
   cookie = '';
   r = await req('GET', '/api/services');
   ok(r.status === 200, 'public dashboard: services visible without login');
+  r = await req('GET', '/api/dashboard');
+  ok(r.status === 200 && !r.text.includes('203.0.113.45') && r.json.unifi[0].data.devices.every((d) => !('ip' in d)), 'public dashboard: no WAN or LAN addresses from UniFi');
   noSecrets(r.text, 'public services');
   r = await req('GET', '/api/docs');
   ok(r.status === 401, 'public dashboard: docs still need login');

@@ -110,14 +110,15 @@ function deviceCard(dev, sections) {
     sections.map((x) => sectionNode(x, !single)));
 }
 
+// Values a device doesn't report are left out instead of shown as "–"
 function kv(pairs) {
-  return el('div', { class: 'kv' }, pairs.map(([k, v]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }))));
+  return el('div', { class: 'kv' }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== '–').map(([k, v]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }))));
 }
 
 // History graphs: [key, label, unit, decimals] (null entries are skipped)
 function sparks(list) {
   const cells = list.filter(Boolean).map(([key, label, unit, decimals = 0]) => HD.sparkSlot(key, { label, unit, decimals }));
-  return cells.length ? el('div', { class: 'sparks' }, cells) : null;
+  return cells.length ? el('div', { class: 'sparks', hidden: true }, cells) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ function renderTruenas(hosts) {
           ? el('ul', { class: 'alerts' }, d.alerts.map((a) => el('li', null,
             status(a.level, ['CRITICAL', 'ERROR', 'ALERT', 'EMERGENCY'].includes(a.level) ? 'critical' : a.level === 'WARNING' ? 'warning' : ''),
             ' ', el('span', { class: 'when', text: a.time ? fmt.time(a.time) : '' }),
-            el('div', { text: a.text }))))
+            HD.clampText(a.text, 'alert-text'))))
           : el('p', { class: 'muted small' }, status('No active alerts', 'good')),
       ];
     });

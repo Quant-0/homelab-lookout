@@ -220,8 +220,9 @@ const HD = (() => {
   }
   let cache = { range: null, at: 0, series: {} };
 
+  // Hidden until there is something to draw: no "collecting history" placeholders
   function sparkSlot(key, { label = '', unit = '', decimals = 0 } = {}) {
-    return el('div', { class: 'spark-cell' },
+    return el('div', { class: 'spark-cell', hidden: true },
       label ? el('div', { class: 'spark-label', text: label }) : null,
       el('div', { class: 'spark-slot', 'data-key': key, 'data-unit': unit, 'data-dec': decimals, 'data-label': label }));
   }
@@ -231,7 +232,11 @@ const HD = (() => {
   function drawSpark(slot, points) {
     const unit = slot.dataset.unit;
     const dec = Number(slot.dataset.dec);
-    if (!points || points.length < 2) return slot.replaceChildren(el('span', { class: 'spark-empty', text: 'Collecting history…' }));
+    const cell = slot.closest('.spark-cell');
+    const group = slot.closest('.sparks');
+    if (cell) cell.hidden = !points || points.length < 2;
+    if (group) group.hidden = ![...group.querySelectorAll('.spark-cell')].some((c) => !c.hidden);
+    if (!points || points.length < 2) return slot.replaceChildren();
     const W = 300;
     const H = 40;
     // The x axis is the whole range, so a series that started recently fills only the right part
@@ -324,6 +329,20 @@ const HD = (() => {
     })));
   }
 
+  // Long texts (e.g. NAS alerts) show three lines with a button for the rest
+  function clampText(text, cls = '') {
+    const box = el('div', { class: `clamp ${cls}`.trim(), text });
+    if (String(text).length < 180) return box;
+    box.classList.add('clamped');
+    const more = el('button', { type: 'button', class: 'link-button', text: 'Show all', 'aria-expanded': 'false' });
+    more.addEventListener('click', () => {
+      const open = box.classList.toggle('clamped') === false;
+      more.textContent = open ? 'Show less' : 'Show all';
+      more.setAttribute('aria-expanded', String(open));
+    });
+    return el('div', null, box, more);
+  }
+
   // --- Drag to rearrange ---
   // Moves `node` with the pointer and leaves a placeholder where it would land; `place(x, y, ph)`
   // moves the placeholder, `done(node)` runs after the drop. A click without movement is not a drag.
@@ -370,5 +389,5 @@ const HD = (() => {
     addEventListener('pointercancel', onUp);
   }
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove };
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText };
 })();

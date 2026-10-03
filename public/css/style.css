@@ -858,6 +858,12 @@ table.rules td:first-child { min-width: 220px; }
   table.rules td.c::before { content: attr(data-label); font-size: 13px; color: var(--text-2); }
 }
 
+/* long texts */
+.clamp { overflow-wrap: anywhere; }
+.clamp.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.link-button { border: 0; background: none; padding: 2px 0; color: var(--accent); font-size: 12px; cursor: pointer; }
+.link-button:hover { text-decoration: underline; border: 0; }
+
 /* ---------- History sparklines ---------- */
 
 .range-tabs { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-2); }

@@ -2537,6 +2537,8 @@ function vmsPayload() {
     const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
     if (r && !r.ok) notes.push(`${name}: ${r.error}${r.data ? ' (showing the last known state)' : ''}`);
     for (const g of r?.data?.guests || []) {
+      // two connections to the same cluster report the same guests: list each once
+      if (items.some((x) => x.vmid === g.vmid && x.node === g.node)) continue;
       items.push({ key: `${h.id}:${g.vmid}`, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime });
     }
   }
@@ -3631,6 +3633,19 @@ function sendPage(res, key, session) {
 // ---------------------------------------------------------------------------
 // Routes
 
+// A public dashboard shows names and status, never addresses (UniFi reports WAN and LAN IPs)
+function withoutAddresses(payload) {
+  payload.unifi = payload.unifi.map((h) => (h.data ? {
+    ...h,
+    data: {
+      ...h.data,
+      health: h.data.health ? { ...h.data.health, wan: h.data.health.wan ? { ...h.data.health.wan, ip: null } : null } : null,
+      devices: h.data.devices.map(({ ip, ...d }) => d),
+    },
+  } : h));
+  return payload;
+}
+
 function dashboardPayload() {
   const s = config.settings.dashboard;
   const group = (type) =>
@@ -3733,7 +3748,9 @@ async function handleApi(req, res, url, session) {
 
   if (p === '/api/dashboard' && m === 'GET') {
     if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
-    return sendJson(res, 200, { ...dashboardPayload(), loggedIn: Boolean(session) });
+    const payload = dashboardPayload();
+    if (!session) withoutAddresses(payload);
+    return sendJson(res, 200, { ...payload, loggedIn: Boolean(session) });
   }
 
   if (p === '/api/history' && m === 'GET') {
