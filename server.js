@@ -2993,9 +2993,10 @@ async function pollHost(h) {
   if (r.ok) {
     results.set(h.id, { ok: true, data: r.data, updatedAt: now, lastOkAt: now });
     recordHistory(h, r.data, now);
-    if (h.type === 'idrac' && typeof r.data.watts === 'number') recordPower(`idrac:${h.id}`, r.data.watts, now);
+    if (h.type === 'idrac' && typeof r.data.watts === 'number') recordPower(`idrac:${h.id}`, r.data.watts, now, false, h.deviceId);
     if (h.type === 'unifi') {
-      for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now);
+      // PoE a switch delivers counts for that switch
+      for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now, false, config.devices.find((v) => v.unifi?.hostId === h.id && v.unifi.mac === d.mac)?.id || null);
       syncUnifiDevices(h, r.data.devices);
     }
     if (h.type === 'idrac' || h.type === 'unifi') histRecord('power:total', measuredWatts().total, now);
@@ -3011,7 +3012,8 @@ async function pollAll() {
   try {
     await ensurePrices().catch(() => {});
     await Promise.all([...config.hosts.map(pollHost), ...config.services.map(pollService)]);
-    recordPower('estimate', estimatedWatts(), Date.now(), true);
+    const now = Date.now();
+    for (const d of estimatedDevices()) recordPower(`est:${d.id}`, d.estimateW, now, true, d.id);
   } finally {
     polling = false;
   }
@@ -3195,7 +3197,9 @@ function saveEnergy() {
 }
 
 // Measured sources: `idrac:<host>`, `poe:<host>:<mac>`. Estimated: 'estimate' (rack equipment).
-function recordPower(sourceId, watts, t, estimated = false) {
+// Integrates readings into hourly buckets: totals, and (since the energy report) per device in
+// `dev: { [device id]: { wh, ore, estWh, estOre } }`.
+function recordPower(sourceId, watts, t, estimated = false, deviceId = null) {
   const prev = lastSample.get(sourceId);
   lastSample.set(sourceId, { t, w: watts });
   if (!prev) return;
@@ -3211,6 +3215,12 @@ function recordPower(sourceId, watts, t, estimated = false) {
   b[whKey] = (b[whKey] || 0) + wh;
   if (price) b[oreKey] = (b[oreKey] || 0) + (wh / 1000) * price.total;
   else b[unKey] = (b[unKey] || 0) + wh;
+  if (deviceId) {
+    const d = ((b.dev ||= {})[deviceId] ||= {});
+    const [dw, dor] = estimated ? ['estWh', 'estOre'] : ['wh', 'ore'];
+    d[dw] = Math.round(((d[dw] || 0) + wh) * 100) / 100;
+    if (price) d[dor] = Math.round(((d[dor] || 0) + (wh / 1000) * price.total) * 100) / 100;
+  }
   energyDirty = true;
 }
 
@@ -3248,16 +3258,132 @@ function energySummary() {
   return { today, month, year, days: [...days.values()], since: first };
 }
 
+// ---------------------------------------------------------------------------
+// Energy report: a month or a year from the hourly log, by day or by month, per device where the
+// log has it. Costs are counted like the power card: estimates and fixed fees only if enabled.
+
+function energyReport(period, by = null) {
+  const kind = /^\d{4}-(0[1-9]|1[0-2])$/.test(period) ? 'month' : /^\d{4}$/.test(period) ? 'year' : null;
+  if (!kind) throw new UserError('Choose a month (2026-10) or a year (2026)');
+  const step = by || (kind === 'month' ? 'day' : 'month');
+  if (step === 'month' && kind === 'month') throw new UserError('Per month needs a year');
+  const est = config.settings.power.includeEstimates;
+  const fixedHour = fixedPerHourKr(config.settings.power);
+  const today = zoned(Date.now()).date;
+  const blank = () => ({ kwh: 0, cost: 0, energyOre: 0, pricedKwh: 0, unpricedKwh: 0, hours: 0 });
+  // every day (or month) of the period, so gaps show as zero and the future as empty
+  const rows = new Map();
+  const y = Number(period.slice(0, 4));
+  if (step === 'day') {
+    for (let d = new Date(Date.UTC(y, kind === 'month' ? Number(period.slice(5)) - 1 : 0, 1)); d.toISOString().startsWith(period); d = new Date(d.getTime() + 86400e3)) {
+      const key = d.toISOString().slice(0, 10);
+      rows.set(key, { key, future: key > today, ...blank() });
+    }
+  } else {
+    for (let m = 1; m <= 12; m++) {
+      const key = `${period}-${String(m).padStart(2, '0')}`;
+      rows.set(key, { key, future: key > today.slice(0, 7), ...blank() });
+    }
+  }
+  const totals = blank();
+  const devices = new Map();
+  let devicesSince = null;
+  let first = null;
+  for (const [k, b] of Object.entries(energy.buckets)) {
+    let date = bucketDayCache.get(k);
+    if (!date) {
+      date = zoned(+k + 1).date;
+      bucketDayCache.set(k, date);
+    }
+    if (!date.startsWith(period)) continue;
+    const row = rows.get(step === 'day' ? date : date.slice(0, 7));
+    if (!row) continue;
+    const wh = b.wh + (est ? b.estWh || 0 : 0);
+    const ore = b.ore + (est ? b.estOre || 0 : 0);
+    const un = b.unpricedWh + (est ? b.estUnpricedWh || 0 : 0);
+    for (const acc of [row, totals]) {
+      acc.kwh += wh / 1000;
+      acc.energyOre += ore;
+      acc.pricedKwh += (wh - un) / 1000;
+      acc.unpricedKwh += un / 1000;
+      acc.cost += ore / 100 + fixedHour;
+      acc.hours++;
+    }
+    if (first === null || +k < first) first = +k;
+    for (const [id, d] of Object.entries(b.dev || {})) {
+      if (devicesSince === null || +k < devicesSince) devicesSince = +k;
+      const acc = devices.get(id) || { id, kwh: 0, cost: 0, estKwh: 0, estCost: 0 };
+      acc.kwh += (d.wh || 0) / 1000;
+      acc.cost += (d.ore || 0) / 100;
+      acc.estKwh += (d.estWh || 0) / 1000;
+      acc.estCost += (d.estOre || 0) / 100;
+      devices.set(id, acc);
+    }
+  }
+  const round = (v, d = 3) => Math.round(v * 10 ** d) / 10 ** d;
+  const out = (a) => ({ kwh: round(a.kwh), cost: round(a.cost, 2), avgPrice: a.pricedKwh > 0.0005 ? round(a.energyOre / a.pricedKwh, 1) : null, unpricedKwh: round(a.unpricedKwh) });
+  const devName = (id) => config.devices.find((d) => d.id === id)?.name || 'Removed device';
+  return {
+    period, kind, by: step,
+    rows: [...rows.values()].map((r) => ({ key: r.key, future: r.future, ...(r.hours ? out(r) : { kwh: 0, cost: 0, avgPrice: null, unpricedKwh: 0 }) })),
+    totals: out(totals),
+    loggedSince: first,
+    devices: [...devices.values()].map((d) => ({ id: d.id, name: devName(d.id), kwh: round(d.kwh), cost: round(d.cost, 2), estKwh: round(d.estKwh), estCost: round(d.estCost, 2) }))
+      .sort((a, b) => b.kwh + b.estKwh - (a.kwh + a.estKwh)),
+    devicesSince,
+    includeEstimates: est,
+    fixedIncluded: fixedHour > 0,
+  };
+}
+
+// Months and years that have logged energy, newest first (for the period picker)
+function energyPeriods() {
+  const months = new Set();
+  for (const k of Object.keys(energy.buckets)) {
+    let date = bucketDayCache.get(k);
+    if (!date) {
+      date = zoned(+k + 1).date;
+      bucketDayCache.set(k, date);
+    }
+    months.add(date.slice(0, 7));
+  }
+  months.add(zoned(Date.now()).month);
+  const list = [...months].sort().reverse();
+  return { months: list, years: [...new Set(list.map((m) => m.slice(0, 4)))] };
+}
+
+// CSV for spreadsheets. "no": semicolons, decimal comma and a BOM, as Norwegian Excel expects;
+// "std": commas and decimal points. Text that a spreadsheet would run as a formula is defused.
+function energyCsv(r, format) {
+  const no = format === 'no';
+  const sep = no ? ';' : ',';
+  const num = (v, d) => (v === null || v === undefined ? '' : (Math.round(v * 10 ** d) / 10 ** d).toFixed(d).replace('.', no ? ',' : '.'));
+  const text = (v) => {
+    let t = String(v).replace(/[\r\n]+/g, ' ');
+    if (/^[=+\-@\t]/.test(t)) t = `'${t}`;
+    return /["\n;,]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const header = [r.by === 'day' ? 'Date' : 'Month', 'kWh', 'Cost (kr)', 'Average price (øre/kWh)', 'kWh without price'];
+  const lines = [header.map(text).join(sep)];
+  for (const row of r.rows.filter((x) => !x.future)) lines.push([text(row.key), num(row.kwh, 3), num(row.cost, 2), num(row.avgPrice, 1), num(row.unpricedKwh, 3)].join(sep));
+  lines.push([text('Total'), num(r.totals.kwh, 3), num(r.totals.cost, 2), num(r.totals.avgPrice, 1), num(r.totals.unpricedKwh, 3)].join(sep));
+  if (r.devices.length) {
+    lines.push('');
+    lines.push(['Device', 'Measured kWh', 'Measured cost (kr)', 'Estimated kWh', 'Estimated cost (kr)'].map(text).join(sep));
+    for (const d of r.devices) lines.push([text(d.name), num(d.kwh, 3), num(d.cost, 2), num(d.estKwh, 3), num(d.estCost, 2)].join(sep));
+  }
+  return (no ? '﻿' : '') + lines.join('\r\n') + '\r\n';
+}
+
 // Rack equipment estimates; devices linked to an iDRAC are measured instead.
 // Estimated draw of devices without a power sensor; devices with an iDRAC are measured instead.
+// Devices without a power sensor that have an estimate (a device with an iDRAC is measured)
+function estimatedDevices() {
+  return config.devices.filter((d) => !d.hidden && d.estimateW > 0 && !deviceHosts(d).some((h) => h.type === 'idrac'));
+}
+
 function estimatedWatts() {
-  let w = 0;
-  for (const d of config.devices) {
-    if (d.hidden || !(d.estimateW > 0)) continue;
-    if (deviceHosts(d).some((h) => h.type === 'idrac')) continue;
-    w += d.estimateW;
-  }
-  return w;
+  return estimatedDevices().reduce((w, d) => w + d.estimateW, 0);
 }
 
 function measuredWatts() {
@@ -3510,7 +3636,7 @@ function csrfOk(req, session) {
 // Static files are loaded once into memory from an explicit allow-list.
 const STATIC = {};
 const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg']);
-const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js']);
+const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
   const files = {
@@ -3520,6 +3646,8 @@ function loadStatic() {
     'services.html': 'services.html',
     'docs.html': 'docs.html',
     'updates.html': 'updates.html',
+    'energy.html': 'energy.html',
+    '/static/js/energy.js': 'js/energy.js',
     '/static/js/updates.js': 'js/updates.js',
     '/static/js/services.js': 'js/services.js',
     '/static/js/docs.js': 'js/docs.js',
@@ -3873,6 +4001,28 @@ async function handleApi(req, res, url, session) {
     return sendJson(res, 200, { ...payload, loggedIn: Boolean(session) });
   }
 
+  if (p === '/api/energy/report' && m === 'GET') {
+    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    const period = url.searchParams.get('period') || zoned(Date.now()).month;
+    const report = energyReport(period);
+    const prev = report.kind === 'month'
+      ? (() => { const [yy, mm] = period.split('-').map(Number); return mm === 1 ? `${yy - 1}-12` : `${yy}-${String(mm - 1).padStart(2, '0')}`; })()
+      : String(Number(period) - 1);
+    return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), loggedIn: Boolean(session), title: config.settings.dashboard.title });
+  }
+  if (p === '/api/energy/export' && m === 'GET') {
+    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    const period = url.searchParams.get('period') || '';
+    const by = url.searchParams.get('by') === 'month' ? 'month' : 'day';
+    const format = url.searchParams.get('format') === 'std' ? 'std' : 'no';
+    const body = Buffer.from(energyCsv(energyReport(period, by), format));
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="energy-${period}-per-${by}${format === 'no' ? '-excel' : ''}.csv"`,
+      'Content-Length': body.length,
+    });
+    return res.end(body);
+  }
   if (p === '/api/history' && m === 'GET') {
     if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
     const ranges = { '24h': 24 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
@@ -4694,6 +4844,10 @@ async function handle(req, res) {
     }
     if (p === '/docs') return session ? sendPage(res, 'docs.html', session) : redirect(res, '/login?next=docs');
     if (p === '/updates') return session ? sendPage(res, 'updates.html', session) : redirect(res, '/login?next=updates');
+    if (p === '/energy') {
+      if (!session && !config.settings.dashboard.public) return redirect(res, '/login?next=energy');
+      return sendPage(res, 'energy.html', session);
+    }
     const im = p.match(/^\/media\/icon\/([0-9a-f]{32})$/);
     if (im) {
       const rec = config.icons.find((i) => i.id === im[1]);

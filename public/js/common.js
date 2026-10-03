@@ -410,6 +410,7 @@ const HD = (() => {
       for (const v of g.vms?.items || []) items.push({ kind: v.type === 'lxc' ? 'Container' : 'VM', title: v.name, sub: `${v.vmid} on ${v.node} · ${v.status}`, href: '/services#vms', words: `${v.vmid} ${v.node}` });
     }
     for (const d of dash?.devices || []) items.push({ kind: 'Device', title: d.name, sub: 'On the Overview', href: `/#device-${d.id}`, words: d.kind });
+    if (dash) items.push({ kind: 'Page', title: 'Energy report', sub: 'Power & cost per month and year', href: '/energy', words: 'kwh cost csv excel export power' });
     if (docs) {
       for (const d of docs.auto.devices) items.push({ kind: 'Docs', title: `${d.name} sheet`, sub: [d.model, ...d.ips].filter(Boolean).join(' · '), href: `/docs#server/${d.id}`, words: [d.name, d.model, d.serviceTag, d.hostName, ...d.ips].join(' ') });
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });

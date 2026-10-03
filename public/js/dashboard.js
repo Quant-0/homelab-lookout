@@ -777,7 +777,7 @@ function renderPower(p) {
       forecast != null ? metric(fmt.kr(forecast, 0), 'Month forecast') : null,
       est ? metric(`${fmt.n(est.kwhDay, 1)} kWh`, 'Per day at this draw') : null),
     loggedDays >= 2 ? el('div', { class: 'power-chart' }, el('div', { class: 'small muted', text: 'Daily use, last 30 days (kWh)' }), renderDailyChart(u.days, 110)) : null,
-    el('div', { class: 'dc-foot' }, el('div'), el('div', { class: 'dc-links' }, toggle)),
+    el('div', { class: 'dc-foot' }, el('div'), el('div', { class: 'dc-links' }, el('a', { href: '/energy', text: 'Report' }), toggle)),
     details);
 }
 

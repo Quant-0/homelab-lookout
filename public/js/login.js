@@ -16,7 +16,7 @@ document.getElementById('login-form').addEventListener('submit', async (ev) => {
     });
     if (r.ok) {
       // Only fixed, same-site destinations: no open redirects.
-      const pages = { admin: '/admin', services: '/services', docs: '/docs', updates: '/updates' };
+      const pages = { admin: '/admin', services: '/services', docs: '/docs', updates: '/updates', energy: '/energy' };
       const next = new URLSearchParams(location.search).get('next');
       location.href = Object.hasOwn(pages, next) ? pages[next] : '/';
       return;

@@ -143,6 +143,7 @@ async function main() {
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },
     { file: 'test/updates.test.js', fresh: true },
     { file: 'test/docs-history.test.js', fresh: true, seed: require('./docs-history.test.js').seed },
+    { file: 'test/energy.test.js', fresh: true, seed: require('./energy.test.js').seed },
     // the alert mocks use the device mock's certificate, trusted here like a public CA would be
     { file: 'test/alerts.test.js', fresh: true, env: { NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), TELEGRAM_API_URL: 'https://127.0.0.1:18449', DISCORD_WEBHOOK_HOSTS: '127.0.0.1:18449' } },
   ];
@@ -153,7 +154,7 @@ async function main() {
     } catch {
       playwright = false;
     }
-    const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed };
+    const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed, 'energy.ui.js': require('./energy.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
       suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], skip: !playwright && 'Playwright not installed' });
   }

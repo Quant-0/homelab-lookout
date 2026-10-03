@@ -55,6 +55,8 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - Estimated cost per day/month/year at the current draw.
   - Actual logged usage, from integrating iDRAC readings into hourly buckets, priced at the time of use.
   - All in one card: the draw now with its graph, today, this month and a forecast for the month; the 30-day chart appears once there are two days of data, and yearly figures are under Details.
+  - **Energy report** (the card's *Report* link, or search "energy"): a month by day or a year by month, with kWh, cost and average price compared with the period before, and how much each device used. Per-device figures are logged from when this version was installed; earlier hours have only the total. The page follows the dashboard: private means login, public means visitors see it too.
+  - **CSV export** from the report, per day or (for a year) per month, in two formats: *Excel (NO)* uses semicolons, decimal commas and a BOM, so Norwegian Excel opens it directly with æøå intact; *CSV* uses commas and decimal points for other tools. Each file ends with the per-device totals. Names that start with `=`, `+`, `-` or `@` are written so a spreadsheet can't run them as formulas.
 
 - **Appearance**:
   - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night.
