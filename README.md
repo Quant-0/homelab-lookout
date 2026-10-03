@@ -4,6 +4,8 @@ A dashboard for Dell iDRAC (Redfish), Proxmox VE and TrueNAS, with estimates and
 
 It is built from one Node.js server file (`server.js`, Node 18+) plus static HTML/CSS/JS in `public/`. There are no npm dependencies.
 
+**How to use it day to day: see [GUIDE.md](GUIDE.md).** This README covers what it does, the security design, installation and development.
+
 ## What it shows
 
 - **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s).
@@ -187,8 +189,8 @@ DATA_DIR=/tmp/hd-data HOST=127.0.0.1 PORT=8080 node server.js
 ## Tests
 
 ```sh
-node test/run.js              # end-to-end API suites (~400 checks)
-node test/run.js --ui         # also browser tests (needs Playwright)
+node test/run.js              # end-to-end API suites, including the security sweep
+node test/run.js --ui         # also browser tests (needs Playwright); 820 checks in all
 node test/run.js --verbose    # print every check
 ```
 
