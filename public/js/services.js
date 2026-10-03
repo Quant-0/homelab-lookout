@@ -92,11 +92,11 @@ function groupSection(g) {
 function render(d) {
   document.title = `Services · ${d.title}`;
   $('title').textContent = d.title;
-  $('view-tabs').replaceChildren(...HD.viewTabs('services', d.loggedIn));
+  $('view-tabs').replaceChildren(...HD.viewTabs('services', d.loggedIn || d.viewer));
   $('nav').replaceChildren(...(d.loggedIn
     ? [el('button', { type: 'button', id: 'customize', text: 'Customize', disabled: Boolean(editing), onclick: startEdit }),
       el('a', { class: 'button', href: '/admin#services', text: 'Edit services' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout })]
-    : [el('a', { class: 'button', href: '/login?next=services', text: 'Log in' })]));
+    : d.viewer ? HD.viewerNav() : [el('a', { class: 'button', href: '/login?next=services', text: 'Log in' })]));
   renderEditBar();
   cards.clear();
   if (!d.groups.length) {

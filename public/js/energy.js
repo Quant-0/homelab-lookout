@@ -83,10 +83,10 @@ function render(r) {
   state = r;
   document.title = `Energy · ${r.title}`;
   $('title').textContent = r.title;
-  $('view-tabs').replaceChildren(...HD.viewTabs('overview', r.loggedIn));
+  $('view-tabs').replaceChildren(...HD.viewTabs('overview', r.loggedIn || r.viewer));
   $('nav').replaceChildren(...(r.loggedIn
     ? [el('a', { class: 'button', href: '/admin#power', text: 'Prices' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout })]
-    : [el('a', { class: 'button', href: '/login?next=energy', text: 'Log in' })]));
+    : r.viewer ? HD.viewerNav() : [el('a', { class: 'button', href: '/login?next=energy', text: 'Log in' })]));
   const isYear = r.kind === 'year';
   $('en-month').setAttribute('aria-pressed', String(!isYear));
   $('en-year').setAttribute('aria-pressed', String(isYear));

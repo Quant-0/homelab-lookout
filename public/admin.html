@@ -332,6 +332,17 @@
       <h4>Certificate</h4>
       <div id="web-cert"></div>
     </section>
+    <section class="card" id="app-card">
+      <h3>Install as an app</h3>
+      <p class="hint">The dashboard can be installed on a phone or PC and then opens in its own window with its own icon. The device has to trust the certificate above first (import the CA once), otherwise the browser doesn't offer to install it.</p>
+      <div class="form-actions" id="app-actions" hidden><button type="button" class="primary" id="app-install" hidden>Install on this device</button><span class="small muted" id="app-state"></span></div>
+      <ul class="small">
+        <li>Android (Chrome): menu ⋮ → Install app.</li>
+        <li>iPhone/iPad (Safari): Share → Add to Home Screen.</li>
+        <li>Windows, macOS, Linux (Chrome, Edge): the install icon at the right end of the address bar.</li>
+      </ul>
+      <p class="hint">Only the offline screen is kept on the device, nothing from the dashboard. To stay signed in on a phone, tick "Remember this device for viewing" when signing in from the app.</p>
+    </section>
     <section class="card">
       <h3>Download or restore a backup</h3>
       <p class="hint">A backup contains settings, devices with their credentials, services, docs, energy history and uploaded images, encrypted with a passphrase you choose. Keep the passphrase somewhere safe: without it the backup cannot be opened.</p>
@@ -393,6 +404,13 @@
         </div>
         <div class="form-actions"><button type="submit" class="primary">Change password</button><span class="msg" id="pw-msg" role="status"></span></div>
       </form>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <div class="title"><h3>Remembered devices</h3><p class="hint">Where "Remember this device for viewing" was ticked at sign-in. They can view the dashboard, services, energy, docs and updates for 30 days from then; changing anything asks for the password. A new password signs out all but this one.</p></div>
+        <button type="button" class="danger" id="remembered-all" hidden>Sign out all</button>
+      </div>
+      <div id="remembered"></div>
     </section>
     </div>
   </main>

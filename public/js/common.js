@@ -176,9 +176,9 @@ const HD = (() => {
     }
   }
 
-  // Overview · Services · Docs (Docs only when logged in: it always requires login)
-  function viewTabs(active, loggedIn) {
-    const tabs = [['overview', 'Overview', '/'], ['services', 'Services', '/services'], ...(loggedIn ? [['docs', 'Docs', '/docs'], ['updates', 'Updates', '/updates']] : [])];
+  // Overview · Services · Docs · Updates (the last two need a login or a remembered device)
+  function viewTabs(active, signedIn) {
+    const tabs = [['overview', 'Overview', '/'], ['services', 'Services', '/services'], ...(signedIn ? [['docs', 'Docs', '/docs'], ['updates', 'Updates', '/updates']] : [])];
     return tabs.map(([key, label, href]) => el('a', { href, class: key === active ? 'active' : null, 'aria-current': key === active ? 'page' : null, text: label }));
   }
 
@@ -416,7 +416,7 @@ const HD = (() => {
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
-      for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection idrac proxmox truenas synology unifi'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
+      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection idrac proxmox truenas synology unifi'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
         ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }
@@ -531,5 +531,13 @@ const HD = (() => {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSearch);
   else initSearch();
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  // A remembered device (view only): Admin asks for the password, Log out forgets the device
+  function viewerNav() {
+    return [el('a', { class: 'button', href: '/login?next=admin', text: 'Admin' }), el('button', { type: 'button', text: 'Log out', onclick: logout })];
+  }
+
+  // The installable app's service worker (offline screen only; see sw.js)
+  if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, viewerNav, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

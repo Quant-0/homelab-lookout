@@ -123,10 +123,10 @@ function renderNav() {
       });
       return el('div', { class: 'nav-group', 'data-id': g.id }, toggle, list);
     }),
-    el('div', { class: 'form-actions' },
+    ...(D.readOnly ? [] : [el('div', { class: 'form-actions' },
       el('a', { class: 'button primary', href: '#new-page', text: 'New page' }),
       el('button', { type: 'button', id: 'nav-edit', text: 'Edit menu', onclick: () => { navEditing = true; renderNav(); } })),
-    ...(D.deletedCount ? [link('#deleted', `Recently deleted (${D.deletedCount})`)] : []));
+    ...(D.deletedCount ? [link('#deleted', `Recently deleted (${D.deletedCount})`)] : [])]));
 }
 
 // --- Editing the menu: the DOM is the draft; Save reads it back ---
@@ -266,6 +266,7 @@ function route() {
   const [view, id] = location.hash.slice(1).split('/');
   renderNav();
   const views = { server: () => serverView(id), network: networkView, ports: portsView, topology: topologyView, page: () => pageView(id), 'new-page': () => pageEdit(null), history: () => historyView(id), deleted: deletedView };
+  if (D.readOnly) for (const k of ['new-page', 'history', 'deleted']) delete views[k]; // a remembered device only reads
   (views[view] || overview)();
   window.scrollTo(0, 0);
 }
@@ -320,7 +321,7 @@ function serverView(id) {
     ...(doc.custom || []).map((f) => [f.label, f.value]),
   ]);
   show(
-    toolbar(el('h2', { text: dev.name }), el('span', { class: 'spacer' }), el('button', { type: 'button', text: 'Edit notes', onclick: () => serverEdit(dev, doc) })),
+    toolbar(el('h2', { text: dev.name }), el('span', { class: 'spacer' }), D.readOnly ? null : el('button', { type: 'button', text: 'Edit notes', onclick: () => serverEdit(dev, doc) })),
     el('p', { class: 'muted', text: [KIND[dev.kind], placement(dev), dev.model].filter(Boolean).join(' · ') }),
     el('h3', { text: 'Facts (automatic)' }),
     factsTable([
@@ -453,7 +454,7 @@ function networkView() {
   const res = [...n.reservations].sort((a, b) => ipNum(a.ip) - ipNum(b.ip));
   const unifiNets = D.auto.unifi.flatMap((u) => u.networks);
   show(
-    toolbar(el('h2', { text: 'Network plan' }), el('span', { class: 'spacer' }), el('button', { type: 'button', text: 'Edit', onclick: networkEdit })),
+    toolbar(el('h2', { text: 'Network plan' }), el('span', { class: 'spacer' }), D.readOnly ? null : el('button', { type: 'button', text: 'Edit', onclick: networkEdit })),
     el('h3', { text: 'Networks' }),
     nets.length
       ? el('div', { class: 'table-wrap' }, el('table', null,
@@ -660,8 +661,8 @@ function pageView(id) {
   if (!page) return show(el('p', { class: 'empty', text: 'Page not found.' }));
   show(
     toolbar(el('h2', { text: page.title }), el('span', { class: 'spacer' }),
-      el('a', { class: 'button', href: `#history/${page.id}`, text: 'History' }),
-      el('button', { type: 'button', text: 'Edit', onclick: () => pageEdit(page) })),
+      ...(D.readOnly ? [] : [el('a', { class: 'button', href: `#history/${page.id}`, text: 'History' }),
+        el('button', { type: 'button', text: 'Edit', onclick: () => pageEdit(page) })])),
     el('p', { class: 'small muted', text: navGroups().find((g) => g.items?.includes(`page:${page.id}`))?.name || '' }),
     MD.render(page.body),
     el('p', { class: 'hint', text: when(page.updatedAt) }));

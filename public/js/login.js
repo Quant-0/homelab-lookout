@@ -12,7 +12,7 @@ document.getElementById('login-form').addEventListener('submit', async (ev) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ username: document.getElementById('username').value, password: pw.value }),
+      body: JSON.stringify({ username: document.getElementById('username').value, password: pw.value, remember: document.getElementById('remember').checked }),
     });
     if (r.ok) {
       // Only fixed, same-site destinations: no open redirects.
@@ -30,3 +30,5 @@ document.getElementById('login-form').addEventListener('submit', async (ev) => {
     btn.disabled = false;
   }
 });
+
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});

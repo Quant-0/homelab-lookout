@@ -52,6 +52,7 @@ function render(d) {
   $('upd-check').disabled = d.running || recent;
   $('upd-check').textContent = d.running ? 'Checking…' : 'Check now';
   $('upd-check').title = recent ? 'Checked just now; you can check again in a minute' : '';
+  $('upd-check').hidden = Boolean(d.readOnly); // a remembered device only reads
   $('upd-lists').replaceChildren(...[
     section('Can be updated', avail),
     section("Couldn't check", failed),

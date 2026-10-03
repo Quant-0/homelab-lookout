@@ -38,9 +38,12 @@ const TZ = 'Europe/Oslo';
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
 const ENERGY_FILE = path.join(DATA_DIR, 'energy.json');
+const REMEMBER_FILE = path.join(DATA_DIR, 'remembered.json');
 
 const SESSION_IDLE_MS = 2 * 3600 * 1000;
 const SESSION_MAX_MS = 12 * 3600 * 1000;
+const REMEMBER_MS = 30 * 86400 * 1000; // "Remember this device": view-only, fixed 30 days from login
+const REMEMBER_MAX = 20;
 const MAX_BODY = 64 * 1024;
 const COLLECT_TIMEOUT_MS = 45000; // iDRAC8 can be slow to answer
 
@@ -3490,16 +3493,84 @@ function createSession(req, res, user) {
   return s;
 }
 
-function setCookie(req, res, value, maxAge) {
-  res.setHeader(
-    'Set-Cookie',
-    `${cookieName(req)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureRequest(req) ? '; Secure' : ''}`
-  );
+function setCookie(req, res, value, maxAge, name = cookieName(req)) {
+  const prev = res.getHeader('Set-Cookie');
+  res.setHeader('Set-Cookie', [
+    ...(prev ? [].concat(prev) : []),
+    `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureRequest(req) ? '; Secure' : ''}`,
+  ]);
+}
+
+// Remembered devices. "Remember this device" at login gives that browser 30 days of view-only
+// access: what the dashboard shows, plus Docs and Updates, but no changes and no Admin; those ask
+// for the password. The cookie holds a random token; only its SHA-256 hash is stored, so the file
+// can't be used to sign in. Admin → System lists the devices and can sign them out.
+const remembered = new Map(); // hash -> { id, hash, user, name, created, lastSeen, lastIp, expires, secure }
+const viewerCsrf = new Map(); // device id -> CSRF token for its log-out (memory only)
+let rememberedDirty = false;
+const tokenHash = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const deviceCookieName = (req) => (secureRequest(req) ? '__Host-hd_device' : 'hd_device');
+
+function loadRemembered() {
+  const admin = readAdmin();
+  for (const r of readJson(REMEMBER_FILE, {}).devices || []) {
+    // Devices remembered under an earlier password (changed here or with set-admin) are dropped
+    if (r && typeof r.hash === 'string' && /^[0-9a-f]{16}$/.test(r.id) && r.expires > Date.now() && admin && r.user === admin.username && r.pw === (admin.changedAt ?? null)) remembered.set(r.hash, r);
+  }
+}
+
+function saveRemembered() {
+  rememberedDirty = false;
+  writeJsonAtomic(REMEMBER_FILE, { devices: [...remembered.values()] });
+}
+
+function deviceName(ua) {
+  ua = String(ua || '');
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows'
+    : /Macintosh|Mac OS X/.test(ua) ? 'Mac' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : '';
+  const browser = /Edg(A|iOS)?\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /Firefox\/|FxiOS/.test(ua) ? 'Firefox'
+    : /OPR\//.test(ua) ? 'Opera' : /Chrome\/|CriOS/.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+  return [browser, os].filter(Boolean).join(' on ') || 'Unknown browser';
+}
+
+function rememberDevice(req, res, admin) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const now = Date.now();
+  const rec = { id: crypto.randomBytes(8).toString('hex'), hash: tokenHash(token), user: admin.username, pw: admin.changedAt ?? null, name: deviceName(req.headers['user-agent']), created: now, lastSeen: now, lastIp: req.socket.remoteAddress || '', expires: now + REMEMBER_MS, secure: secureRequest(req) };
+  remembered.set(rec.hash, rec);
+  for (const r of [...remembered.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(REMEMBER_MAX)) forgetDevice(r);
+  saveRemembered();
+  setCookie(req, res, token, REMEMBER_MS / 1000, deviceCookieName(req));
+}
+
+function forgetDevice(rec) {
+  remembered.delete(rec.hash);
+  viewerCsrf.delete(rec.id);
+  rememberedDirty = true;
+}
+
+function rememberedFor(req) {
+  const token = parseCookies(req.headers.cookie)[deviceCookieName(req)];
+  if (!token) return null;
+  const rec = remembered.get(tokenHash(token));
+  return rec && rec.secure === secureRequest(req) && rec.expires > Date.now() ? rec : null;
+}
+
+// View-only access from a remembered device, shaped like a session for the routes that read
+function getViewer(req) {
+  const rec = rememberedFor(req);
+  if (!rec) return null;
+  rec.lastSeen = Date.now();
+  rec.lastIp = req.socket.remoteAddress || '';
+  rememberedDirty = true;
+  if (!viewerCsrf.has(rec.id)) viewerCsrf.set(rec.id, crypto.randomBytes(32).toString('base64url'));
+  return { user: rec.user, csrf: viewerCsrf.get(rec.id), readOnly: true, device: rec };
 }
 
 setInterval(() => {
   const now = Date.now();
   for (const [id, s] of sessions) if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) sessions.delete(id);
+  for (const r of remembered.values()) if (r.expires <= now) forgetDevice(r);
   for (const [k, v] of loginFailures) if (now - v.last > 24 * 3600 * 1000) loginFailures.delete(k);
 }, 60 * 1000).unref();
 
@@ -3530,6 +3601,8 @@ const CSP = [
   "img-src 'self' data:",
   "connect-src 'self'",
   "font-src 'self'",
+  "manifest-src 'self'",
+  "worker-src 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
@@ -3635,10 +3708,11 @@ function csrfOk(req, session) {
 
 // Static files are loaded once into memory from an explicit allow-list.
 const STATIC = {};
-const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg']);
+const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg', '/static/js/offline.js',
+  '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
 const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
-  const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+  const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
   const files = {
     'login.html': 'login.html',
     'dashboard.html': 'dashboard.html',
@@ -3647,6 +3721,13 @@ function loadStatic() {
     'docs.html': 'docs.html',
     'updates.html': 'updates.html',
     'energy.html': 'energy.html',
+    'offline.html': 'offline.html',
+    '/sw.js': 'sw.js',
+    '/static/js/offline.js': 'js/offline.js',
+    '/static/icons/icon-192.png': 'icons/icon-192.png',
+    '/static/icons/icon-512.png': 'icons/icon-512.png',
+    '/static/icons/maskable-512.png': 'icons/maskable-512.png',
+    '/static/icons/apple-touch-icon.png': 'icons/apple-touch-icon.png',
     '/static/js/energy.js': 'js/energy.js',
     '/static/js/updates.js': 'js/updates.js',
     '/static/js/services.js': 'js/services.js',
@@ -3839,8 +3920,45 @@ function htmlAttrs(session) {
   return `data-theme="${a.theme}" data-bg="${bg}"`; // both values come from fixed allow-lists
 }
 
-function sendPage(res, key, session) {
-  const html = STATIC[key].body.toString('utf8').replace('<html lang="en">', `<html lang="en" ${htmlAttrs(session)}>`);
+// The bar colour of the installed app follows the theme (its --surface colour)
+const THEME_COLORS = {
+  light: '#fcfcfb', dark: '#1a1a19', nord: '#3b4252', dracula: '#282a36', 'catppuccin-mocha': '#1e1e2e', 'catppuccin-latte': '#eff1f5',
+  'solarized-dark': '#073642', 'solarized-light': '#fdf6e3', 'gruvbox-dark': '#282828', 'tokyo-night': '#1a1b26',
+};
+
+function appHead() {
+  const theme = config.settings.appearance.theme;
+  const color = THEME_COLORS[theme]
+    ? `<meta name="theme-color" content="${THEME_COLORS[theme]}">`
+    : `<meta name="theme-color" content="${THEME_COLORS.light}" media="(prefers-color-scheme: light)"><meta name="theme-color" content="${THEME_COLORS.dark}" media="(prefers-color-scheme: dark)">`;
+  // use-credentials: the app gets its name from the dashboard title only when signed in
+  return `<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">${color}<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">\n</head>`;
+}
+
+// Installable app. The name is the dashboard title for those who may see the dashboard,
+// otherwise just "Homelab"; nothing else in it says anything about the lab.
+function manifest(sees) {
+  const name = sees ? config.settings.dashboard.title : 'Homelab';
+  return {
+    id: '/',
+    name,
+    short_name: name.length > 12 ? 'Homelab' : name,
+    description: 'Homelab dashboard',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#1a1a19',
+    theme_color: THEME_COLORS[config.settings.appearance.theme] || THEME_COLORS.dark,
+    icons: [
+      { src: '/static/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/static/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/static/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
+  };
+}
+
+function sendPage(res, key, session, edit = (html) => html) {
+  const html = edit(STATIC[key].body.toString('utf8').replace('<html lang="en">', `<html lang="en" ${htmlAttrs(session)}>`).replace('</head>', appHead()));
   const body = Buffer.from(html);
   res.writeHead(200, { 'Content-Type': STATIC[key].type, 'Content-Length': body.length });
   res.end(body);
@@ -3967,8 +4085,10 @@ async function handleLogin(req, res) {
   const old = getSession(req);
   if (old) sessions.delete(old.id);
   createSession(req, res, admin.username);
-  log(`Admin login from ${ip}`);
-  sendJson(res, 200, { ok: true });
+  const known = rememberedFor(req);
+  if (body.remember === true && !known) rememberDevice(req, res, admin);
+  log(`Admin login from ${ip}${body.remember === true && !known ? ' (device remembered for viewing)' : ''}`);
+  sendJson(res, 200, { ok: true, remembered: Boolean(known) || body.remember === true });
 }
 
 function findHost(id) {
@@ -3984,34 +4104,38 @@ function forgetHost(id) {
   for (const k of redfishPathCache.keys()) if (k.startsWith(id + '|')) redfishPathCache.delete(k);
 }
 
-async function handleApi(req, res, url, session) {
+// What a remembered device may read besides the dashboard views; anything else asks for the password
+const VIEWER_READS = new Set(['/api/session', '/api/docs', '/api/updates']);
+
+async function handleApi(req, res, url, session, viewer = null) {
   const p = url.pathname;
   const m = req.method;
+  const sees = Boolean(session || viewer || config.settings.dashboard.public);
 
   if (p === '/api/login' && m === 'POST') return handleLogin(req, res);
 
   if (p === '/api/dashboard' && m === 'GET') {
-    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    if (!sees) return sendError(res, 401, 'Login required');
     const payload = dashboardPayload();
-    if (!session) forVisitors(payload);
+    if (!session && !viewer) forVisitors(payload);
     else {
       const up = updatesPayload().rows.filter((r) => r.available);
       payload.updates = { available: up.length, devices: [...new Set(up.filter((r) => r.ownerType === 'device' && r.owner).map((r) => r.owner))] };
     }
-    return sendJson(res, 200, { ...payload, loggedIn: Boolean(session) });
+    return sendJson(res, 200, { ...payload, loggedIn: Boolean(session), viewer: Boolean(viewer) });
   }
 
   if (p === '/api/energy/report' && m === 'GET') {
-    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    if (!sees) return sendError(res, 401, 'Login required');
     const period = url.searchParams.get('period') || zoned(Date.now()).month;
     const report = energyReport(period);
     const prev = report.kind === 'month'
       ? (() => { const [yy, mm] = period.split('-').map(Number); return mm === 1 ? `${yy - 1}-12` : `${yy}-${String(mm - 1).padStart(2, '0')}`; })()
       : String(Number(period) - 1);
-    return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), loggedIn: Boolean(session), title: config.settings.dashboard.title });
+    return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
   }
   if (p === '/api/energy/export' && m === 'GET') {
-    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    if (!sees) return sendError(res, 401, 'Login required');
     const period = url.searchParams.get('period') || '';
     const by = url.searchParams.get('by') === 'month' ? 'month' : 'day';
     const format = url.searchParams.get('format') === 'std' ? 'std' : 'no';
@@ -4024,7 +4148,7 @@ async function handleApi(req, res, url, session) {
     return res.end(body);
   }
   if (p === '/api/history' && m === 'GET') {
-    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
+    if (!sees) return sendError(res, 401, 'Login required');
     const ranges = { '24h': 24 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
     const rangeMs = ranges[url.searchParams.get('range')] || ranges['24h'];
     const points = Math.min(Math.max(parseInt(url.searchParams.get('points') || '120', 10) || 120, 10), 500);
@@ -4033,20 +4157,53 @@ async function handleApi(req, res, url, session) {
   }
 
   if (p === '/api/services' && m === 'GET') {
-    if (!session && !config.settings.dashboard.public) return sendError(res, 401, 'Login required');
-    return sendJson(res, 200, { ...servicesPayload(Boolean(session)), loggedIn: Boolean(session), title: config.settings.dashboard.title });
+    if (!sees) return sendError(res, 401, 'Login required');
+    return sendJson(res, 200, { ...servicesPayload(Boolean(session)), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
   }
 
-  if (!session) return sendError(res, 401, 'Login required');
+  if (!session) {
+    if (!viewer) return sendError(res, 401, 'Login required');
+    // A remembered device reads; it never changes anything
+    if (!(m === 'GET' && VIEWER_READS.has(p)) && !(m === 'POST' && p === '/api/logout')) return sendError(res, 401, 'Enter your password to make changes');
+    session = viewer;
+  }
 
-  if (p === '/api/session' && m === 'GET') return sendJson(res, 200, { user: session.user, csrf: session.csrf });
+  if (p === '/api/session' && m === 'GET') return sendJson(res, 200, { user: session.user, csrf: session.csrf, readOnly: Boolean(session.readOnly) });
 
   // Everything below changes state or exposes admin data: require CSRF token on writes.
   if (m !== 'GET' && !csrfOk(req, session)) return sendError(res, 403, 'Invalid CSRF token');
 
   if (p === '/api/logout' && m === 'POST') {
-    sessions.delete(session.id);
+    // Logging out also forgets this device, if it was remembered
+    if (!session.readOnly) sessions.delete(session.id);
+    const device = rememberedFor(req);
+    if (device) {
+      forgetDevice(device);
+      saveRemembered();
+    }
     setCookie(req, res, '', 0);
+    setCookie(req, res, '', 0, deviceCookieName(req));
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (p === '/api/admin/remembered' && m === 'GET') {
+    const here = rememberedFor(req);
+    const devices = [...remembered.values()].filter((r) => r.expires > Date.now()).sort((a, b) => b.lastSeen - a.lastSeen);
+    return sendJson(res, 200, { days: REMEMBER_MS / 86400e3, devices: devices.map((r) => ({ id: r.id, name: r.name, created: r.created, lastSeen: r.lastSeen, lastIp: r.lastIp, expires: r.expires, current: r === here })) });
+  }
+  if (p === '/api/admin/remembered' && m === 'DELETE') {
+    for (const r of [...remembered.values()]) forgetDevice(r);
+    saveRemembered();
+    log('All remembered devices signed out');
+    return sendJson(res, 200, { ok: true });
+  }
+  const rmd = p.match(/^\/api\/admin\/remembered\/([0-9a-f]{16})$/);
+  if (rmd && m === 'DELETE') {
+    const rec = [...remembered.values()].find((r) => r.id === rmd[1]);
+    if (!rec) return sendError(res, 404, 'Not found');
+    forgetDevice(rec);
+    saveRemembered();
+    log(`Remembered device signed out: ${rec.name}`);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -4433,7 +4590,7 @@ async function handleApi(req, res, url, session) {
   }
 
   // --- Documentation (login required even when the dashboard is public) ---
-  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto(), deletedCount: docsHistory.deleted.length });
+  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto(), deletedCount: docsHistory.deleted.length, readOnly: Boolean(session.readOnly) });
   const ds = p.match(/^\/api\/docs\/servers\/([0-9a-f-]{36})$/);
   if (ds && m === 'PUT') {
     findDevice(ds[1]);
@@ -4536,7 +4693,7 @@ async function handleApi(req, res, url, session) {
 
   // --- Backup ---
   // --- Updates (admin only: versions help an attacker) ---
-  if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, updatesPayload());
+  if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, { ...updatesPayload(), readOnly: Boolean(session.readOnly) });
   if (p === '/api/admin/updates/check' && m === 'POST') {
     if (!updatesRunning && Date.now() - updatesManualAt < 60000) throw Object.assign(new UserError('Checked less than a minute ago; try again shortly'), { status: 429 });
     updatesManualAt = Date.now();
@@ -4806,9 +4963,14 @@ async function handleApi(req, res, url, session) {
     }
     const problem = passwordProblem(body.password);
     if (problem) throw new UserError(problem);
-    writeJsonAtomic(ADMIN_FILE, { username: admin.username, hash: await hashPassword(body.password), changedAt: Date.now() });
+    const changedAt = Date.now();
+    writeJsonAtomic(ADMIN_FILE, { username: admin.username, hash: await hashPassword(body.password), changedAt });
     for (const id of sessions.keys()) if (id !== session.id) sessions.delete(id);
-    log('Admin password changed; other sessions revoked');
+    const here = rememberedFor(req);
+    for (const r of [...remembered.values()]) if (r !== here) forgetDevice(r);
+    if (here) here.pw = changedAt;
+    saveRemembered();
+    log('Admin password changed; other sessions and remembered devices signed out');
     return sendJson(res, 200, { ok: true });
   }
 
@@ -4827,38 +4989,53 @@ async function handle(req, res) {
   const p = url.pathname;
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
   const session = getSession(req);
+  const viewer = session ? null : getViewer(req); // a remembered device: view only
+  const seer = session || viewer;
+  const sees = Boolean(seer || config.settings.dashboard.public);
 
   try {
-    if (p.startsWith('/api/')) return await handleApi(req, res, url, session);
+    if (p.startsWith('/api/')) return await handleApi(req, res, url, session, viewer);
     if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
 
-    if (p === '/login') return session ? redirect(res, '/') : sendPage(res, 'login.html', session);
+    if (p === '/login') {
+      if (session) return redirect(res, '/');
+      // A remembered device comes here when something needs the password; it's already remembered
+      return sendPage(res, 'login.html', seer, viewer ? (h) => h.replace('id="reauth" hidden', 'id="reauth"').replace('id="remember-row"', 'id="remember-row" hidden') : undefined);
+    }
     if (p === '/') {
-      if (!session && !config.settings.dashboard.public) return redirect(res, '/login');
-      return sendPage(res, 'dashboard.html', session);
+      if (!sees) return redirect(res, '/login');
+      return sendPage(res, 'dashboard.html', seer);
     }
     if (p === '/admin') return session ? sendPage(res, 'admin.html', session) : redirect(res, '/login?next=admin');
     if (p === '/services') {
-      if (!session && !config.settings.dashboard.public) return redirect(res, '/login?next=services');
-      return sendPage(res, 'services.html', session);
+      if (!sees) return redirect(res, '/login?next=services');
+      return sendPage(res, 'services.html', seer);
     }
-    if (p === '/docs') return session ? sendPage(res, 'docs.html', session) : redirect(res, '/login?next=docs');
-    if (p === '/updates') return session ? sendPage(res, 'updates.html', session) : redirect(res, '/login?next=updates');
+    if (p === '/docs') return seer ? sendPage(res, 'docs.html', seer) : redirect(res, '/login?next=docs');
+    if (p === '/updates') return seer ? sendPage(res, 'updates.html', seer) : redirect(res, '/login?next=updates');
     if (p === '/energy') {
-      if (!session && !config.settings.dashboard.public) return redirect(res, '/login?next=energy');
-      return sendPage(res, 'energy.html', session);
+      if (!sees) return redirect(res, '/login?next=energy');
+      return sendPage(res, 'energy.html', seer);
     }
+    // The installable app: manifest, service worker and its offline screen hold no data
+    if (p === '/manifest.webmanifest') {
+      const body = Buffer.from(JSON.stringify(manifest(sees)));
+      res.writeHead(200, { 'Content-Type': 'application/manifest+json; charset=utf-8', 'Content-Length': body.length });
+      return res.end(body);
+    }
+    if (p === '/sw.js') return sendStatic(res, '/sw.js');
+    if (p === '/offline') return sendPage(res, 'offline.html', null);
     const im = p.match(/^\/media\/icon\/([0-9a-f]{32})$/);
     if (im) {
       const rec = config.icons.find((i) => i.id === im[1]);
       if (!rec) return sendError(res, 404, 'Not found');
-      if (!backgroundVisible(session)) return sendError(res, 401, 'Login required');
+      if (!backgroundVisible(seer)) return sendError(res, 401, 'Login required');
       const data = fs.readFileSync(path.join(ICON_DIR, rec.id));
       res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
       return res.end(data);
     }
     if (p === '/appearance.css') {
-      const css = Buffer.from(appearanceCss(session));
+      const css = Buffer.from(appearanceCss(seer));
       res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Content-Length': css.length });
       return res.end(css);
     }
@@ -4866,14 +5043,14 @@ async function handle(req, res) {
     if (mm) {
       const rec = config.backgrounds.find((b) => b.id === mm[1]);
       if (!rec) return sendError(res, 404, 'Not found');
-      if (!backgroundVisible(session)) return sendError(res, 401, 'Login required');
+      if (!backgroundVisible(seer)) return sendError(res, 401, 'Login required');
       const data = fs.readFileSync(path.join(BACKGROUND_DIR, rec.id));
       // Immutable: ids are random and never reused
       res.writeHead(200, { 'Content-Type': rec.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
       return res.end(data);
     }
     if (STATIC[p] && p.startsWith('/static/')) {
-      const allowed = PUBLIC_ASSETS.has(p) || session || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
+      const allowed = PUBLIC_ASSETS.has(p) || session || (viewer && p !== '/static/js/admin.js') || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
       return allowed ? sendStatic(res, p) : sendError(res, 401, 'Login required');
     }
     if (p === '/favicon.ico') return sendStatic(res, '/static/favicon.svg');
@@ -5858,7 +6035,11 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   history = cleanHistory(bundle.history);
   historyDirty = true;
   saveHistory();
-  if (admin && bundle.admin?.username && bundle.admin?.hash) writeJsonAtomic(ADMIN_FILE, bundle.admin);
+  if (admin && bundle.admin?.username && bundle.admin?.hash) {
+    writeJsonAtomic(ADMIN_FILE, bundle.admin);
+    for (const r of [...remembered.values()]) forgetDevice(r); // they belonged to the replaced password
+    saveRemembered();
+  }
   results.clear();
   serviceResults.clear();
   lastSample.clear();
@@ -6367,7 +6548,7 @@ async function cliSetAdmin(username) {
   const again = await readPasswordFromTty('Repeat password: ');
   if (again !== pw) fatal('Passwords do not match');
   writeJsonAtomic(ADMIN_FILE, { username, hash: await hashPassword(pw), changedAt: Date.now() });
-  console.log(`Admin account "${username}" saved in ${ADMIN_FILE}. Restart the service to end existing sessions.`);
+  console.log(`Admin account "${username}" saved in ${ADMIN_FILE}. Restart the service to end existing sessions and remembered devices.`);
 }
 
 async function main() {
@@ -6397,6 +6578,7 @@ async function main() {
   loadUpdates();
   loadDocs();
   loadDocsHistory();
+  loadRemembered();
   loadStatic();
   initAllowedHosts();
   DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
@@ -6415,6 +6597,7 @@ async function main() {
   schedulePolling();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
   setInterval(saveHistory, 5 * 60 * 1000).unref();
+  setInterval(() => rememberedDirty && saveRemembered(), 5 * 60 * 1000).unref(); // "last used"
   setInterval(backupTick, 30 * 1000).unref();
   setTimeout(updatesTick, 2 * 60 * 1000).unref(); // after the first polls, so Proxmox nodes are known
   setInterval(updatesTick, 5 * 60 * 1000).unref();
@@ -6423,6 +6606,7 @@ async function main() {
       saveEnergy();
       saveHistory();
       saveAlertState();
+      if (rememberedDirty) saveRemembered();
     } finally {
       process.exit(0);
     }

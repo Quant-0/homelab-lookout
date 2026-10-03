@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Offline · Homelab</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <div class="login-wrap">
+    <section class="card login offline">
+      <h1><img src="/static/favicon.svg" alt=""> Homelab</h1>
+      <h2>Can't reach the dashboard</h2>
+      <p class="muted">Check that this device is on the home network or connected with Tailscale. The page opens by itself once the dashboard answers again.</p>
+      <button class="primary" type="button" id="retry">Try again</button>
+      <p class="msg" id="offline-msg" role="status"></p>
+    </section>
+  </div>
+  <script src="/static/js/offline.js"></script>
+</body>
+</html>

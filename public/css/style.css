@@ -416,6 +416,10 @@ details.table-view summary { cursor: pointer; }
 .login h1 img { width: 26px; height: 26px; }
 .login label { margin-bottom: 12px; }
 .login button { width: 100%; justify-content: center; padding: 9px; }
+.login label.check { font-size: 13px; color: var(--text-2); margin-bottom: 14px; }
+.login #reauth { margin: -6px 0 14px; }
+.offline h2 { margin: 0 0 6px; font-size: 17px; color: var(--text); text-transform: none; letter-spacing: 0; }
+.offline p.muted { margin: 0 0 16px; line-height: 1.5; }
 
 /* ---------- Admin ---------- */
 .admin main { max-width: 1100px; }

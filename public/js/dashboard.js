@@ -262,9 +262,9 @@ function deviceCard(dev, sections, d) {
     el('div', { class: 'dc-foot' },
       el('div', { class: 'dc-foot-left' },
         fans.length ? el('span', { class: 'fans mini', role: 'img', 'aria-label': `${fans.length} fans${badFans ? `, ${badFans} not OK` : ', all OK'}` }, fans.map((f, i) => fanNode(`mini|${dev.id}|${i}`, f))) : null,
-        update ? (d.loggedIn ? el('a', { class: 'dc-update', href: '/updates' }, el('span', { class: 'led info', 'aria-hidden': 'true' }), 'Update available') : el('span', { class: 'small muted', text: 'Update available' })) : null),
+        update ? (d.loggedIn || d.viewer ? el('a', { class: 'dc-update', href: '/updates' }, el('span', { class: 'led info', 'aria-hidden': 'true' }), 'Update available') : el('span', { class: 'small muted', text: 'Update available' })) : null),
       el('div', { class: 'dc-links' },
-        d.loggedIn ? el('a', { href: `/docs#server/${dev.id}`, text: 'Sheet' }) : null,
+        d.loggedIn || d.viewer ? el('a', { href: `/docs#server/${dev.id}`, text: 'Sheet' }) : null,
         sections.length ? toggle : null)),
     details);
 }
@@ -822,12 +822,13 @@ const board = new GridLayout.Board($('grid'), { onEditChange: () => renderEditBa
 let layoutLoaded = false;
 
 function renderNav(d) {
-  $('view-tabs').replaceChildren(...HD.viewTabs('overview', d.loggedIn));
+  $('view-tabs').replaceChildren(...HD.viewTabs('overview', d.loggedIn || d.viewer));
   const items = [];
   if (d.loggedIn) {
     items.push(el('button', { type: 'button', id: 'customize', text: 'Customize', disabled: board.editing, onclick: () => board.startEdit() }));
     items.push(el('a', { class: 'button', href: '/admin', text: 'Admin' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout }));
-  } else items.push(el('a', { class: 'button', href: '/login', text: 'Log in' }));
+  } else if (d.viewer) items.push(...HD.viewerNav());
+  else items.push(el('a', { class: 'button', href: '/login', text: 'Log in' }));
   $('nav').replaceChildren(...items);
 }
 

@@ -60,6 +60,18 @@ const portOpen = (port) => new Promise((res) => { const s = net.connect({ host: 
   r = await H('POST', '/api/login', { username: 'admin', password: 'correct horse battery' });
   ok(r.status === 200 && /^__Host-hd_session=/.test(r.cookie) && /; Secure/.test(r.cookie), 'login over HTTPS: __Host- cookie with Secure');
   csrf = (await H('GET', '/api/session')).json.csrf;
+
+  // a remembered device over HTTPS: its own __Host- cookie, Secure, and it reads over HTTPS only
+  const keep = jars.https;
+  r = await H('POST', '/api/login', { username: 'admin', password: 'correct horse battery', remember: true }, { Cookie: '' });
+  const dc = (r.headers['set-cookie'] || []).find((c) => c.startsWith('__Host-hd_device='));
+  ok(dc && /; Secure/.test(dc) && /HttpOnly/.test(dc) && /SameSite=Strict/.test(dc) && /Path=\//.test(dc) && !/Domain=/i.test(dc), 'remembered device over HTTPS: __Host- cookie, Secure, HttpOnly, SameSite=Strict');
+  const device = dc.split(';')[0];
+  r = await H('GET', '/api/dashboard', undefined, { Cookie: device });
+  ok(r.status === 200 && r.json.viewer === true && r.json.loggedIn === false, 'the device cookie alone reads the dashboard over HTTPS (view only)');
+  r = await H('GET', '/api/admin/server', undefined, { Cookie: device });
+  ok(r.status === 401, 'and it cannot read admin settings');
+  jars.https = keep;
   r = await H('GET', '/api/admin/server');
   ok(r.json.current === 'https' && r.json.tls?.caFingerprint && r.json.urls.https === `https://127.0.0.1:${httpsPort}`, 'server status: URLs, certificate and CA fingerprint');
   ok(r.json.tls.validTo > Date.now() + 700 * 86400000, 'server certificate valid ~825 days');

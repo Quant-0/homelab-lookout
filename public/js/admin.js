@@ -206,7 +206,8 @@ $('pw-form').addEventListener('submit', async (ev) => {
   if (f.password.value !== f.password2.value) return showMsg('pw-msg', 'New passwords do not match', false);
   try {
     await api('POST', '/api/admin/password', { current: f.current.value, password: f.password.value });
-    showMsg('pw-msg', 'Password changed. Other sessions have been signed out.', true);
+    showMsg('pw-msg', 'Password changed. Other sessions and remembered devices have been signed out.', true);
+    loadRemembered();
   } catch (e) {
     showMsg('pw-msg', e.message, false);
   } finally {
@@ -1893,6 +1894,7 @@ function showTab(name, focus) {
   if (name === 'system') {
     loadWeb();
     loadBackup();
+    loadRemembered();
   }
   if (name === 'alerts') loadAlerts();
 }
@@ -1907,6 +1909,68 @@ document.querySelector('.page-tabs').addEventListener('keydown', (e) => {
 });
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 showTab(location.hash.slice(1));
+
+// ---------------------------------------------------------------------------
+// Remembered devices (view only) and installing the app
+
+const shortIp = (ip) => String(ip || '').replace(/^::ffff:/, '');
+
+async function loadRemembered() {
+  try {
+    const r = await api('GET', '/api/admin/remembered');
+    $('remembered-all').hidden = r.devices.length < 2;
+    $('remembered').replaceChildren(r.devices.length
+      ? el('div', { class: 'table-wrap' }, el('table', null,
+        el('thead', null, el('tr', null, el('th', { text: 'Device' }), el('th', { text: 'Last used' }), el('th', { text: 'Remembered until' }), el('th'))),
+        el('tbody', null, r.devices.map((d) => el('tr', null,
+          el('td', null, el('div', null, d.name, d.current ? el('span', { class: 'small muted', text: ' · this device' }) : ''), el('div', { class: 'small muted num', text: `from ${shortIp(d.lastIp)}` })),
+          el('td', { class: 'small num', text: fmt.time(d.lastSeen) }),
+          el('td', { class: 'small num', text: fmt.time(d.expires) }),
+          el('td', { class: 'r' }, el('button', { type: 'button', text: 'Sign out', onclick: () => forgetRemembered(d) })))))))
+      : el('p', { class: 'small muted', text: 'None.' }));
+  } catch (e) {
+    $('remembered').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+async function forgetRemembered(d) {
+  try {
+    await api('DELETE', `/api/admin/remembered/${d.id}`);
+  } finally {
+    loadRemembered();
+  }
+}
+
+$('remembered-all').addEventListener('click', async () => {
+  if (!confirm('Sign out every remembered device? They will need the password again.')) return;
+  try {
+    await api('DELETE', '/api/admin/remembered');
+  } finally {
+    loadRemembered();
+  }
+});
+
+let installPrompt = null;
+const appState = (installable, text) => {
+  $('app-install').hidden = !installable;
+  $('app-state').textContent = text;
+  $('app-actions').hidden = !installable && !text;
+};
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  appState(true, '');
+});
+window.addEventListener('appinstalled', () => appState(false, 'Installed on this device.'));
+$('app-install').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  appState(false, '');
+});
+if (matchMedia('(display-mode: standalone)').matches) appState(false, 'You are using the installed app.');
+else if (!window.isSecureContext) appState(false, 'Open the dashboard over HTTPS to install it.');
 
 $('logout').addEventListener('click', HD.logout);
 load();
