@@ -32,7 +32,7 @@ const WORDS = ['OK', 'Warning', 'Problem', 'Offline', 'Waiting', 'Not monitored'
   // needs attention
   const items = await page.$$eval('#attention .attn-list li', (n) => n.map((x) => x.textContent));
   check(items.some((t) => /titan.*PS2/.test(t)) && items.some((t) => /truenas.*pool fast/.test(t)), `attention lists the problems: ${items.slice(0, 3).join(' | ')}`);
-  check(await page.locator('#attention.critical').count() === 1 && /Devices \d+ of \d+ online/.test(await page.textContent('#attention .attn-counts')), 'attention is red and shows the totals');
+  check(await page.locator('#attention.critical').count() === 1 && /\d+\/\d+ devices online/.test(await page.textContent('#attention .attn-stats')), 'attention is red and shows the totals');
   const total = await page.evaluate(async () => (await (await fetch('/api/dashboard')).json()).attention.length);
   check(items.length === Math.min(total, 5) && (total <= 5 || new RegExp(`Show all ${total}`).test(await page.textContent('#attention'))), `at most five at first, then "Show all" (${total} in all)`);
   await page.locator('#attention .attn-link', { hasText: 'PS2' }).click();
@@ -40,7 +40,7 @@ const WORDS = ['OK', 'Warning', 'Problem', 'Offline', 'Waiting', 'Not monitored'
   check(await page.evaluate(() => document.querySelector('.widget.flash h3')?.textContent) === 'titan', 'clicking a problem jumps to its device');
 
   // compact cards
-  const words = await page.$$eval('.device-card > .card-head .status', (n) => n.map((x) => x.textContent));
+  const words = await page.$$eval('.device-card > .dc-head .status', (n) => n.map((x) => x.textContent));
   check(words.length === 5 && words.every((w) => WORDS.includes(w)), `one status per card, from one vocabulary: ${words.join(', ')}`);
   const titan = page.locator('.device-card', { hasText: 'titan' });
   check(await titan.locator('.dc-metrics > div').count() === 4 && await titan.locator('.dc-issues li').count() >= 2, 'titan: four key numbers and its problems');
@@ -65,7 +65,7 @@ const WORDS = ['OK', 'Warning', 'Problem', 'Offline', 'Waiting', 'Not monitored'
   check(await page.locator('.device-card a:text-is("Sheet")').count() === words.length, 'every card links to its Docs sheet');
 
   // one power card
-  check(await page.locator('.widget[data-id="power-chart"]').count() === 0 && await page.locator('.power-card .dc-metrics > div').count() === 4, 'one power card with four numbers');
+  check(await page.locator('.widget[data-id="power-chart"]').count() === 0 && await page.locator('.power-card .power-tiles > .ptile').count() === 4, 'one power card with four numbers');
   check(await page.locator('.power-card .power-chart').count() === 0, 'no empty 30-day chart on a new install');
   await page.locator('.power-card .details-toggle').click();
   check(/Per year at this draw/.test(await page.textContent('.power-card .card-details')), 'yearly figures under Details');

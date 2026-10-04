@@ -2,45 +2,48 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Energy · Homelab</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
 </head>
-<body>
+<body class="app">
   <div class="app-bg" aria-hidden="true"></div>
-  <header class="topbar">
-    <div class="brand"><img src="/static/favicon.svg" alt=""><h1 id="title">Homelab</h1></div>
-    <nav class="view-tabs" id="view-tabs" aria-label="Views"></nav>
-    <span class="spacer"></span>
-    <nav id="nav"></nav>
-  </header>
-  <main class="energy-main">
-    <p class="banner hidden" id="global-error" role="alert"></p>
-    <section class="card energy-head">
-      <div class="energy-title">
-        <h2>Energy report</h2>
-        <div class="energy-period">
-          <div class="range-tabs" role="group" aria-label="Report period">
-            <button type="button" id="en-month" aria-pressed="true">Month</button>
-            <button type="button" id="en-year" aria-pressed="false">Year</button>
-          </div>
-          <div class="energy-step">
-            <button type="button" id="en-prev" aria-label="Previous period">‹</button>
-            <select id="en-period" aria-label="Period"></select>
-            <button type="button" id="en-next" aria-label="Next period">›</button>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Energy report</h1>
+      <span class="spacer"></span>
+      <div class="page-actions" id="nav"></div>
+    </header>
+    <main class="energy-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <section class="card energy-head">
+        <div class="energy-title">
+          <div class="energy-period">
+            <div class="range-tabs" role="group" aria-label="Report period">
+              <button type="button" id="en-month" aria-pressed="true">Month</button>
+              <button type="button" id="en-year" aria-pressed="false">Year</button>
+            </div>
+            <div class="energy-step">
+              <button type="button" id="en-prev" aria-label="Previous period">‹</button>
+              <select id="en-period" aria-label="Period"></select>
+              <button type="button" id="en-next" aria-label="Next period">›</button>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="energy-downloads" id="en-downloads"></div>
-    </section>
-    <div class="tiles energy-tiles" id="en-tiles"></div>
-    <section class="card"><div class="card-type" id="en-chart-title"></div><div id="en-chart"></div></section>
-    <section class="card" id="en-devices-card"><div class="card-type">Per device</div><div id="en-devices"></div></section>
-    <p class="hint" id="en-notes"></p>
-  </main>
+        <div class="energy-downloads" id="en-downloads"></div>
+      </section>
+      <div class="tiles energy-tiles" id="en-tiles"></div>
+      <section class="card"><div class="card-type" id="en-chart-title"></div><div id="en-chart"></div></section>
+      <section class="card" id="en-devices-card"><div class="card-type">Per device</div><div id="en-devices"></div></section>
+      <p class="hint" id="en-notes"></p>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/energy.js"></script>
 </body>

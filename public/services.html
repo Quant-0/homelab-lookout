@@ -2,28 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Services · Homelab</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
 </head>
-<body>
+<body class="app">
   <div class="app-bg" aria-hidden="true"></div>
-  <header class="topbar">
-    <div class="brand"><img src="/static/favicon.svg" alt=""><h1 id="title">Homelab</h1></div>
-    <nav class="view-tabs" id="view-tabs" aria-label="Views"></nav>
-    <span class="muted small" id="updated"></span>
-    <span class="spacer"></span>
-    <nav id="nav"></nav>
-  </header>
-  <main class="services-main">
-    <p class="banner hidden" id="global-error" role="alert"></p>
-    <div class="edit-bar hidden" id="edit-bar" role="toolbar" aria-label="Customize services"></div>
-    <p class="sr-only" id="announce" aria-live="polite"></p>
-    <div id="groups"></div>
-  </main>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Services</h1>
+      <span class="page-meta" id="updated"></span>
+      <span class="spacer"></span>
+      <div class="page-actions" id="nav"></div>
+    </header>
+    <main class="services-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <div class="edit-bar hidden" id="edit-bar" role="toolbar" aria-label="Customize services"></div>
+      <p class="sr-only" id="announce" aria-live="polite"></p>
+      <div id="groups"></div>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/services.js"></script>
 </body>

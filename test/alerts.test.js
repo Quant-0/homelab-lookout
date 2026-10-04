@@ -237,7 +237,7 @@ const smtpServers = [smtpMock(18025), smtpMock(18026, { starttls: false }), smtp
   const dcMsg = posts.slice(n0).find((x) => x.path.startsWith('/api/webhooks/'));
   ok(dcMsg && /CPU2 Temp at 88/.test(dcMsg.json.embeds[0].title) && !posts.slice(n0).some((x) => x.path.startsWith('/api/webhooks/') && /PS2/.test(JSON.stringify(x.json))), 'Discord only got the temperature alert (routing)');
   r = await req('GET', '/api/admin/alerts');
-  ok(r.json.active.filter((a) => a.firedAt).length === 3 && r.json.log[0].sent.length >= 1, `3 active alerts and a log entry (${r.json.active.map((a) => a.title).join('; ')})`);
+  ok(r.json.active.filter((a) => a.firedAt).length === 4 && r.json.active.some((a) => /drive in bay 4 is predicted to fail/.test(a.title)) && r.json.log[0].sent.length >= 1, `4 active alerts (incl. the drive the iDRAC predicts will fail) and a log entry (${r.json.active.map((a) => a.title).join('; ')})`);
 
   // offline, then resolved
   const n1 = posts.length;

@@ -52,7 +52,7 @@ function showMsg(id, text, ok) {
 async function load() {
   try {
     state = await api('GET', '/api/admin/config');
-    $('whoami').textContent = `Signed in as ${state.user}`;
+    HD.shell({ title: state.settings.dashboard.title });
     $('passive-add').replaceChildren(el('option', { value: '', text: 'Add panel…' }), ...Object.entries(Rack.PASSIVE_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
     $('passive-kind').replaceChildren(...Object.entries(Rack.PASSIVE_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
     $('device-front').replaceChildren(...Object.entries(Rack.FRONT_LABELS).map(([k, l]) => el('option', { value: k, text: l })));
@@ -250,7 +250,6 @@ function renderDevicesTab() {
   fillRackSettings();
   const rack = rackData?.rack || { ...state.rack, items: [] };
   Rack.render($('rack-preview'), rack, rackData, {
-    uPx: 28,
     editable: true,
     selectedId: draft?.id || passiveDraft?.id,
     onSelect: (item) => openDevice(state.devices.find((d) => d.id === item.id)),
@@ -1972,5 +1971,5 @@ $('app-install').addEventListener('click', async () => {
 if (matchMedia('(display-mode: standalone)').matches) appState(false, 'You are using the installed app.');
 else if (!window.isSecureContext) appState(false, 'Open the dashboard over HTTPS to install it.');
 
-$('logout').addEventListener('click', HD.logout);
+HD.shell({ active: 'admin', admin: true });
 load();

@@ -82,11 +82,8 @@ function change(now, before) {
 function render(r) {
   state = r;
   document.title = `Energy · ${r.title}`;
-  $('title').textContent = r.title;
-  $('view-tabs').replaceChildren(...HD.viewTabs('overview', r.loggedIn || r.viewer));
-  $('nav').replaceChildren(...(r.loggedIn
-    ? [el('a', { class: 'button', href: '/admin#power', text: 'Prices' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout })]
-    : r.viewer ? HD.viewerNav() : [el('a', { class: 'button', href: '/login?next=energy', text: 'Log in' })]));
+  HD.shell({ active: 'energy', title: r.title, admin: r.loggedIn, viewer: r.viewer });
+  $('nav').replaceChildren(...(r.loggedIn ? [HD.iconButton('settings', 'Prices', { href: '/admin#power' })] : []));
   const isYear = r.kind === 'year';
   $('en-month').setAttribute('aria-pressed', String(!isYear));
   $('en-year').setAttribute('aria-pressed', String(isYear));

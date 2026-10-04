@@ -35,7 +35,20 @@ const redfish = {
     ],
     Fans: [1, 2, 3, 4, 5, 6].map((i) => ({ Name: `System Board Fan${i}`, Reading: i === 6 ? 0 : 3000 + i * 1500, ReadingUnits: 'RPM', Status: { Health: i === 6 ? 'Critical' : 'OK' } })),
   },
+  '/redfish/v1/Systems/System.Embedded.1/Storage': { Members: [
+    { '@odata.id': '/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1' },
+    { '@odata.id': '/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Slot.2-1' },
+  ] },
 };
+// PERC with 10 drives in the 12 front bays (10 and 11 empty), bay 4 predicted to fail; BOSS card inside
+const DRIVE = (bay) => `/redfish/v1/Systems/System.Embedded.1/Storage/Drives/Disk.Bay.${bay}:Enclosure.Internal.0-1:RAID.Integrated.1-1`;
+redfish['/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1'] = { Id: 'RAID.Integrated.1-1', Name: 'PERC H730P Mini', Drives: Array.from({ length: 10 }, (_, i) => ({ '@odata.id': DRIVE(i) })) };
+for (let i = 0; i < 10; i++) {
+  redfish[DRIVE(i)] = { Id: `Disk.Bay.${i}:Enclosure.Internal.0-1:RAID.Integrated.1-1`, Name: `Physical Disk 0:1:${i}`, Model: i < 8 ? 'ST4000NM0035' : 'MZ7KM480HMHQ', MediaType: i < 8 ? 'HDD' : 'SSD', CapacityBytes: i < 8 ? 4000225165312 : 480103981056,
+    FailurePredicted: i === 4, Status: { Health: i === 4 ? 'Warning' : 'OK', State: 'Enabled' }, Oem: { Dell: { DellPhysicalDisk: { DriveFormFactor: 'ThreePointFiveInch' } } } };
+}
+redfish['/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Slot.2-1'] = { Id: 'AHCI.Slot.2-1', Name: 'BOSS-S1', Drives: [{ '@odata.id': '/redfish/v1/Systems/System.Embedded.1/Storage/Drives/Disk.Direct.0-0:AHCI.Slot.2-1' }] };
+redfish['/redfish/v1/Systems/System.Embedded.1/Storage/Drives/Disk.Direct.0-0:AHCI.Slot.2-1'] = { Id: 'Disk.Direct.0-0:AHCI.Slot.2-1', Name: 'SSD 0', Model: 'MTFDDAV240TCB', MediaType: 'SSD', Status: { Health: 'OK' } };
 
 function wsAccept(key) {
   return crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');

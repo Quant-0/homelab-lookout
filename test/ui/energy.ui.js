@@ -17,7 +17,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.click('button[type=submit]');
   await page.waitForURL(B + '/');
   await page.waitForSelector('.power-card');
-  await page.click('.power-card a:text-is("Report")');
+  await page.click('.power-card a:has-text("Energy report")');
   await page.waitForURL(B + '/energy');
   await page.waitForSelector('#en-tiles .tile');
   check(true, 'the power card links to the report');

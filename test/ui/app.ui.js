@@ -37,11 +37,14 @@ let offline = false; // failed requests are expected while offline
   // two hours later: the session is gone, the device is still remembered
   await context.clearCookies({ name: 'hd_session' });
   await page.reload();
-  await page.waitForSelector('#nav button:text-is("Log out")');
-  const nav = await page.$$eval('#nav > *', (n) => n.map((x) => x.textContent));
-  check(nav.join(',') === 'Admin,Log out', `view only: nav is ${nav.join(', ')} (no Customize)`);
-  const tabs = await page.$$eval('#view-tabs a', (n) => n.map((x) => x.textContent));
-  check(tabs.includes('Docs') && tabs.includes('Updates'), 'Docs and Updates are readable');
+  await page.waitForSelector('.tabbar a.tab:has-text("Docs")');
+  check(await page.locator('#nav > *').count() === 0, 'view only: no Customize');
+  const tabs = await page.$$eval('.tabbar .tab .label', (n) => n.map((x) => x.textContent));
+  await page.click('.tabbar button.tab:has-text("More")');
+  await page.waitForSelector('dialog.sheet[open]');
+  const more = await page.$$eval('dialog.sheet .sheet-item span', (n) => n.map((x) => x.textContent));
+  check(tabs.join(',') === 'Overview,Services,Energy,Docs,More' && more.some((t) => t.startsWith('Updates')) && more.includes('Admin') && more.includes('Log out'), `phone: tab bar ${tabs.join(', ')}; More: ${more.join(', ')}`);
+  await page.keyboard.press('Escape');
   await page.goto(B + '/docs#network');
   await page.waitForSelector('.docs-toolbar h2:text-is("Network plan")');
   check(await page.locator('.docs-toolbar button:text-is("Edit")').count() === 0 && await page.locator('#docs-nav a:text-is("New page")').count() === 0 && await page.locator('#nav-edit').count() === 0, 'Docs: no Edit, New page or Edit menu');
@@ -54,7 +57,8 @@ let offline = false; // failed requests are expected while offline
 
   // Admin asks for the password; the device stays remembered
   await page.goto(B + '/');
-  await page.click('#nav a:text-is("Admin")');
+  await page.click('.tabbar button.tab:has-text("More")');
+  await page.click('dialog.sheet .sheet-item:has-text("Admin")');
   await page.waitForURL(/\/login\?next=admin$/);
   await page.waitForSelector('#reauth:not([hidden])');
   check(!(await page.isVisible('#remember')), 'the password page explains why and hides the box');
@@ -80,8 +84,8 @@ let offline = false; // failed requests are expected while offline
   check(await page.isVisible('#retry'), 'offline: the app shows its offline screen');
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'offline screen fits the phone');
   await page.screenshot({ path: `${S}/app-offline.png` });
-  const cached = await page.evaluate(async () => (await (await caches.open('hd-shell-1')).keys()).map((r) => new URL(r.url).pathname).sort());
-  check(cached.join(',') === '/offline,/static/css/style.css,/static/favicon.svg,/static/js/offline.js', `only the app shell is stored on the device (${cached.join(', ')})`);
+  const cached = await page.evaluate(async () => (await (await caches.open('hd-shell-2')).keys()).map((r) => new URL(r.url).pathname).sort());
+  check(cached.join(',') === '/offline,/static/css/style.css,/static/favicon.svg,/static/fonts/inter-5.3.0.woff2,/static/js/offline.js', `only the app shell is stored on the device (${cached.join(', ')})`);
   await page.click('#retry');
   await page.waitForFunction(() => /Still no answer/.test(document.getElementById('offline-msg').textContent));
   check(true, '"Try again" while offline says so');
@@ -92,7 +96,8 @@ let offline = false; // failed requests are expected while offline
   check(page.url() === `${B}/services`, 'back online: "Try again" opens the page');
 
   // log out forgets the device
-  await page.click('#nav button:text-is("Log out")');
+  await page.click('.tabbar button.tab:has-text("More")');
+  await page.click('dialog.sheet .sheet-item:has-text("Log out")');
   await page.waitForURL(B + '/login');
   check(!(await context.cookies()).some((c) => c.name === 'hd_device' && c.value), 'log out removes the device cookie');
   await page.goto(B + '/');

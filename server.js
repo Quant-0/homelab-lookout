@@ -1450,6 +1450,36 @@ function healthOf(status) {
   return status ? { health: status.Health || status.HealthRollup || null, state: status.State || null } : { health: null, state: null };
 }
 
+// Drive bays: which bay holds which drive (Redfish Storage). Drives rarely change and this takes a
+// request per drive, so it is read every 15 minutes; the rack draws real drives and empty bays.
+const DRIVE_INVENTORY_MS = 15 * 60 * 1000;
+const driveCache = new Map(); // `${host id}|${address}` -> { at, drives }
+
+async function idracDrives(tryGet, sysPath) {
+  const coll = await tryGet(`${sysPath}/Storage`);
+  const ctrls = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 8);
+  const drives = [];
+  for (const cp of ctrls) {
+    const ctrl = await tryGet(cp);
+    for (const dp of (ctrl?.Drives || []).map((x) => okPath(x['@odata.id'])).filter(Boolean).slice(0, 48)) {
+      const x = await tryGet(dp);
+      const bay = /Disk\.Bay\.(\d+)/.exec(x?.Id || '');
+      if (!bay) continue; // BOSS and other internal cards are not in a front bay
+      const ff = String(x.Oem?.Dell?.DellPhysicalDisk?.DriveFormFactor || x.FormFactor || '');
+      drives.push({
+        bay: Number(bay[1]),
+        model: x.Model ? String(x.Model).trim().slice(0, 60) : null,
+        mediaType: ['HDD', 'SSD'].includes(x.MediaType) ? x.MediaType : null,
+        capacityBytes: typeof x.CapacityBytes === 'number' ? x.CapacityBytes : null,
+        size: /TwoPointFive|2\.5/i.test(ff) ? '2.5' : /ThreePointFive|3\.5/i.test(ff) ? '3.5' : null,
+        failurePredicted: x.FailurePredicted === true,
+        ...healthOf(x.Status),
+      });
+    }
+  }
+  return drives.sort((a, b) => a.bay - b.bay);
+}
+
 async function collectIdrac(h, secret) {
   const auth = 'Basic ' + Buffer.from(`${h.username}:${secret}`).toString('base64');
   const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers: { Authorization: auth, 'OData-Version': '4.0' } });
@@ -1540,6 +1570,17 @@ async function collectIdrac(h, secret) {
       percent: f.SpeedPercent?.Reading ?? null,
       ...healthOf(f.Status),
     }));
+  }
+
+  const known = driveCache.get(cacheKey);
+  if (known && Date.now() - known.at < DRIVE_INVENTORY_MS) out.drives = known.drives;
+  else {
+    try {
+      out.drives = await idracDrives(tryGet, paths.sysPath);
+      driveCache.set(cacheKey, { at: Date.now(), drives: out.drives });
+    } catch {
+      out.drives = known?.drives || null; // keep the last inventory if Storage doesn't answer this time
+    }
   }
   return out;
 }
@@ -2834,7 +2875,10 @@ async function docsAuto() {
       cpu: nodeInfo?.maxcpu ? `${nodeInfo.maxcpu} threads` : tn?.system?.cores ? `${tn.system.cores} cores` : null,
       memory: nodeInfo?.maxmem || tn?.system?.memory || syno?.system?.memTotal || null,
       psus: idrac?.psus?.map((p) => p.capacityWatts && `${p.name}: ${p.capacityWatts} W`).filter(Boolean) || [],
-      disks: syno?.disks?.map((x) => `${x.id}: ${x.model || ''} (${x.health || x.status || ''})`) || [],
+      disks: [
+        ...(idrac?.drives || []).map((x) => `Bay ${x.bay}: ${[x.model, x.capacityBytes ? `${Math.round(x.capacityBytes / 1e11) / 10} TB` : null, x.mediaType].filter(Boolean).join(' ')} (${x.failurePredicted ? 'predicted to fail' : x.health || 'unknown'})`),
+        ...(syno?.disks || []).map((x) => `${x.id}: ${x.model || ''} (${x.health || x.status || ''})`),
+      ],
       pools: [...(syno?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(tn?.pools || []).map((p) => `${p.name}: ${p.status}`)],
       vms: pve ? pve.guests.filter((g) => !node || g.node === node).map((g) => ({ vmid: g.vmid, name: g.name, type: g.type, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu })) : [],
       services: config.services.filter((s) => s.deviceId === d.id).map((s) => ({ name: s.name, href: safeLink(s.href) })),
@@ -3718,10 +3762,11 @@ function csrfOk(req, session) {
 // Static files are loaded once into memory from an explicit allow-list.
 const STATIC = {};
 const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg', '/static/js/offline.js',
+  '/static/js/icons.js', '/static/fonts/inter-5.3.0.woff2', '/static/licenses/Inter-OFL.txt', '/static/licenses/Lucide-LICENSE.txt',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
 const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
-  const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
+  const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
   const files = {
     'login.html': 'login.html',
     'dashboard.html': 'dashboard.html',
@@ -3750,6 +3795,10 @@ function loadStatic() {
     '/static/js/rack.js': 'js/rack.js',
     '/static/js/admin.js': 'js/admin.js',
     '/static/favicon.svg': 'favicon.svg',
+    '/static/js/icons.js': 'js/icons.js',
+    '/static/fonts/inter-5.3.0.woff2': 'fonts/inter-5.3.0.woff2',
+    '/static/licenses/Inter-OFL.txt': 'licenses/Inter-OFL.txt',
+    '/static/licenses/Lucide-LICENSE.txt': 'licenses/Lucide-LICENSE.txt',
   };
   for (const [key, rel] of Object.entries(files)) {
     STATIC[key] = { body: fs.readFileSync(path.join(PUBLIC_DIR, rel)), type: types[path.extname(rel)] };
@@ -3758,7 +3807,9 @@ function loadStatic() {
 
 function sendStatic(res, key) {
   const f = STATIC[key];
-  res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': f.body.length });
+  // The font's name carries its version, so it can be cached for good; everything else is fetched fresh
+  const cache = key.startsWith('/static/fonts/') ? { 'Cache-Control': 'public, max-age=31536000, immutable' } : {};
+  res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...cache });
   res.end(f.body);
 }
 
@@ -3947,7 +3998,7 @@ function appHead() {
     ? `<meta name="theme-color" content="${THEME_COLORS[theme]}">`
     : `<meta name="theme-color" content="${THEME_COLORS.light}" media="(prefers-color-scheme: light)"><meta name="theme-color" content="${THEME_COLORS.dark}" media="(prefers-color-scheme: dark)">`;
   // use-credentials: the app gets its name from the dashboard title only when signed in
-  return `<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">${color}<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">\n</head>`;
+  return `<link rel="preload" href="/static/fonts/inter-5.3.0.woff2" as="font" type="font/woff2" crossorigin><link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">${color}<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">\n</head>`;
 }
 
 // Installable app. The name is the dashboard title for those who may see the dashboard,
@@ -4605,7 +4656,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
 
   // --- Documentation (login required even when the dashboard is public) ---
-  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto(), deletedCount: docsHistory.deleted.length, readOnly: Boolean(session.readOnly) });
+  if (p === '/api/docs' && m === 'GET') return sendJson(res, 200, { docs, auto: await docsAuto(), deletedCount: docsHistory.deleted.length, readOnly: Boolean(session.readOnly), title: config.settings.dashboard.title });
   const ds = p.match(/^\/api\/docs\/servers\/([0-9a-f-]{36})$/);
   if (ds && m === 'PUT') {
     findDevice(ds[1]);
@@ -4708,7 +4759,7 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   // --- Backup ---
   // --- Updates (admin only: versions help an attacker) ---
-  if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, { ...updatesPayload(), readOnly: Boolean(session.readOnly) });
+  if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, { ...updatesPayload(), readOnly: Boolean(session.readOnly), title: config.settings.dashboard.title });
   if (p === '/api/admin/updates/check' && m === 'POST') {
     if (!updatesRunning && Date.now() - updatesManualAt < 60000) throw Object.assign(new UserError('Checked less than a minute ago; try again shortly'), { status: 429 });
     updatesManualAt = Date.now();
@@ -5494,6 +5545,12 @@ function alertConditions(all = false) {
         if (!['Critical', 'Warning'].includes(f.health)) continue;
         specific = true;
         add('hardware', `${h.id}:fan:${f.name}`, f.health === 'Critical' ? 'critical' : 'warning', `${name}: ${f.name} ${f.health.toLowerCase()}`, f.rpm != null ? `${f.rpm} rpm` : 'Fan', own);
+      }
+      for (const x of d.drives || []) {
+        if (!['Critical', 'Warning'].includes(x.health) && !x.failurePredicted) continue;
+        specific = true;
+        const what = x.health === 'Critical' ? 'failed' : x.failurePredicted ? 'is predicted to fail' : 'has a warning';
+        add('storage', `${h.id}:drive:${x.bay}`, x.health === 'Critical' ? 'critical' : 'warning', `${name}: drive in bay ${x.bay} ${what}`, x.model || '', own);
       }
       if (d.health === 'Critical' && !specific) add('hardware', `${h.id}:system`, 'critical', `${name}: iDRAC reports critical health`, '', own);
       for (const t of d.temps) {

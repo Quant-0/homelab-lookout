@@ -150,56 +150,80 @@ function deviceState(dev, ctx, issues) {
   return ['OK', 'good'];
 }
 
-// Up to four numbers that answer "how is it doing?"
+// Up to four numbers that answer "how is it doing?": { v, u (unit), l (label), f (0–1 for a bar), tone }
 function keyMetrics(dev, ctx) {
   const out = [];
-  const add = (v, l) => {
-    if (v !== null && v !== undefined && v !== '' && out.length < 4) out.push([v, l]);
+  const add = (v, u, l, f = null, tone = '') => {
+    if (v !== null && v !== undefined && v !== '' && out.length < 4) out.push({ v: String(v), u, l, f, tone });
   };
-  const pct = (a, b) => (b ? fmt.pct(a / b) : null);
+  const share = (a, b) => (b ? a / b : null);
+  const pctOf = (f) => (f == null ? null : fmt.n(f * 100));
+  const load = (f) => (f >= 0.9 ? 'critical' : f >= 0.8 ? 'warning' : '');
   const hl = ctx.health;
   if (hl) {
-    add(hl.wan ? (hl.wan.status === 'ok' ? 'Up' : 'Down') : null, 'Internet');
-    add(hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : null, 'Latency');
-    add(hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` : null, 'Mbps ↓/↑');
-    add(hl.clients != null ? String(hl.clients) : null, 'Clients');
+    add(hl.wan ? (hl.wan.status === 'ok' ? 'Up' : 'Down') : null, '', 'Internet', null, hl.wan && hl.wan.status !== 'ok' ? 'critical' : '');
+    add(hl.internet?.latencyMs != null ? fmt.n(hl.internet.latencyMs) : null, 'ms', 'Latency');
+    add(hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` : null, 'Mbps', 'Down / up');
+    add(hl.clients != null ? fmt.n(hl.clients) : null, '', 'Clients');
   }
   if (ctx.idrac) {
     const t = ctx.idrac.temps;
     const inlet = t.find((x) => /inlet/i.test(x.name));
-    add(ctx.idrac.watts != null ? `${fmt.n(ctx.idrac.watts)} W` : null, 'Power');
-    if (inlet) add(`${fmt.n(inlet.celsius)} °C`, 'Inlet');
-    else if (t.length) add(`${fmt.n(Math.max(...t.map((x) => x.celsius)))} °C`, 'Hottest');
+    add(ctx.idrac.watts != null ? fmt.n(ctx.idrac.watts) : null, 'W', 'Power');
+    if (inlet) add(fmt.n(inlet.celsius), '°C', 'Inlet', null, inlet.warn && inlet.celsius >= inlet.warn ? 'warning' : '');
+    else if (t.length) add(fmt.n(Math.max(...t.map((x) => x.celsius))), '°C', 'Hottest');
   }
   if (ctx.node?.status === 'online') {
-    add(fmt.pct(ctx.node.cpu), 'CPU');
-    add(pct(ctx.node.mem, ctx.node.maxmem), 'Memory');
-    if (!ctx.idrac) add(`${ctx.guests.filter((g) => g.status === 'running').length} of ${ctx.guests.length}`, 'VMs running');
+    add(pctOf(ctx.node.cpu), '%', 'CPU', ctx.node.cpu, load(ctx.node.cpu));
+    const mem = share(ctx.node.mem, ctx.node.maxmem);
+    add(pctOf(mem), '%', 'Memory', mem, load(mem));
+    if (!ctx.idrac) add(`${ctx.guests.filter((g) => g.status === 'running').length}/${ctx.guests.length}`, '', 'VMs running');
   }
   if (ctx.tn) {
-    for (const p of ctx.tn.pools.slice(0, 3)) add(pct(p.allocated, p.size), p.name);
-    add(String(ctx.tn.alerts.length), 'Alerts');
+    for (const p of ctx.tn.pools.slice(0, 3)) {
+      const f = share(p.allocated, p.size);
+      add(pctOf(f), '%', p.name, f, p.healthy ? load(f) : 'critical');
+    }
+    add(fmt.n(ctx.tn.alerts.length), '', 'Alerts', null, ctx.tn.alerts.length ? 'warning' : '');
   }
   if (ctx.syno) {
-    const s = ctx.syno.system;
-    add(s.temp != null ? `${s.temp} °C` : null, 'Temperature');
+    const sy = ctx.syno.system;
+    add(sy.temp != null ? fmt.n(sy.temp) : null, '°C', 'Temperature');
     const v = ctx.syno.volumes[0];
-    add(v ? pct(v.used, v.size) : null, v ? v.name.replace('/', '') : 'Volume');
-    add(pct(s.memUsed, s.memTotal), 'Memory');
-    add(String(ctx.syno.disks.length), 'Disks');
+    const vf = v ? share(v.used, v.size) : null;
+    add(pctOf(vf), '%', v ? v.name.replace('/', '') : 'Volume', vf, load(vf || 0));
+    const mf = share(sy.memUsed, sy.memTotal);
+    add(pctOf(mf), '%', 'Memory', mf, load(mf || 0));
+    add(fmt.n(ctx.syno.disks.length), '', 'Disks');
   }
   const ud = ctx.ud;
   if (ud?.online && !hl) {
-    if (ud.ports.length) add(`${ud.ports.filter((p) => p.up).length} of ${ud.ports.length}`, 'Ports up');
-    if (ud.poe) add(`${fmt.n(ud.poe.usedW)}${ud.poe.budgetW ? `/${fmt.n(ud.poe.budgetW)}` : ''} W`, 'PoE');
-    add(ud.clients != null ? String(ud.clients) : null, 'Clients');
+    if (ud.ports.length) add(`${ud.ports.filter((p) => p.up).length}/${ud.ports.length}`, '', 'Ports up', ud.ports.filter((p) => p.up).length / ud.ports.length);
+    if (ud.poe) add(`${fmt.n(ud.poe.usedW)}${ud.poe.budgetW ? `/${fmt.n(ud.poe.budgetW)}` : ''}`, 'W', 'PoE', ud.poe.budgetW ? ud.poe.usedW / ud.poe.budgetW : null);
+    add(ud.clients != null ? fmt.n(ud.clients) : null, '', 'Clients');
     const temps = ud.temps.map((x) => x.value);
-    add(temps.length ? `${fmt.n(Math.max(...temps))} °C` : null, 'Temperature');
-    add(ud.cpu != null ? fmt.pct(ud.cpu) : null, 'CPU');
+    add(temps.length ? fmt.n(Math.max(...temps)) : null, '°C', 'Temperature');
+    add(ud.cpu != null ? pctOf(ud.cpu) : null, '%', 'CPU', ud.cpu, load(ud.cpu || 0));
   }
-  if (!out.length && dev.estimateW) add(`~${fmt.n(dev.estimateW)} W`, 'Estimated');
+  if (!out.length && dev.estimateW) add(`~${fmt.n(dev.estimateW)}`, 'W', 'Estimated');
   return out;
 }
+
+function metricNode(m) {
+  let bar = null;
+  if (m.f != null) {
+    const fill = el('i');
+    fill.style.width = `${(Math.max(0, Math.min(1, m.f)) * 100).toFixed(1)}%`;
+    bar = el('span', { class: 'bar', 'aria-hidden': 'true' }, fill);
+  }
+  return el('div', { class: `metric${m.tone ? ` ${m.tone}` : ''}` },
+    el('span', { class: 'l', text: m.l }),
+    el('span', { class: 'v num' }, m.v, m.u ? el('small', { text: m.u === '%' ? '%' : ` ${m.u}` }) : null),
+    bar);
+}
+
+const KIND_ICONS = Rack.KIND_ICONS;
+const ISSUE_ICONS = { critical: 'octagon-alert', warning: 'triangle-alert', serious: 'triangle-alert' };
 
 // The one history graph on the card
 function mainSpark(ctx) {
@@ -216,7 +240,8 @@ function mainSpark(ctx) {
 
 function issueLine(a) {
   return el('li', { class: a.severity, title: a.detail ? `${a.text} · ${a.detail}` : a.text },
-    el('span', { class: `led ${a.severity}`, 'aria-hidden': 'true' }),
+    HD.icon(ISSUE_ICONS[a.severity] || 'info'),
+    el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
     el('span', { class: 'txt', text: a.text }),
     a.type === 'offline' && a.detail ? el('span', { class: 'why', text: a.detail }) : null);
 }
@@ -232,12 +257,11 @@ function deviceCard(dev, sections, d) {
   const open = expanded.has(dev.id);
   const widget = `device:${dev.id}`;
   const details = el('div', { class: 'card-details', id: `details-${dev.id}`, hidden: !open }, sections.map((x) => sectionNode(x)));
-  const toggle = el('button', { type: 'button', class: 'link-button details-toggle', 'aria-expanded': String(open), 'aria-controls': `details-${dev.id}`, text: open ? 'Hide details' : 'Details' });
+  const toggle = detailsToggle(open, `details-${dev.id}`);
   toggle.addEventListener('click', () => {
     const now = details.hidden;
     details.hidden = !now;
-    toggle.setAttribute('aria-expanded', String(now));
-    toggle.textContent = now ? 'Hide details' : 'Details';
+    setToggle(toggle, now);
     if (now) expanded.add(dev.id);
     else expanded.delete(dev.id);
     storeExpanded();
@@ -249,24 +273,36 @@ function deviceCard(dev, sections, d) {
   const fans = ctx.idrac?.fans || [];
   const badFans = fans.filter((f) => (f.health && statusClass(f.health) !== 'good') || f.rpm === 0).length;
   const update = ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable || d.updates?.devices?.includes(dev.id);
+  const kind = Rack.KIND_LABELS[dev.kind] || dev.kind;
   return el('article', { class: `card device-card${stateCls ? ` st-${stateCls}` : ''}` },
-    el('div', { class: 'card-head' },
-      el('div', { class: 'title' },
-        el('div', { class: 'card-type', text: Rack.KIND_LABELS[dev.kind] || dev.kind }),
+    el('header', { class: 'dc-head' },
+      el('span', { class: `dc-icon kind-${dev.kind}`, title: kind }, HD.icon(KIND_ICONS[dev.kind] || 'box')),
+      el('div', { class: 'dc-title' },
         el('h3', { text: dev.name }),
-        model ? el('div', { class: 'sub', text: model }) : null),
+        el('div', { class: 'sub', text: [kind, model].filter(Boolean).join(' · ') })),
       status(stateText, stateCls)),
-    metrics.length ? el('div', { class: 'dc-metrics' }, metrics.map(([v, l]) => el('div', null, el('span', { class: 'v num', text: v }), el('span', { class: 'l', text: l })))) : null,
+    metrics.length ? el('div', { class: 'dc-metrics' }, metrics.map(metricNode)) : null,
     spark ? sparks([spark]) : null,
     issues.length ? el('ul', { class: 'dc-issues' }, issues.map(issueLine)) : null,
-    el('div', { class: 'dc-foot' },
+    el('footer', { class: 'dc-foot' },
       el('div', { class: 'dc-foot-left' },
         fans.length ? el('span', { class: 'fans mini', role: 'img', 'aria-label': `${fans.length} fans${badFans ? `, ${badFans} not OK` : ', all OK'}` }, fans.map((f, i) => fanNode(`mini|${dev.id}|${i}`, f))) : null,
-        update ? (d.loggedIn || d.viewer ? el('a', { class: 'dc-update', href: '/updates' }, el('span', { class: 'led info', 'aria-hidden': 'true' }), 'Update available') : el('span', { class: 'small muted', text: 'Update available' })) : null),
+        update ? (d.loggedIn || d.viewer ? el('a', { class: 'dc-update', href: '/updates' }, HD.icon('circle-arrow-up'), 'Update available') : el('span', { class: 'dc-update', text: 'Update available' })) : null),
       el('div', { class: 'dc-links' },
-        d.loggedIn || d.viewer ? el('a', { href: `/docs#server/${dev.id}`, text: 'Sheet' }) : null,
+        d.loggedIn || d.viewer ? el('a', { class: 'button ghost', href: `/docs#server/${dev.id}` }, HD.icon('file-text'), 'Sheet') : null,
         sections.length ? toggle : null)),
     details);
+}
+
+// "Details" / "Hide details" with a chevron that turns
+function detailsToggle(open, controls) {
+  const b = el('button', { type: 'button', class: 'ghost details-toggle', 'aria-controls': controls });
+  setToggle(b, open);
+  return b;
+}
+function setToggle(b, open) {
+  b.setAttribute('aria-expanded', String(open));
+  b.replaceChildren(HD.icon(open ? 'chevron-up' : 'chevron-down'), el('span', { text: open ? 'Hide details' : 'Details' }));
 }
 
 // Values a device doesn't report are left out instead of shown as "–"
@@ -560,14 +596,7 @@ function renderDevices(d) {
 // ---------------------------------------------------------------------------
 // Rack panel
 
-let rackObserver = null;
-let rackDraw = null;
-let rackResizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(rackResizeTimer);
-  rackResizeTimer = setTimeout(() => rackDraw && rackDraw(), 150); // window height changes don't resize the panel width
-});
-
+// The rack is drawn to scale with the panel's width, so it needs no measuring
 function renderRackPanel(d) {
   const panel = $('rack-panel');
   const rack = d.rack;
@@ -583,48 +612,29 @@ function renderRackPanel(d) {
     /* only a convenience */
   }
   panel.classList.toggle('collapsed', !open);
-  const toggle = el('button', { type: 'button', class: 'rack-toggle', 'aria-expanded': String(open), text: open ? 'Hide rack' : 'Show rack' });
+  const toggle = el('button', { type: 'button', class: 'rack-toggle ghost', 'aria-expanded': String(open) });
+  const setToggle = (now) => toggle.replaceChildren(HD.icon(now ? 'chevron-up' : 'chevron-down'), el('span', { text: now ? 'Hide rack' : 'Show rack' }));
+  setToggle(open);
   toggle.addEventListener('click', () => {
     const now = panel.classList.toggle('collapsed') === false;
     toggle.setAttribute('aria-expanded', String(now));
-    toggle.textContent = now ? 'Hide rack' : 'Show rack';
+    setToggle(now);
     try {
       localStorage.setItem('hd.rackOpen', now ? '1' : '0');
     } catch {
       /* only a convenience */
     }
   });
-  const title = el('div', { class: 'card-head' },
-    el('div', { class: 'title' }, el('div', { class: 'card-type', text: 'Rack' }), el('h3', { text: `${rack.units} U` })),
-    rack.items.length ? toggle : el('span', { class: 'small muted', text: 'Add equipment in Admin' }));
-  panel.replaceChildren(title, inner);
-  const opts = (u) => ({ uPx: u, onSelect: (item) => jumpToWidget(`device:${item.id}`) });
-  const draw = () => {
-    const faceWidth = Math.max(160, inner.clientWidth - 60);
-    let u = Math.round(Math.max(18, Math.min(faceWidth / 9, 46)));
-    Rack.render(inner, rack, d, opts(u));
-    // Side-by-side layout: shrink units until the whole panel (heading, frame, off-rack list) fits the screen
-    if (window.matchMedia('(min-width: 1101px)').matches) {
-      const maxH = parseFloat(getComputedStyle(panel).maxHeight) || window.innerHeight - 92;
-      const overhead = panel.scrollHeight - rack.units * u;
-      const fit = Math.floor((maxH - overhead) / rack.units);
-      if (fit < u) {
-        u = Math.max(18, fit);
-        Rack.render(inner, rack, d, opts(u));
-      }
-    }
-  };
-  rackDraw = draw;
+  const inRack = rack.items.filter(Rack.inRack).length;
+  const draw = () => Rack.render(inner, rack, d, { onSelect: (item) => jumpToWidget(`device:${item.id}`) });
+  panel.replaceChildren(
+    el('header', { class: 'dc-head rack-head' },
+      el('span', { class: 'dc-icon' }, HD.icon('server')),
+      el('div', { class: 'dc-title' }, el('h3', { text: 'Rack' }), el('div', { class: 'sub', text: `${rack.units} U · ${inRack} device${inRack === 1 ? '' : 's'}` })),
+      rack.items.length ? Rack.modeToggle(draw) : el('span', { class: 'small muted', text: 'Add equipment in Admin' }),
+      rack.items.length ? toggle : null),
+    inner);
   draw();
-  if (rackObserver) rackObserver.disconnect();
-  let lastW = inner.clientWidth;
-  rackObserver = new ResizeObserver(() => {
-    if (inner.clientWidth !== lastW) {
-      lastW = inner.clientWidth;
-      draw();
-    }
-  });
-  rackObserver.observe(inner);
 }
 
 function jumpToWidget(id) {
@@ -750,34 +760,35 @@ function renderPower(p) {
         el('thead', null, el('tr', null, el('th', { text: 'Date' }), el('th', { class: 'r', text: 'kWh' }), el('th', { class: 'r', text: 'Cost' }))),
         el('tbody', null, u.days.slice().reverse().map((x) => el('tr', null, el('td', { text: x.date }), el('td', { class: 'r', text: fmt.n(x.kwh, 2) }), el('td', { class: 'r', text: fmt.kr(x.cost) }))))))),
     notes.length ? el('p', { class: 'hint', text: notes.join(' ') }) : null);
-  const toggle = el('button', { type: 'button', class: 'link-button details-toggle', 'aria-expanded': String(open), 'aria-controls': 'details-power', text: open ? 'Hide details' : 'Details' });
+  const toggle = detailsToggle(open, 'details-power');
   toggle.addEventListener('click', () => {
     const show = details.hidden;
     details.hidden = !show;
-    toggle.setAttribute('aria-expanded', String(show));
-    toggle.textContent = show ? 'Hide details' : 'Details';
+    setToggle(toggle, show);
     if (show) expanded.add('power');
     else expanded.delete('power');
     storeExpanded();
     if (show) board.grow('power-summary');
     else board.shrink('power-summary');
   });
-  const metric = (v, l) => el('div', null, el('span', { class: 'v num', text: v }), el('span', { class: 'l', text: l }));
+  const tile = (label, v, unit, sub) => el('div', { class: 'ptile' }, el('span', { class: 'l', text: label }), el('span', { class: 'v num' }, v, unit ? el('small', { text: ` ${unit}` }) : null), sub ? el('span', { class: 'sub', text: sub }) : null);
+  const kr = (v, d) => (v == null ? '–' : fmt.n(v, d));
   return el('article', { class: 'card power-card' },
-    el('div', { class: 'card-head' },
-      el('div', { class: 'title' }, el('div', { class: 'card-type', text: 'Power & cost' }), el('div', { class: 'sub', text: `${plan}${pn ? ` · ${fmt.n(pn.total, 1)} øre/kWh now` : ''}${p.vat ? ' · incl. VAT' : ''}` })),
+    el('header', { class: 'dc-head' },
+      el('span', { class: 'dc-icon power' }, HD.icon('zap')),
+      el('div', { class: 'dc-title' }, el('h3', { text: 'Power & cost' }), el('div', { class: 'sub', text: `${plan}${pn ? ` · ${fmt.n(pn.total, 1)} øre/kWh now` : ''}${p.vat ? ' · incl. VAT' : ''}` })),
       HD.rangeTabs()),
     el('div', { class: 'power-now' },
-      el('div', { class: 'hero' }, el('div', { class: 'value' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
-        el('div', { class: 'label', text: p.includeEstimates && p.estimatedW > 0 ? 'measured + estimated' : 'measured' })),
+      el('div', { class: 'hero' }, el('div', { class: 'value num' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
+        el('div', { class: 'label', text: p.includeEstimates && p.estimatedW > 0 ? 'Measured + estimated' : 'Measured now' })),
       p.watts != null ? sparks([['power:total', 'Measured draw', ' W']]) : el('p', { class: 'muted small', text: 'Add an iDRAC or a UniFi switch with PoE to measure power.' })),
-    el('div', { class: 'dc-metrics' },
-      metric(fmt.kr(u.today.cost), `Today · ${fmt.n(u.today.kwh, 1)} kWh`),
-      metric(fmt.kr(u.month.cost, 0), 'This month'),
-      forecast != null ? metric(fmt.kr(forecast, 0), 'Month forecast') : null,
-      est ? metric(`${fmt.n(est.kwhDay, 1)} kWh`, 'Per day at this draw') : null),
-    loggedDays >= 2 ? el('div', { class: 'power-chart' }, el('div', { class: 'small muted', text: 'Daily use, last 30 days (kWh)' }), renderDailyChart(u.days, 110)) : null,
-    el('div', { class: 'dc-foot' }, el('div'), el('div', { class: 'dc-links' }, el('a', { href: '/energy', text: 'Report' }), toggle)),
+    el('div', { class: 'power-tiles' },
+      tile('Today', kr(u.today.cost, 2), 'kr', `${fmt.n(u.today.kwh, 1)} kWh`),
+      tile('This month', kr(u.month.cost, 0), 'kr', `${fmt.n(u.month.kwh, 0)} kWh`),
+      forecast != null ? tile('Month forecast', kr(forecast, 0), 'kr', 'at this draw') : null,
+      est ? tile('Per day', fmt.n(est.kwhDay, 1), 'kWh', `${fmt.kr(est.day, 0)} a day`) : null),
+    loggedDays >= 2 ? el('div', { class: 'power-chart' }, el('div', { class: 'chart-title', text: 'Daily use, last 30 days (kWh)' }), renderDailyChart(u.days, 110)) : null,
+    el('footer', { class: 'dc-foot' }, el('div'), el('div', { class: 'dc-links' }, el('a', { class: 'button ghost', href: '/energy' }, HD.icon('chart-column'), 'Energy report'), toggle)),
     details);
 }
 
@@ -788,30 +799,36 @@ function renderAttention(d) {
   const monitored = d.devices.filter((dev) => dev.connections.length || dev.unifi);
   const online = monitored.filter((dev) => !['Offline', 'Waiting'].includes(deviceStates.get(dev.id))).length;
   const sv = d.services;
-  const counts = [
-    monitored.length ? `Devices ${online} of ${monitored.length} online` : null,
-    sv?.up + sv?.down ? `Services ${sv.up} of ${sv.up + sv.down} up` : null,
-    d.power.watts != null ? `${fmt.n(d.power.watts)} W · ${fmt.kr(d.power.usage.today.cost)} today` : null,
-  ].filter(Boolean);
   if (!monitored.length && !sv?.total) return box.replaceChildren();
-  const worst = list.some((a) => a.severity === 'critical') ? 'critical' : list.length ? 'warning' : 'good';
+  const crit = list.filter((a) => a.severity === 'critical').length;
+  const warn = list.length - crit;
+  const worst = crit ? 'critical' : list.length ? 'warning' : 'good';
   box.className = `attention ${worst}`;
+  const stat = (ic, strong, rest, attrs = {}) => el(attrs.href ? 'a' : 'span', { class: 'attn-stat', ...attrs }, HD.icon(ic), el('strong', { class: 'num', text: strong }), ' ', el('span', { text: rest }));
+  const stats = el('div', { class: 'attn-stats' },
+    monitored.length ? stat('server', `${online}/${monitored.length}`, 'devices online') : null,
+    sv?.up + sv?.down ? stat('layout-grid', `${sv.up}/${sv.up + sv.down}`, 'services up') : null,
+    d.power.watts != null ? stat('zap', `${fmt.n(d.power.watts)} W`, `· ${fmt.kr(d.power.usage.today.cost)} today`) : null,
+    d.updates?.available ? stat('circle-arrow-up', String(d.updates.available), d.updates.available === 1 ? 'update' : 'updates', { href: '/updates', class: 'attn-stat attn-updates' }) : null);
+  const headline = list.length
+    ? [crit ? `${crit} problem${crit === 1 ? '' : 's'}` : null, warn ? `${warn} warning${warn === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')
+    : 'All systems normal';
   const item = (a) => {
     const text = [a.subject ? el('strong', { text: a.subject }) : null, el('span', { class: 'attn-text', text: a.text })];
     const target = a.deviceId
-      ? el('button', { type: 'button', class: 'attn-link', onclick: () => jumpToWidget(`device:${a.deviceId}`) }, text)
-      : a.serviceId ? el('a', { class: 'attn-link', href: '/services' }, text) : el('span', null, text);
-    return el('li', { title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') }, el('span', { class: `led ${a.severity}`, 'aria-hidden': 'true' }), el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }), target);
+      ? el('button', { type: 'button', class: 'attn-link', onclick: () => jumpToWidget(`device:${a.deviceId}`) }, text, HD.icon('arrow-right', 'go'))
+      : a.serviceId ? el('a', { class: 'attn-link', href: '/services' }, text, HD.icon('arrow-right', 'go')) : el('span', { class: 'attn-link' }, text);
+    return el('li', { class: a.severity, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') }, HD.icon(ISSUE_ICONS[a.severity] || 'info'), el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }), target);
   };
   const shown = attentionOpen ? list : list.slice(0, 5);
-  box.replaceChildren(
-    el('div', { class: 'attn-main' },
-      list.length
-        ? el('ul', { class: 'attn-list', 'aria-label': 'Needs attention' }, shown.map(item))
-        : el('p', { class: 'attn-ok' }, el('span', { class: 'led good', 'aria-hidden': 'true' }), 'Everything is OK'),
-      list.length > 5 ? el('button', { type: 'button', class: 'link-button', text: attentionOpen ? 'Show fewer' : `Show all ${list.length}`, onclick: () => { attentionOpen = !attentionOpen; renderAttention(d); } }) : null),
-    el('div', { class: 'attn-counts num' }, counts.map((c) => el('span', { text: c })),
-      d.updates?.available ? el('a', { class: 'attn-updates', href: '/updates', text: `${d.updates.available} update${d.updates.available === 1 ? '' : 's'} available` }) : null));
+  box.replaceChildren(...[
+    el('div', { class: 'attn-head' },
+      el('span', { class: `attn-icon ${worst}` }, HD.icon(worst === 'good' ? 'circle-check' : ISSUE_ICONS[worst])),
+      el('div', { class: 'attn-title' }, el('strong', { text: headline }), el('span', { text: list.length ? 'need attention' : 'Nothing needs attention right now' })),
+      stats),
+    list.length ? el('ul', { class: 'attn-list', 'aria-label': 'Needs attention' }, shown.map(item)) : null,
+    list.length > 5 ? el('button', { type: 'button', class: 'link-button attn-more', text: attentionOpen ? 'Show fewer' : `Show all ${list.length}`, onclick: () => { attentionOpen = !attentionOpen; renderAttention(d); } }) : null,
+  ].filter(Boolean)); // replaceChildren would turn null into the text "null"
 }
 let attentionOpen = false;
 
@@ -822,14 +839,8 @@ const board = new GridLayout.Board($('grid'), { onEditChange: () => renderEditBa
 let layoutLoaded = false;
 
 function renderNav(d) {
-  $('view-tabs').replaceChildren(...HD.viewTabs('overview', d.loggedIn || d.viewer));
-  const items = [];
-  if (d.loggedIn) {
-    items.push(el('button', { type: 'button', id: 'customize', text: 'Customize', disabled: board.editing, onclick: () => board.startEdit() }));
-    items.push(el('a', { class: 'button', href: '/admin', text: 'Admin' }), el('button', { type: 'button', text: 'Log out', onclick: HD.logout }));
-  } else if (d.viewer) items.push(...HD.viewerNav());
-  else items.push(el('a', { class: 'button', href: '/login', text: 'Log in' }));
-  $('nav').replaceChildren(...items);
+  HD.shell({ active: 'overview', title: d.title, admin: d.loggedIn, viewer: d.viewer, updates: d.updates?.available || 0 });
+  $('nav').replaceChildren(...(d.loggedIn ? [HD.iconButton('sliders-horizontal', 'Customize', { id: 'customize', disabled: board.editing, onclick: () => board.startEdit() })] : []));
 }
 
 function renderEditBar() {
@@ -867,7 +878,6 @@ function renderEditBar() {
 
 function render(d) {
   document.title = d.title;
-  $('title').textContent = d.title;
   if (!layoutLoaded) {
     board.load(d.layout);
     layoutLoaded = true;

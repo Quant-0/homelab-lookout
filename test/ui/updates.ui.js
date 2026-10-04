@@ -29,7 +29,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForTimeout(2000);
   await page.reload();
   await page.waitForSelector('#upd-summary');
-  check(await page.locator('#view-tabs a', { hasText: 'Updates' }).getAttribute('aria-current') === 'page', 'Updates is a view tab');
+  check(await page.locator('.sidebar .nav-item', { hasText: 'Updates' }).getAttribute('aria-current') === 'page', 'Updates is in the sidebar, marked as the current page');
   await page.click('#upd-check');
   await page.waitForSelector('#upd-msg.ok');
   const sections = await page.$$eval('.upd-section h3', (h) => h.map((x) => x.textContent));
@@ -48,7 +48,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.goto(B + '/');
   await page.waitForSelector('.device-card');
   const link = page.locator('#attention .attn-updates');
-  check(/\d+ updates? available/.test(await link.textContent()) && await link.getAttribute('href') === '/updates', `attention links to the updates (${await link.textContent()})`);
+  check(/\d+ updates?$/.test(await link.textContent()) && await link.getAttribute('href') === '/updates', `attention links to the updates (${await link.textContent()})`);
   check(await page.locator('.device-card', { hasText: 'titan' }).locator('a.dc-update').count() === 1, 'titan\'s card says "Update available" and links there');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(B + '/updates');

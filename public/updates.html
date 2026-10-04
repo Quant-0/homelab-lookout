@@ -2,39 +2,38 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Updates · Homelab</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
 </head>
-<body>
+<body class="app">
   <div class="app-bg" aria-hidden="true"></div>
-  <header class="topbar">
-    <div class="brand"><img src="/static/favicon.svg" alt=""><h1 id="title">Homelab</h1></div>
-    <nav class="view-tabs" id="view-tabs" aria-label="Views"></nav>
-    <span class="spacer"></span>
-    <nav>
-      <a class="button" href="/admin">Admin</a>
-      <button type="button" id="logout">Log out</button>
-    </nav>
-  </header>
-  <main class="updates-main">
-    <p class="banner hidden" id="global-error" role="alert"></p>
-    <section class="card updates-head">
-      <div>
-        <h2>Updates</h2>
-        <p class="muted" id="upd-summary">Loading…</p>
-      </div>
-      <div class="updates-actions">
-        <button type="button" id="upd-check">Check now</button>
-        <span class="msg" id="upd-msg" role="status"></span>
-      </div>
-    </section>
-    <div id="upd-lists"></div>
-    <p class="hint">Read-only: the dashboard shows what can be updated and never installs anything. Proxmox, TrueNAS and the apps are checked once a night; UniFi and Synology report with every refresh.</p>
-  </main>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Updates</h1>
+      <span class="spacer"></span>
+    </header>
+    <main class="updates-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <section class="card updates-head">
+        <div>
+          <p class="muted" id="upd-summary">Loading…</p>
+        </div>
+        <div class="updates-actions">
+          <button type="button" id="upd-check">Check now</button>
+          <span class="msg" id="upd-msg" role="status"></span>
+        </div>
+      </section>
+      <div id="upd-lists"></div>
+      <p class="hint">Read-only: the dashboard shows what can be updated and never installs anything. Proxmox, TrueNAS and the apps are checked once a night; UniFi and Synology report with every refresh.</p>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/updates.js"></script>
 </body>

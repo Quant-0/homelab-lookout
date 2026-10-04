@@ -64,6 +64,7 @@ function render(d) {
 async function load() {
   try {
     const d = await HD.api('GET', '/api/updates');
+    HD.shell({ active: 'updates', title: d.title, admin: !d.readOnly, viewer: Boolean(d.readOnly), updates: d.rows.filter((r) => !r.error && r.available).length });
     render(d);
     if (d.running) setTimeout(load, 3000);
   } catch (e) {
@@ -92,6 +93,5 @@ $('upd-check').addEventListener('click', async () => {
   }
 });
 
-$('view-tabs').replaceChildren(...HD.viewTabs('updates', true));
-$('logout').addEventListener('click', HD.logout);
+HD.shell({ active: 'updates', admin: true });
 load();

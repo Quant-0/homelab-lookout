@@ -31,6 +31,7 @@ const toolbar = (...items) => el('div', { class: 'docs-toolbar' }, items);
 async function load() {
   try {
     D = await api('GET', '/api/docs');
+    HD.shell({ active: 'docs', title: D.title, admin: !D.readOnly, viewer: Boolean(D.readOnly) });
     renderNav();
     route();
   } catch (e) {
@@ -883,6 +884,5 @@ async function deletedView() {
 
 window.addEventListener('hashchange', route);
 window.addEventListener('beforeunload', (e) => dirty && e.preventDefault());
-$('view-tabs').replaceChildren(...HD.viewTabs('docs', true));
-$('logout').addEventListener('click', HD.logout);
+HD.shell({ active: 'docs', admin: true });
 load();

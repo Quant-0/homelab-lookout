@@ -2,31 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Docs · Homelab</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
 </head>
-<body>
+<body class="app">
   <div class="app-bg" aria-hidden="true"></div>
-  <header class="topbar">
-    <div class="brand"><img src="/static/favicon.svg" alt=""><h1>Homelab</h1></div>
-    <nav class="view-tabs" id="view-tabs" aria-label="Views"></nav>
-    <span class="spacer"></span>
-    <nav>
-      <a class="button" href="/admin">Admin</a>
-      <button type="button" id="logout">Log out</button>
-    </nav>
-  </header>
-  <main class="docs-main">
-    <p class="banner hidden" id="global-error" role="alert"></p>
-    <div class="docs-layout">
-      <aside class="card docs-nav" id="docs-nav" aria-label="Documentation"></aside>
-      <article class="card docs-content" id="docs-content"></article>
-    </div>
-  </main>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Docs</h1>
+      <span class="spacer"></span>
+    </header>
+    <main class="docs-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <div class="docs-layout">
+        <aside class="card docs-nav" id="docs-nav" aria-label="Documentation"></aside>
+        <article class="card docs-content" id="docs-content"></article>
+      </div>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/rack.js"></script>
   <script src="/static/js/markdown.js"></script>

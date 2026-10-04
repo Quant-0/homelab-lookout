@@ -164,8 +164,18 @@ const HD = (() => {
     return '';
   }
 
+  // Lucide icons (icons.js), drawn in the current text colour
+  function icon(name, cls = '') {
+    const nodes = (typeof HD_ICONS !== 'undefined' && HD_ICONS[name]) || [];
+    return svg('svg', { class: `icon ${cls}`.trim(), viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' },
+      nodes.map(([tag, attrs]) => svg(tag, attrs)));
+  }
+
+  // Status: icon + word, never colour alone
+  const STATUS_ICONS = { good: 'circle-check', warning: 'triangle-alert', serious: 'triangle-alert', critical: 'octagon-alert', info: 'info' };
   function status(label, cls) {
-    return el('span', { class: `status ${cls ?? statusClass(label)}`, text: label || 'unknown' });
+    const c = cls ?? statusClass(label);
+    return el('span', { class: `status ${c}`.trim() }, icon(STATUS_ICONS[c] || 'circle-dashed'), el('span', { text: label || 'unknown' }));
   }
 
   async function logout() {
@@ -176,10 +186,93 @@ const HD = (() => {
     }
   }
 
-  // Overview · Services · Docs · Updates (the last two need a login or a remembered device)
-  function viewTabs(active, signedIn) {
-    const tabs = [['overview', 'Overview', '/'], ['services', 'Services', '/services'], ...(signedIn ? [['docs', 'Docs', '/docs'], ['updates', 'Updates', '/updates']] : [])];
-    return tabs.map(([key, label, href]) => el('a', { href, class: key === active ? 'active' : null, 'aria-current': key === active ? 'page' : null, text: label }));
+  // --- App shell: a sidebar on wide screens, a tab bar at the bottom on phones ---
+  // Docs and Updates need a login or a remembered device; Admin always asks for the password.
+  const NAV = [
+    { key: 'overview', label: 'Overview', href: '/', icon: 'layout-dashboard' },
+    { key: 'services', label: 'Services', href: '/services', icon: 'layout-grid' },
+    { key: 'energy', label: 'Energy', href: '/energy', icon: 'zap' },
+    { key: 'docs', label: 'Docs', href: '/docs', icon: 'book-open', signed: true },
+    { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
+  ];
+  let shellState = { active: null, title: 'Homelab', admin: false, viewer: false, updates: 0 };
+  let userName = null;
+
+  // opts: { active, title, admin (logged in), viewer (remembered device), updates (count) }
+  function shell(opts = {}) {
+    shellState = { ...shellState, ...opts };
+    const st = shellState;
+    const signed = st.admin || st.viewer;
+    const side = document.getElementById('sidebar');
+    const bar = document.getElementById('tabbar');
+    const navLink = (n, cls) => el('a', { class: `${cls}${n.key === st.active ? ' active' : ''}`, href: n.href, 'aria-current': n.key === st.active ? 'page' : null, title: n.label },
+      icon(n.icon), el('span', { class: 'label', text: n.label }),
+      n.key === 'updates' && st.updates ? el('span', { class: 'nav-badge num', text: String(st.updates), title: `${st.updates} available` }) : null);
+    const items = NAV.filter((n) => !n.signed || signed);
+    const admin = { key: 'admin', label: 'Admin', href: st.admin ? '/admin' : '/login?next=admin', icon: 'settings' };
+    const next = st.active && st.active !== 'overview' && st.active !== 'admin' ? `?next=${st.active}` : '';
+    if (side) {
+      side.replaceChildren(
+        el('a', { class: 'brand', href: '/', title: st.title }, el('img', { src: '/static/favicon.svg', alt: '' }), el('span', { class: 'label brand-name', text: st.title })),
+        el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
+          icon('search'), el('span', { class: 'label', text: 'Search' }), el('kbd', { class: 'label', text: 'Ctrl K' })),
+        el('div', { class: 'nav-list' }, items.map((n) => navLink(n, 'nav-item'))),
+        el('div', { class: 'nav-foot' },
+          signed ? navLink(admin, 'nav-item') : null,
+          signed
+            ? el('div', { class: 'user-row' },
+              el('span', { class: 'avatar', 'aria-hidden': 'true', text: (userName || (st.viewer ? 'V' : 'A')).charAt(0).toUpperCase() }),
+              el('span', { class: 'label user-text' }, el('strong', { text: userName || (st.viewer ? 'This device' : 'Admin') }), el('small', { text: st.viewer ? 'View only' : 'Administrator' })),
+              el('button', { type: 'button', class: 'icon-button label', title: 'Log out', 'aria-label': 'Log out', onclick: logout }, icon('log-out')))
+            : el('a', { class: 'nav-item', href: `/login${next}` }, icon('log-in'), el('span', { class: 'label', text: 'Log in' }))));
+    }
+    if (bar) {
+      const tabs = NAV.filter((n) => !n.signed || (signed && n.key === 'docs'));
+      const more = el('button', { type: 'button', class: `tab${['updates', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
+        icon('ellipsis'), el('span', { class: 'label', text: 'More' }), st.updates && signed ? el('span', { class: 'nav-badge num', text: String(st.updates) }) : null);
+      bar.replaceChildren(...tabs.map((n) => navLink(n, 'tab')), more);
+    }
+    // Phones: the logo and a search button in the page header
+    const top = document.querySelector('.topbar');
+    if (top && !top.querySelector('.topbar-logo')) {
+      top.prepend(el('a', { class: 'topbar-logo', href: '/', 'aria-label': 'Overview' }, el('img', { src: '/static/favicon.svg', alt: '' })));
+      top.append(el('button', { type: 'button', class: 'icon-button topbar-search', title: 'Search', 'aria-label': 'Search', onclick: openSearch }, icon('search')));
+    }
+    if (signed && userName === null) {
+      userName = '';
+      session().then((x) => {
+        userName = x?.user || '';
+        if (userName) shell();
+      }).catch(() => {});
+    }
+  }
+
+  // Phones: Updates, Admin, Search and Log out in a sheet from the bottom
+  function openMore() {
+    const st = shellState;
+    const signed = st.admin || st.viewer;
+    const dlg = el('dialog', { class: 'sheet', 'aria-label': 'More' });
+    const close = () => dlg.close();
+    const row = (ic, label, attrs) => el(attrs.href ? 'a' : 'button', { class: 'sheet-item', ...(attrs.href ? {} : { type: 'button' }), ...attrs }, icon(ic), el('span', { text: label }));
+    dlg.append(el('div', { class: 'sheet-body' },
+      el('div', { class: 'sheet-handle', 'aria-hidden': 'true' }),
+      signed ? row('circle-arrow-up', st.updates ? `Updates · ${st.updates} available` : 'Updates', { href: '/updates' }) : null,
+      signed ? row('settings', 'Admin', { href: st.admin ? '/admin' : '/login?next=admin' }) : null,
+      row('search', 'Search', { onclick: () => { close(); openSearch(); } }),
+      signed ? row('log-out', 'Log out', { onclick: logout }) : row('log-in', 'Log in', { href: '/login' })));
+    dlg.addEventListener('click', (e) => e.target === dlg && close());
+    dlg.addEventListener('close', () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
+  // A button with an icon (and a label that hides on phones when `compact`)
+  function iconButton(name, label, attrs = {}, compact = true) {
+    const { href, class: cls, ...rest } = attrs;
+    const node = href ? el('a', { class: `button ${cls || ''}`.trim(), href, ...rest }) : el('button', { type: 'button', class: cls, ...rest });
+    if (!node.title) node.title = label;
+    node.append(icon(name), el('span', { class: compact ? 'btn-label' : null, text: label }));
+    return node;
   }
 
   // Integration values: { label, value, unit? }
@@ -515,11 +608,7 @@ const HD = (() => {
   }
 
   function initSearch() {
-    const bar = document.querySelector('.topbar');
-    if (!bar || !document.querySelector('.topbar .spacer') || location.pathname === '/login') return;
-    const button = el('button', { type: 'button', class: 'search-button', 'aria-keyshortcuts': 'Control+K', title: 'Search (Ctrl K or /)', onclick: openSearch },
-      el('span', { text: 'Search' }), el('kbd', { text: 'Ctrl K' }));
-    bar.querySelector('.spacer').after(button);
+    if (!document.getElementById('sidebar')) return;
     document.addEventListener('keydown', (e) => {
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
       if ((e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey)) {
@@ -531,13 +620,8 @@ const HD = (() => {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSearch);
   else initSearch();
 
-  // A remembered device (view only): Admin asks for the password, Log out forgets the device
-  function viewerNav() {
-    return [el('a', { class: 'button', href: '/login?next=admin', text: 'Admin' }), el('button', { type: 'button', text: 'Log out', onclick: logout })];
-  }
-
   // The installable app's service worker (offline screen only; see sw.js)
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-  return { api, upload, raw, saveBlob, session, el, svg, fmt, status, statusClass, logout, viewTabs, viewerNav, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, iconButton, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

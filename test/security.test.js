@@ -76,7 +76,8 @@ async function run() {
     const r = await call('GET', p);
     ok(r.status === 303 && r.headers.get('location') === `/login${next}`, `stranger: ${p} sends to the login page`);
   }
-  const PUBLIC = new Set(['css/style.css', 'js/login.js', 'js/common.js', 'favicon.svg', 'js/offline.js', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png']);
+  const PUBLIC = new Set(['css/style.css', 'js/login.js', 'js/common.js', 'favicon.svg', 'js/offline.js', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
+    'js/icons.js', 'fonts/inter-5.3.0.woff2', 'licenses/Inter-OFL.txt', 'licenses/Lucide-LICENSE.txt']);
   const files = [];
   const walk = (dir) => { for (const f of fs.readdirSync(dir, { withFileTypes: true })) f.isDirectory() ? walk(path.join(dir, f.name)) : files.push(path.relative(path.join(ROOT, 'public'), path.join(dir, f.name))); };
   walk(path.join(ROOT, 'public'));

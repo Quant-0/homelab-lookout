@@ -8,7 +8,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 
 ## What it shows
 
-- **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s).
+- **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s). The drives in the front bays (model, size, health, "predicted to fail") are read from Redfish every 15 minutes: they're drawn in the rack, listed on the Docs sheet, and a failing drive raises a *Storage problem* alert.
 - **Proxmox**: nodes (CPU, memory, root disk, uptime) on the Overview; VMs/containers with their status on the Services page.
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
@@ -18,8 +18,10 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
   - The dashboard shows one widget per device, with a section per connection.
   - Switches and access points found through a UniFi console appear as devices automatically. Deleting one hides it; it isn't re-created.
-- **Rack**: the right third of the dashboard shows your rack (1–60 U), drawn like the real hardware with live data:
-  - fronts chosen from the model each device reports: Dell PowerEdge 13th gen (R630/R730, with the LCD showing watts) and 14th gen (R640/R740, with the fault icons for power and temperature), UniFi Dream Machine Pro and Switch 24 PoE (touchscreen, ports lit by link and PoE), other UniFi and generic switches, Synology RackStation and DiskStation (bays lit by disk health), and generic servers. Each device's front and drive-bay layout can be changed in Admin → Devices;
+- **Rack**: the right of the Overview shows your rack (1–60 U), **drawn to scale**: a 19″ front is 482.6 mm wide and 1 U is 44.45 mm, so every device keeps its real proportions at any size. Two views, switched in the rack's header and remembered per browser:
+  - **Realistic**: fronts modelled on the real hardware, with live LEDs, and the names beside the rack instead of on the fronts;
+  - **Schematic**: flat blocks in the theme's colours with icon, name, status and one number;
+  - fronts chosen from the model each device reports: Dell PowerEdge 13th gen (R630/R730, with the LCD showing watts) and 14th gen (R640/R740, with the fault icons for power and temperature), UniFi Dream Machine Pro and Switch 24 PoE (touchscreen, ports lit by link and PoE), other UniFi and generic switches, Synology RackStation and DiskStation (a DiskStation stands on a shelf at its real size), and generic servers. Dell servers show the drives the iDRAC reports in their bays (blanks where a bay is empty, amber for a warning) and pick the bay layout from them. Each device's front and drive-bay layout can be changed in Admin → Devices;
   - **passive items** without a name: blank, vented and brush panels, cable management, patch panels (12/24/48 ports) and shelves. Add them from "Add panel" or by double-clicking an empty U. They are not devices, so they don't appear in the docs or as widgets. Blank panels, patch panels and shelves that were devices before are converted automatically;
   - click a device to jump to its widget; devices outside the rack (e.g. access points) are listed below it.
   - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
@@ -62,6 +64,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - **Energy report** (the card's *Report* link, or search "energy"): a month by day or a year by month, with kWh, cost and average price compared with the period before, and how much each device used. Per-device figures are logged from when this version was installed; earlier hours have only the total. The page follows the dashboard: private means login, public means visitors see it too.
   - **CSV export** from the report, per day or (for a year) per month, in two formats: *Excel (NO)* uses semicolons, decimal commas and a BOM, so Norwegian Excel opens it directly with æøå intact; *CSV* uses commas and decimal points for other tools. Each file ends with the per-device totals. Names that start with `=`, `+`, `-` or `@` are written so a spreadsheet can't run them as formulas.
 
+- **Look**: a sidebar with the pages on wide screens (icons only on tablets) and a tab bar at the bottom on phones, like an app. The Inter font and Lucide icons are served by the dashboard itself, so nothing is fetched from elsewhere (licences in `public/licenses/`).
 - **Appearance**:
   - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night.
   - Backgrounds: 6 built-in gradients, or upload your own (JPEG/PNG/WebP, max 10 MB).

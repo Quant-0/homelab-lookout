@@ -57,7 +57,7 @@ The app opens on the Overview. When the dashboard can't be reached, the app show
 
 ## 2. Everyday use
 
-The tabs at the top are **Overview · Services · Docs · Updates**. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
+The pages are in the **sidebar** on the left: **Overview · Services · Energy · Docs · Updates**, with **Admin** and **Log out** at the bottom. On a tablet the sidebar shows only icons; on a phone the pages are in the **tab bar** at the bottom, and **More** has Updates, Admin, Search and Log out. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
 
 ### Overview
 
@@ -76,7 +76,7 @@ The tabs at the top are **Overview · Services · Docs · Updates**. Docs and Up
   - the graph range, **24 h / 7 d / 30 d** (remembered per browser)
   - **Details** for the yearly figures
   - **Report** for the full energy report
-- **The rack** on the right is drawn like the real hardware, with live lights. Click a device to jump to its card. On a phone the rack starts folded.
+- **The rack** on the right is drawn to scale, like the real hardware, with live lights: the drives your servers really have (blanks for empty bays, amber when a drive is about to fail), switch ports lit by link and PoE, power buttons. The names stand beside it. **Realistic / Schematic** at the top switches to a plain view with names, status and power inside the blocks. Click a device or its name to jump to its card. On a phone and narrow screens the rack comes after the cards and starts folded.
 
 ### Services
 
@@ -134,7 +134,7 @@ Use ↑ ↓ to choose, **Enter** to open and **Esc** to close.
 
 ## 3. Setting things up in Admin
 
-**Admin** (top right) has six tabs: **Devices · Services · Alerts · Power & cost · Dashboard & look · System**.
+**Admin** (bottom of the sidebar, or **More** on a phone) has six tabs: **Devices · Services · Alerts · Power & cost · Dashboard & look · System**.
 
 > **Passwords, tokens and keys are entered here and nowhere else.** They're stored encrypted and never shown again. A form only says whether a secret is set. To change one, type the new one. If you change a device's address or user name without retyping the secret, the old secret is deleted, so it's never sent anywhere new.
 
@@ -168,6 +168,8 @@ More on devices:
   - Set its size and numbering at the top of the tab.
   - Drag devices and panels to move them, and click one to edit it.
   - Double-click an empty U, or use **Add panel…**, for blank panels, patch panels, shelves and cable management. These have no name and don't appear in Docs.
+  - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
+  - **Drive bays** on *Automatic* follow the drives the iDRAC reports. Change it if your server has a different backplane than the drives suggest.
 
 ### Services
 

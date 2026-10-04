@@ -26,7 +26,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForSelector('.device-card');
 
   const results = () => page.$$eval('#search-results li[role=option]', (n) => n.map((x) => `${x.querySelector('.kind').textContent}: ${x.querySelector('.title').textContent}`));
-  check(await page.isVisible('.topbar .search-button'), 'search button in the top bar');
+  check(await page.isVisible('.sidebar .search-button'), 'search button in the sidebar');
   await page.keyboard.press('Control+k');
   await page.waitForSelector('dialog.search-dialog[open]');
   await page.keyboard.type('jelly');
