@@ -244,12 +244,12 @@ const smtpServers = [smtpMock(18025), smtpMock(18026, { starttls: false }), smtp
   r = await req('POST', '/api/admin/devices', { name: 'Lynx', kind: 'server', location: 'none', connections: [
     { type: 'idrac', address: '127.0.0.1:18451', username: 'root', tlsMode: 'pin', fingerprint: FP, secret: 'calvin' }] });
   const lynx = r.json.device;
-  const down = await until(() => posts.slice(n1).find((x) => x.path.startsWith('/bot') && /Lynx: iDRAC not answering/.test(x.json.text)));
-  ok(down && /Connection refused/.test(down.json.text), 'Telegram: "Lynx: iDRAC not answering"');
+  const down = await until(() => posts.slice(n1).find((x) => x.path.startsWith('/bot') && /Lynx: Redfish not answering/.test(x.json.text)));
+  ok(down && /Connection refused/.test(down.json.text), 'Telegram: "Lynx: Redfish not answering" (no model known yet)');
   const lokiHost = (await req('GET', '/api/admin/config')).json.hosts.find((h) => h.deviceId === lynx.id);
   await req('PUT', `/api/admin/devices/${lynx.id}`, { name: 'Lynx', kind: 'server', location: 'none', connections: [
     { id: lokiHost.id, type: 'idrac', address: '127.0.0.1:18443', username: 'root', tlsMode: 'pin', fingerprint: FP, secret: 'calvin' }] });
-  const up = await until(() => posts.slice(n1).find((x) => x.path.startsWith('/bot') && /Resolved: Lynx: iDRAC not answering/.test(x.json.text)));
+  const up = await until(() => posts.slice(n1).find((x) => x.path.startsWith('/bot') && /Resolved: Lynx: Redfish not answering/.test(x.json.text)));
   ok(up && /Cleared after/.test(up.json.text), 'Telegram: resolved when it answers again');
 
   // service down by e-mail

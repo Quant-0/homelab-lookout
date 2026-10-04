@@ -10,8 +10,8 @@
 // Needs: Node 18+, openssl (test certificate). Optional: snmpd from net-snmp (set SNMPD=path if it
 // is not in PATH) for the SNMPv3 suite, which is skipped otherwise.
 // Uses ports 18080 (dashboard), 18444-18448 (HTTPS/backup suites), 18443 (device mock), 18090 (service
-// mock), 18022 (sshd for the rsync test), 16161/udp (snmpd), 18449-18452, 18025, 18026 and 18465 (alert
-// mocks). rsync tests need rsync and sshd.
+// mock), 18022 (sshd for the rsync test), 16161/udp (snmpd), 18449-18452, 18025, 18026, 18465 (alert
+// mocks) and 18466 (NUT mock). rsync tests need rsync and sshd.
 
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -136,6 +136,7 @@ async function main() {
     { file: 'test/https.test.js', fresh: true, env: tlsEnv },
     { file: 'test/appearance.test.js', fresh: false },
     { file: 'test/snmp-unifi.test.js', fresh: true, skip: !snmpd && 'snmpd not found (install net-snmp or set SNMPD)' },
+    { file: 'test/drivers.test.js', fresh: true, skip: !snmpd && 'snmpd not found (install net-snmp or set SNMPD)' },
     { file: 'test/devices.test.js', fresh: true },
     { file: 'test/services.test.js', fresh: true },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },

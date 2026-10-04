@@ -48,12 +48,23 @@ const MAX_BODY = 64 * 1024;
 const COLLECT_TIMEOUT_MS = 45000; // iDRAC8 can be slow to answer
 
 const HOST_TYPES = {
-  idrac: { label: 'iDRAC', port: 443 },
+  idrac: { label: 'Redfish (iDRAC, iLO, XClarity, Supermicro)', short: 'Redfish', port: 443 },
   proxmox: { label: 'Proxmox', port: 8006 },
   truenas: { label: 'TrueNAS', port: 443 },
   synology: { label: 'Synology', port: 161 }, // SNMPv3 over UDP
   unifi: { label: 'UniFi', port: 443 },
+  snmp: { label: 'SNMPv3 (switch, router, NAS, UPS card)', short: 'SNMP', port: 161 },
+  nut: { label: 'NUT (UPS over USB)', short: 'NUT', port: 3493 },
+  omada: { label: 'Omada controller', short: 'Omada', port: 443 },
 };
+const SNMP_TYPES = new Set(['synology', 'snmp']); // engine ID instead of a certificate, two passwords
+const shortLabel = (type) => HOST_TYPES[type].short || HOST_TYPES[type].label;
+// What a Redfish connection is called on the device itself, from the model it reported
+function controllerName(h, data) {
+  if (h.type !== 'idrac') return shortLabel(h.type);
+  const model = String(data?.model || '');
+  return /ProLiant|HPE/i.test(model) ? 'iLO' : /ThinkSystem|Lenovo/i.test(model) ? 'XClarity' : /Super|SYS-|X1[0-3]/i.test(model) ? 'BMC' : /PowerEdge|Dell/i.test(model) ? 'iDRAC' : 'Redfish';
+}
 const AREAS = ['NO1', 'NO2', 'NO3', 'NO4', 'NO5'];
 const THEMES = [
   'auto', 'light', 'dark', 'nord', 'dracula', 'catppuccin-mocha', 'catppuccin-latte',
@@ -72,7 +83,7 @@ const PASSIVE_KINDS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Br
 const FRONTS = ['auto', 'dell13', 'dell14', 'udm-pro', 'usw-24-poe', 'unifi-switch', 'synology-rs', 'synology-ds', 'server', 'switch', 'plain'];
 const DRIVE_LAYOUTS = ['auto', 'none', '4x3.5', '8x3.5', '12x3.5', '8x2.5', '10x2.5', '16x2.5', '24x2.5'];
 const DEVICE_LOCATIONS = ['rack', 'outside', 'none']; // none = not placed
-const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway' };
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway' };
 const WIDGET_ID = /^(power-summary|power-chart|device:[0-9a-f-]{36})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NORGESPRIS_ORE_EX_VAT = 40; // 50 øre/kWh incl. 25 % VAT
@@ -462,12 +473,17 @@ function validateHostInput(body, type) {
   const address = normalizeAddress(body.address, type);
   const username = String(body.username ?? '').trim();
   if (username.length > 128 || hasControlChars(username) || /\s/.test(username)) throw new UserError('Invalid username');
-  if (type === 'idrac' && username.includes(':')) throw new UserError('iDRAC username cannot contain ":"');
-  if (type === 'idrac' && !username) throw new UserError('Username is required for iDRAC');
+  if (type === 'idrac' && username.includes(':')) throw new UserError('Redfish username cannot contain ":"');
+  if (type === 'idrac' && !username) throw new UserError('Username is required for Redfish');
   if (type === 'proxmox' && !/^[^\s@!=]+@[^\s@!=]+![A-Za-z][A-Za-z0-9._-]*$/.test(username))
     throw new UserError('Proxmox username must be the full token ID, e.g. root@pam!dashboard');
-  if ((type === 'unifi' || type === 'synology') && !username) throw new UserError('Username is required');
-  if (type === 'synology') {
+  if (['unifi', 'synology', 'snmp', 'omada'].includes(type) && !username) throw new UserError('Username is required');
+  if (type === 'nut') {
+    // plain TCP, read-only commands without a login: nothing secret is sent, so nothing to pin
+    if (!NUT_NAME.test(username)) throw new UserError('Enter the UPS name from ups.conf (letters, digits, . _ -)');
+    return { name, address, username, tlsMode: 'none', fingerprint: '', options: {} };
+  }
+  if (SNMP_TYPES.has(type)) {
     // SNMP has no TLS; the agent's engine ID is pinned instead
     const engineId = String(body.fingerprint || '').replace(/[\s:]/g, '').toLowerCase();
     if (!/^([0-9a-f]{2}){5,32}$/.test(engineId)) throw new UserError('SNMP engine ID is required (fetch it from the device)');
@@ -481,7 +497,8 @@ function validateHostInput(body, type) {
 
 // Synology stores two SNMPv3 passwords; they are set together as one encrypted secret.
 function secretFromBody(type, body) {
-  if (type !== 'synology') return validateSecret(body.secret);
+  if (type === 'nut') return null;
+  if (!SNMP_TYPES.has(type)) return validateSecret(body.secret);
   const auth = validateSecret(body.secret);
   const priv = validateSecret(body.secret2);
   if (!auth && !priv) return null;
@@ -670,6 +687,11 @@ function buildConnection(old, body, device) {
     const node = String(body.options?.node ?? '').trim();
     if (node && !PVE_NODE.test(node)) throw new UserError('Invalid Proxmox node name');
     next.options = { ...next.options, node };
+  }
+  if (type === 'omada') {
+    const mac = String(body.options?.mac ?? '').trim().toLowerCase().replace(/-/g, ':');
+    if (mac && !/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac)) throw new UserError('Invalid Omada device');
+    next.options = { ...next.options, mac };
   }
   const secret = secretFromBody(type, body);
   let note = null;
@@ -1455,6 +1477,20 @@ function healthOf(status) {
 const DRIVE_INVENTORY_MS = 15 * 60 * 1000;
 const driveCache = new Map(); // `${host id}|${address}` -> { at, drives }
 
+// The front bay a Redfish drive sits in. Dell: "Disk.Bay.3"; HPE, Lenovo and Supermicro report a
+// location instead ("1I:1:3", or an ordinal); drives without one are internal.
+function driveBay(x) {
+  if (!x) return null;
+  const dell = /Disk\.Bay\.(\d+)/.exec(x.Id || '');
+  if (dell) return Number(dell[1]);
+  if (/BOSS|M\.2/i.test(String(x.Id || ''))) return null;
+  const ord = x.PhysicalLocation?.PartLocation?.LocationOrdinalValue;
+  if (Number.isInteger(ord) && ord >= 0 && ord < 100) return ord;
+  const info = String(x.Location?.[0]?.Info || x.PhysicalLocation?.Info || '');
+  const last = /(\d+)\s*$/.exec(info);
+  return last && /[:.]/.test(info) ? Number(last[1]) : null;
+}
+
 async function idracDrives(tryGet, sysPath) {
   const coll = await tryGet(`${sysPath}/Storage`);
   const ctrls = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 8);
@@ -1463,11 +1499,11 @@ async function idracDrives(tryGet, sysPath) {
     const ctrl = await tryGet(cp);
     for (const dp of (ctrl?.Drives || []).map((x) => okPath(x['@odata.id'])).filter(Boolean).slice(0, 48)) {
       const x = await tryGet(dp);
-      const bay = /Disk\.Bay\.(\d+)/.exec(x?.Id || '');
-      if (!bay) continue; // BOSS and other internal cards are not in a front bay
+      const bay = driveBay(x);
+      if (bay === null) continue; // BOSS and other internal cards are not in a front bay
       const ff = String(x.Oem?.Dell?.DellPhysicalDisk?.DriveFormFactor || x.FormFactor || '');
       drives.push({
-        bay: Number(bay[1]),
+        bay,
         model: x.Model ? String(x.Model).trim().slice(0, 60) : null,
         mediaType: ['HDD', 'SSD'].includes(x.MediaType) ? x.MediaType : null,
         capacityBytes: typeof x.CapacityBytes === 'number' ? x.CapacityBytes : null,
@@ -1715,13 +1751,7 @@ const SYNO_RAID_STATUS = {
 };
 
 async function collectSynology(h, secretJson) {
-  let secrets;
-  try {
-    secrets = JSON.parse(secretJson);
-  } catch {
-    throw new UserError('Stored SNMP credentials are invalid; please re-enter them');
-  }
-  const ctx = await snmpSession(h, secrets);
+  const ctx = await snmpSession(h, snmpSecrets(secretJson));
   const v = await snmpGet(ctx, {
     name: '1.3.6.1.2.1.1.5.0',
     uptime: '1.3.6.1.2.1.25.1.1.0',
@@ -1792,6 +1822,279 @@ async function collectSynology(h, secretJson) {
         remainingLife: typeof r['11'] === 'number' && r['11'] >= 0 ? r['11'] : null,
       })),
   };
+}
+
+// --- Any SNMPv3 device: switches, routers, NAS, UPS network cards ---
+//
+// Standard MIBs only, so it works across brands (Cisco, HPE/Aruba, MikroTik, Netgear, QNAP, APC,
+// Eaton…): SNMPv2-MIB system, IF-MIB ports, HOST-RESOURCES CPU and storage, UPS-MIB (RFC 1628).
+// Whatever a device doesn't implement is simply left out.
+
+const IF_TABLE = '1.3.6.1.2.1.2.2.1';
+const IFX_TABLE = '1.3.6.1.2.1.31.1.1.1';
+const UPS_MIB = '1.3.6.1.2.1.33.1';
+const UPS_BATTERY = { 1: 'Unknown', 2: 'Normal', 3: 'Low', 4: 'Depleted' };
+const UPS_SOURCE = { 1: 'Other', 2: 'None', 3: 'Mains', 4: 'Bypass', 5: 'Battery', 6: 'Booster', 7: 'Reducer' };
+const ETHERNET_IF = new Set([6, 62, 69, 117]); // ethernetCsmacd, fastEther, fastEtherFX, gigabitEthernet
+const counterCache = new Map(); // `${host id}|${address}` -> { t, ports: { idx: [in, out] } }
+
+function snmpSecrets(secretJson) {
+  try {
+    return JSON.parse(secretJson);
+  } catch {
+    throw new UserError('Stored SNMP credentials are invalid; please re-enter them');
+  }
+}
+
+async function collectSnmp(h, secretJson) {
+  const ctx = await snmpSession(h, snmpSecrets(secretJson));
+  const v = await snmpGet(ctx, {
+    descr: '1.3.6.1.2.1.1.1.0',
+    uptime: '1.3.6.1.2.1.1.3.0',
+    name: '1.3.6.1.2.1.1.5.0',
+    location: '1.3.6.1.2.1.1.6.0',
+    upsMaker: `${UPS_MIB}.1.1.0`,
+    upsModel: `${UPS_MIB}.1.2.0`,
+    battery: `${UPS_MIB}.2.1.0`,
+    onBatterySec: `${UPS_MIB}.2.2.0`,
+    minutes: `${UPS_MIB}.2.3.0`,
+    charge: `${UPS_MIB}.2.4.0`,
+    batteryTemp: `${UPS_MIB}.2.7.0`,
+    source: `${UPS_MIB}.4.1.0`,
+  });
+  const [ifs, ifx, cpus, storage] = [
+    await snmpTable(ctx, IF_TABLE, 3000),
+    await snmpTable(ctx, IFX_TABLE, 3000).catch(() => ({})),
+    await snmpTable(ctx, '1.3.6.1.2.1.25.3.3.1').catch(() => ({})),
+    await snmpTable(ctx, '1.3.6.1.2.1.25.2.3.1').catch(() => ({})),
+  ];
+
+  // Ports: physical Ethernet ports only, with traffic from the counters since the last poll
+  const key = `${h.id}|${h.address}`;
+  const prev = counterCache.get(key);
+  const now = Date.now();
+  const counters = {};
+  const ports = Object.entries(ifs)
+    .filter(([, r]) => ETHERNET_IF.has(r['3']))
+    .slice(0, 128)
+    .map(([idx, r]) => {
+      const x = ifx[idx] || {};
+      const inO = typeof x['6'] === 'number' ? x['6'] : r['10'];
+      const outO = typeof x['10'] === 'number' ? x['10'] : r['16'];
+      counters[idx] = [inO, outO];
+      const was = prev?.ports[idx];
+      const secs = prev ? (now - prev.t) / 1000 : 0;
+      const rate = (a, b) => (secs > 0 && typeof a === 'number' && typeof b === 'number' && a >= b ? Math.round(((a - b) * 8) / secs) : null);
+      const highMbps = typeof x['15'] === 'number' && x['15'] > 0 ? x['15'] : null;
+      return {
+        idx: Number(idx),
+        name: String(x['1'] || r['2'] || `Port ${idx}`).slice(0, 40),
+        alias: x['18'] ? String(x['18']).slice(0, 60) : null,
+        up: r['8'] === 1,
+        enabled: r['7'] !== 2,
+        speedMbps: highMbps ?? (typeof r['5'] === 'number' && r['5'] > 0 ? Math.round(r['5'] / 1e6) : null),
+        inBps: was ? rate(inO, was[0]) : null,
+        outBps: was ? rate(outO, was[1]) : null,
+      };
+    })
+    .sort((a, b) => a.idx - b.idx);
+  counterCache.set(key, { t: now, ports: counters });
+
+  const loads = Object.values(cpus).map((r) => r['2']).filter((x) => typeof x === 'number');
+  const HR = '1.3.6.1.2.1.25.2.1.';
+  const stores = Object.values(storage).filter((r) => typeof r['4'] === 'number' && r['5'] > 0);
+  const ram = stores.find((r) => r['2'] === `${HR}2`);
+  const disks = stores
+    .filter((r) => r['2'] === `${HR}4` && typeof r['3'] === 'string' && !/^\/(proc|sys|dev|run|boot)\b/.test(r['3']))
+    .map((r) => ({ name: r['3'].slice(0, 60), size: r['5'] * r['4'], used: (r['6'] || 0) * r['4'] }))
+    .filter((d) => d.size >= 1 << 30)
+    .slice(0, 16);
+
+  const isUps = typeof v.battery === 'number' || typeof v.charge === 'number';
+  const out = {
+    system: {
+      name: v.name || null,
+      descr: v.descr ? String(v.descr).replace(/\s+/g, ' ').slice(0, 200) : null,
+      location: v.location || null,
+      uptime: typeof v.uptime === 'number' ? Math.round(v.uptime / 100) : null,
+      cpu: loads.length ? loads.reduce((a, b) => a + b, 0) / loads.length / 100 : null,
+      memTotal: ram ? ram['5'] * ram['4'] : null,
+      memUsed: ram ? (ram['6'] || 0) * ram['4'] : null,
+    },
+    ports,
+    volumes: disks,
+    ups: null,
+  };
+  if (isUps) {
+    const [outputs, inputs] = [await snmpTable(ctx, `${UPS_MIB}.4.4.1`).catch(() => ({})), await snmpTable(ctx, `${UPS_MIB}.3.3.1`).catch(() => ({}))];
+    const sum = (rows, col) => {
+      const xs = Object.values(rows).map((r) => r[col]).filter((x) => typeof x === 'number');
+      return xs.length ? xs.reduce((a, b) => a + b, 0) : null;
+    };
+    const loadPct = Object.values(outputs).map((r) => r['5']).filter((x) => typeof x === 'number');
+    const inputV = Object.values(inputs).map((r) => r['3']).find((x) => typeof x === 'number');
+    out.ups = {
+      maker: v.upsMaker || null,
+      model: v.upsModel || null,
+      onBattery: v.source === 5 || (typeof v.onBatterySec === 'number' && v.onBatterySec > 0),
+      source: UPS_SOURCE[v.source] || null,
+      battery: UPS_BATTERY[v.battery] || null,
+      lowBattery: v.battery === 3 || v.battery === 4,
+      charge: typeof v.charge === 'number' ? v.charge : null,
+      runtimeMin: typeof v.minutes === 'number' ? v.minutes : null,
+      loadPct: loadPct.length ? Math.max(...loadPct) : null,
+      outputW: sum(outputs, '4'),
+      inputV: typeof inputV === 'number' ? inputV : null,
+      temp: typeof v.batteryTemp === 'number' ? v.batteryTemp : null,
+    };
+  }
+  return out;
+}
+
+// --- UPS through NUT (Network UPS Tools), e.g. a USB UPS on a Raspberry Pi or the NAS ---
+//
+// Reads variables only (LIST VAR), which upsd allows without logging in, so nothing secret is sent.
+// The address is upsd's (default port 3493); the "user name" field holds the UPS name in ups.conf.
+
+const NUT_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+
+function nutList(h) {
+  const { host, port } = splitAddress(h.address);
+  return new Promise((resolve, reject) => {
+    const sock = net.connect({ host: host.replace(/^\[|\]$/g, ''), port });
+    let buf = '';
+    const done = (err, val) => {
+      clearTimeout(timer);
+      sock.destroy();
+      if (err) reject(err);
+      else resolve(val);
+    };
+    const timer = setTimeout(() => done(new UserError('NUT server did not answer in time')), 10000);
+    sock.on('connect', () => sock.write(`LIST VAR ${h.username}\n`));
+    sock.on('error', (e) => done(new UserError(friendlyNetError(e))));
+    sock.on('data', (d) => {
+      buf += d.toString('utf8');
+      if (buf.length > 256 * 1024) return done(new UserError('NUT answer too large'));
+      const err = /^ERR (\S+)/m.exec(buf);
+      if (err) return done(new UserError(err[1] === 'UNKNOWN-UPS' ? `No UPS called "${h.username}" on this NUT server` : err[1] === 'ACCESS-DENIED' ? 'The NUT server refused access (check LISTEN and allowed hosts in upsd.conf)' : `NUT error ${err[1]}`));
+      if (!buf.includes(`END LIST VAR ${h.username}`)) return;
+      const vars = {};
+      for (const m of buf.matchAll(/^VAR \S+ (\S+) "((?:[^"\\]|\\.)*)"$/gm)) vars[m[1]] = m[2].replace(/\\(.)/g, '$1');
+      done(null, vars);
+    });
+  });
+}
+
+async function collectNut(h) {
+  const v = await nutList(h);
+  const n = (k) => (v[k] !== undefined && v[k] !== '' && Number.isFinite(Number(v[k])) ? Number(v[k]) : null);
+  const flags = String(v['ups.status'] || '').split(/\s+/).filter(Boolean);
+  const load = n('ups.load');
+  const nominal = n('ups.realpower.nominal');
+  return {
+    ups: {
+      maker: v['device.mfr'] || v['ups.mfr'] || null,
+      model: v['device.model'] || v['ups.model'] || null,
+      onBattery: flags.includes('OB'),
+      source: flags.includes('OB') ? 'Battery' : flags.includes('BYPASS') ? 'Bypass' : flags.includes('OL') ? 'Mains' : null,
+      battery: flags.includes('LB') ? 'Low' : flags.includes('RB') ? 'Replace battery' : v['battery.charge'] !== undefined ? 'Normal' : null,
+      lowBattery: flags.includes('LB'),
+      replaceBattery: flags.includes('RB'),
+      charge: n('battery.charge'),
+      runtimeMin: n('battery.runtime') !== null ? Math.round(n('battery.runtime') / 60) : null,
+      loadPct: load,
+      outputW: n('ups.realpower') ?? (load !== null && nominal !== null ? Math.round((load / 100) * nominal) : null),
+      inputV: n('input.voltage'),
+      temp: n('battery.temperature') ?? n('ups.temperature'),
+      status: flags.join(' ') || null,
+    },
+  };
+}
+
+// --- TP-Link Omada controller (software, OC200/OC300 or cloud-based hardware controller) ---
+//
+// Logs in with a Viewer account like the UniFi console: the session lives in memory, and after a
+// failed login no new attempt is made for 15 minutes.
+
+const omadaSessions = new Map(); // `${id}|${address}|${username}` -> { cookie, token, cid, failedUntil, error }
+
+async function omadaLogin(h, password) {
+  const key = `${h.id}|${h.address}|${h.username}`;
+  const s = omadaSessions.get(key) || {};
+  if (s.failedUntil > Date.now())
+    throw new UserError(`${s.error} Next login attempt in ${Math.ceil((s.failedUntil - Date.now()) / 60000)} min.`);
+  const info = await httpsRequest(connectHost(h), h.address, { path: '/api/info' });
+  const cid = info?.result?.omadacId;
+  if (typeof cid !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(cid)) throw new UserError('This does not look like an Omada controller');
+  const r = await httpsRequest(connectHost(h), h.address, {
+    method: 'POST',
+    path: `/${cid}/api/v2/login`,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: h.username, password }),
+    full: true,
+  });
+  const token = r.json?.result?.token;
+  const cookie = [].concat(r.headers['set-cookie'] || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('TPOMADA_SESSIONID='));
+  if (r.status === 200 && r.json?.errorCode === 0 && typeof token === 'string' && cookie) {
+    const sess = { cookie, token, cid };
+    omadaSessions.set(key, sess);
+    return sess;
+  }
+  const error = r.json?.errorCode === -30109 || r.json?.errorCode === -30101 || r.status === 401 ? 'Omada login failed (check the username/password of the Viewer account).' : `Omada login failed (${r.json?.msg ? String(r.json.msg).slice(0, 80) : `HTTP ${r.status}`}).`;
+  omadaSessions.set(key, { failedUntil: Date.now() + UNIFI_BACKOFF_MS, error });
+  throw new UserError(error);
+}
+
+async function omadaGet(h, password, apiPath) {
+  const key = `${h.id}|${h.address}|${h.username}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const s = omadaSessions.get(key)?.token ? omadaSessions.get(key) : await omadaLogin(h, password);
+    const r = await httpsRequest(connectHost(h), h.address, { path: `/${s.cid}${apiPath}`, headers: { Cookie: s.cookie, 'Csrf-Token': s.token }, full: true });
+    const code = r.json?.errorCode;
+    if ((r.status === 401 || code === -1200 || code === -1005) && attempt === 0) {
+      omadaSessions.delete(key); // session expired: log in again once
+      continue;
+    }
+    if (r.status < 200 || r.status >= 300) throw Object.assign(new UserError(`HTTP ${r.status}`), { status: r.status });
+    if (code !== 0) throw new UserError(`Omada error ${code}${r.json?.msg ? `: ${String(r.json.msg).slice(0, 80)}` : ''}`);
+    return r.json.result;
+  }
+  throw new UserError('Omada session could not be established');
+}
+
+function omadaDevice(d) {
+  const type = { gateway: 'gateway', switch: 'switch', ap: 'ap' }[d.type] || 'other';
+  const online = d.statusCategory === 1 || d.status === 14;
+  const pct = (x) => (num0(x) !== null ? num0(x) / 100 : null);
+  return {
+    mac: String(d.mac || '').toLowerCase().replace(/-/g, ':'),
+    name: String(d.name || d.model || d.mac || 'Device').slice(0, 64),
+    model: d.model || d.showModel || null,
+    type,
+    online,
+    state: online ? 'Online' : d.statusCategory === 2 ? 'Pending' : d.statusCategory === 3 ? 'Isolated' : 'Offline',
+    version: d.firmwareVersion ? String(d.firmwareVersion).slice(0, 60) : null,
+    upgradable: Boolean(d.needUpgrade),
+    ip: d.ip || null,
+    uptime: num0(d.uptimeLong),
+    cpu: pct(d.cpuUtil),
+    mem: pct(d.memUtil),
+    clients: num0(d.clientNum),
+    poe: num0(d.poeRemain) !== null && num0(d.poeTotalPower) ? { usedW: Math.max(0, num0(d.poeTotalPower) - num0(d.poeRemain)), budgetW: num0(d.poeTotalPower) } : null,
+  };
+}
+
+async function collectOmada(h, password) {
+  const sites = await omadaGet(h, password, '/api/v2/sites?currentPage=1&currentPageSize=50');
+  const list = (sites?.data || []).filter((x) => typeof x.id === 'string' && /^[A-Za-z0-9]{1,64}$/.test(x.id)).slice(0, 5);
+  const devices = [];
+  for (const site of list) {
+    const devs = await omadaGet(h, password, `/api/v2/sites/${site.id}/devices`);
+    for (const d of Array.isArray(devs) ? devs : devs?.data || []) devices.push({ site: String(site.name || '').slice(0, 40), ...omadaDevice(d) });
+  }
+  const order = { gateway: 0, switch: 1, ap: 2 };
+  devices.sort((a, b) => (order[a.type] ?? 3) - (order[b.type] ?? 3) || a.name.localeCompare(b.name));
+  return { devices: devices.slice(0, 200) };
 }
 
 // --- UniFi (UniFi OS console, local View Only account) ---
@@ -1917,7 +2220,7 @@ async function collectUnifi(h, password) {
   return { health, devices: devices.slice(0, 200) };
 }
 
-const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi };
+const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada };
 
 function safeErrorMessage(e, secret) {
   let msg = e instanceof UserError ? e.message : 'Unexpected error while collecting data';
@@ -2917,7 +3220,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe))$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -3009,6 +3312,22 @@ function recordHistory(h, data, t) {
     histRecord(`syno:${h.id}:mem`, pct(data.system.memUsed, data.system.memTotal), t);
   } else if (h.type === 'truenas') {
     histRecord(`nas:${h.id}:load`, data.system.loadavg?.[0], t);
+  } else if (h.type === 'snmp' || h.type === 'nut') {
+    if (h.type === 'snmp') {
+      histRecord(`snmp:${h.id}:cpu`, typeof data.system.cpu === 'number' ? data.system.cpu * 100 : null, t);
+      const bps = data.ports.reduce((a, p) => a + (p.inBps || 0) + (p.outBps || 0), 0);
+      if (data.ports.some((p) => p.inBps !== null)) histRecord(`snmp:${h.id}:traffic`, bps / 1e6, t);
+    }
+    if (data.ups) {
+      histRecord(`ups:${h.id}:load`, data.ups.loadPct, t);
+      histRecord(`ups:${h.id}:charge`, data.ups.charge, t);
+      histRecord(`ups:${h.id}:watts`, data.ups.outputW, t);
+    }
+  } else if (h.type === 'omada') {
+    for (const d of data.devices.filter((x) => x.online)) {
+      histRecord(`omada:${h.id}:${d.mac}:clients`, d.clients, t);
+      histRecord(`omada:${h.id}:${d.mac}:cpu`, typeof d.cpu === 'number' ? d.cpu * 100 : null, t);
+    }
   } else if (h.type === 'unifi') {
     for (const d of data.devices.filter((x) => x.online)) {
       const k = `unifi:${h.id}:${d.mac}`;
@@ -3032,8 +3351,10 @@ let polling = false;
 async function runCollector(h, plainSecret = null) {
   let secret = plainSecret;
   try {
-    if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
-    secret ||= decryptSecret(h);
+    if (h.type !== 'nut') {
+      if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
+      secret ||= decryptSecret(h);
+    }
     const data = await withTimeout(COLLECTORS[h.type](h, secret), COLLECT_TIMEOUT_MS, 'Data collection');
     return { ok: true, data };
   } catch (e) {
@@ -4045,6 +4366,8 @@ function forVisitors(payload) {
     },
   } : h));
   payload.synology = payload.synology.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, version: null, upgradeAvailable: false } } } : h));
+  payload.omada = payload.omada.map((h) => (h.data ? { ...h, data: { ...h.data, devices: h.data.devices.map(({ ip, version, upgradable, ...d }) => d) } } : h));
+  payload.snmp = payload.snmp.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, descr: null, location: null } } } : h));
   payload.truenas = payload.truenas.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, version: null } } } : h));
   return payload;
 }
@@ -4115,6 +4438,9 @@ function dashboardPayload() {
     truenas: group('truenas'),
     synology: group('synology'),
     unifi: group('unifi'),
+    snmp: group('snmp'),
+    nut: group('nut'),
+    omada: group('omada'),
     devices,
     rack: { ...config.rack, items: devices },
     power: powerSummary(),
@@ -4491,9 +4817,9 @@ async function handleApi(req, res, url, session, viewer = null) {
         throw new UserError('The address or identity changed: enter the secret again to test');
       secret = decryptSecret(old);
     }
-    if (!secret) throw new UserError('Enter the password/token/key to test');
+    if (!secret && type !== 'nut') throw new UserError('Enter the password/token/key to test');
     const r = await runCollector(h, secret);
-    if (!old) for (const k of unifiSessions.keys()) if (k.startsWith(h.id + '|')) unifiSessions.delete(k);
+    if (!old) for (const m2 of [unifiSessions, omadaSessions]) for (const k of m2.keys()) if (k.startsWith(h.id + '|')) m2.delete(k);
     if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
     const d = r.data;
     const info = {
@@ -4502,8 +4828,16 @@ async function handleApi(req, res, url, session, viewer = null) {
       truenas: () => [d.system.hostname, d.system.version].filter(Boolean).join(' · '),
       synology: () => [d.system.model, d.system.version].filter(Boolean).join(' · '),
       unifi: () => `${d.devices.length} device${d.devices.length === 1 ? '' : 's'} found`,
+      snmp: () => [d.system.name, d.ups ? [d.ups.maker, d.ups.model].filter(Boolean).join(' ') || 'UPS' : `${d.ports.length} port${d.ports.length === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
+      nut: () => [[d.ups.maker, d.ups.model].filter(Boolean).join(' ') || 'UPS', d.ups.charge != null ? `battery ${d.ups.charge} %` : null].filter(Boolean).join(' · '),
+      omada: () => `${d.devices.length} device${d.devices.length === 1 ? '' : 's'} found`,
     }[type]();
-    return sendJson(res, 200, { ok: true, info, nodes: type === 'proxmox' ? d.nodes.map((n) => n.name) : undefined });
+    return sendJson(res, 200, {
+      ok: true,
+      info,
+      nodes: type === 'proxmox' ? d.nodes.map((n) => n.name) : undefined,
+      devices: type === 'omada' ? d.devices.map((x) => ({ mac: x.mac, name: x.name, model: x.model })) : undefined,
+    });
   }
 
   if (p === '/api/admin/layout' && m === 'PUT') {
@@ -4998,7 +5332,8 @@ async function handleApi(req, res, url, session, viewer = null) {
     const body = await readBody(req);
     if (!HOST_TYPES[body.type]) throw new UserError('Invalid host type');
     const address = normalizeAddress(body.address, body.type);
-    if (body.type === 'synology') {
+    if (body.type === 'nut') throw new UserError('NUT has no certificate or identity to fetch');
+    if (SNMP_TYPES.has(body.type)) {
       // SNMPv3 discovery: unauthenticated, carries no user name or credentials
       const { host, port } = splitAddress(address);
       const d = await snmpDiscover(host, port);
@@ -5530,7 +5865,7 @@ function alertConditions(all = false) {
   for (const h of config.hosts) {
     const r = results.get(h.id);
     const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
-    if (r?.ok === false) add('offline', h.id, 'critical', `${name}: ${HOST_TYPES[h.type].label} not answering`, r.error, h.id, false);
+    if (r?.ok === false) add('offline', h.id, 'critical', `${name}: ${controllerName(h, r.data)} not answering`, r.error, h.id, false);
     if (!r?.ok) continue;
     const d = r.data;
     const own = h.id;
@@ -5552,7 +5887,7 @@ function alertConditions(all = false) {
         const what = x.health === 'Critical' ? 'failed' : x.failurePredicted ? 'is predicted to fail' : 'has a warning';
         add('storage', `${h.id}:drive:${x.bay}`, x.health === 'Critical' ? 'critical' : 'warning', `${name}: drive in bay ${x.bay} ${what}`, x.model || '', own);
       }
-      if (d.health === 'Critical' && !specific) add('hardware', `${h.id}:system`, 'critical', `${name}: iDRAC reports critical health`, '', own);
+      if (d.health === 'Critical' && !specific) add('hardware', `${h.id}:system`, 'critical', `${name}: the management controller reports critical health`, '', own);
       for (const t of d.temps) {
         const limit = t.warn ?? temp.otherC;
         if (over('temperature', `${h.id}:${t.name}`, t.celsius, limit, 3))
@@ -5589,6 +5924,21 @@ function alertConditions(all = false) {
       for (const v of d.volumes) {
         const f = pct(v.used, v.size);
         if (over('space', `${h.id}:${v.name}`, f, space.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name.replace('/', '')} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+      }
+    } else if (h.type === 'snmp' || h.type === 'nut') {
+      const u = d.ups;
+      if (u?.lowBattery) add('hardware', `${h.id}:ups:low`, 'critical', `${name}: UPS battery low`, u.runtimeMin != null ? `About ${u.runtimeMin} min left` : '', own);
+      else if (u?.onBattery) add('hardware', `${h.id}:ups:battery`, 'warning', `${name}: running on battery`, [u.charge != null && `${u.charge} % charge`, u.runtimeMin != null && `about ${u.runtimeMin} min left`].filter(Boolean).join(', '), own);
+      if (u?.replaceBattery) add('hardware', `${h.id}:ups:replace`, 'warning', `${name}: UPS battery needs replacing`, '', own);
+      for (const v of d.volumes || []) {
+        const f = pct(v.used, v.size);
+        if (over('space', `${h.id}:${v.name}`, f, space.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+      }
+    } else if (h.type === 'omada') {
+      const dev = config.devices.find((x) => x.id === h.deviceId);
+      for (const x of d.devices) {
+        if (h.options?.mac && x.mac !== h.options.mac) continue; // bound to one Omada device
+        if (!x.online) add('offline', `${h.id}:${x.mac}`, 'critical', `${h.options?.mac && dev ? dev.name : x.name} is ${x.state.toLowerCase()}`, 'Reported by Omada', own);
       }
     } else if (h.type === 'unifi') {
       for (const x of d.devices) {

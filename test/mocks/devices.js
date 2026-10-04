@@ -11,6 +11,7 @@ const certDir = process.env.MOCK_CERT_DIR || __dirname;
 const opts = { key: fs.readFileSync(path.join(certDir, 'key.pem')), cert: fs.readFileSync(path.join(certDir, 'cert.pem')) };
 let requests = 0;
 let unifiLogins = 0;
+let omadaLogins = 0;
 const seenAuth = [];
 
 const R = (o) => JSON.stringify(o);
@@ -108,7 +109,7 @@ const server = https.createServer(opts, (req, res) => {
   }
   requests++;
   const u = req.url;
-  if (u === '/__stats') { res.end(R({ requests, seenAuth, unifiLogins })); return; }
+  if (u === '/__stats') { res.end(R({ requests, seenAuth, unifiLogins, omadaLogins })); return; }
   seenAuth.push(req.headers.authorization || null);
   if (u.startsWith('/redfish/')) {
     if (req.headers.authorization !== 'Basic ' + Buffer.from('root:calvin').toString('base64')) { res.writeHead(401); return res.end('{}'); }
@@ -116,6 +117,36 @@ const server = https.createServer(opts, (req, res) => {
     if (!body) { res.writeHead(404); return res.end('{}'); }
     res.setHeader('Content-Type', 'application/json');
     return res.end(R(body));
+  }
+  // TP-Link Omada controller (v5 web API)
+  if (u === '/api/info') { res.setHeader('Content-Type', 'application/json'); return res.end(R({ errorCode: 0, msg: 'Success.', result: { omadacId: 'omadac123', controllerVer: '5.14.26', apiVer: '3' } })); }
+  if (u === '/omadac123/api/v2/login' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      omadaLogins++;
+      let j = {};
+      try { j = JSON.parse(body); } catch {}
+      res.setHeader('Content-Type', 'application/json');
+      if (j.username === 'omview' && j.password === 'omadapass') {
+        res.setHeader('Set-Cookie', ['TPOMADA_SESSIONID=OMADA-SESSION-SECRET; Path=/; Secure; HttpOnly']);
+        return res.end(R({ errorCode: 0, msg: 'Log in successfully.', result: { roleType: 2, token: 'OMADATOKEN123' } }));
+      }
+      res.end(R({ errorCode: -30109, msg: 'Invalid username or password.' }));
+    });
+    return;
+  }
+  if (u.startsWith('/omadac123/api/v2/sites')) {
+    res.setHeader('Content-Type', 'application/json');
+    if (!/TPOMADA_SESSIONID=OMADA-SESSION-SECRET/.test(req.headers.cookie || '') || req.headers['csrf-token'] !== 'OMADATOKEN123') return res.end(R({ errorCode: -1200, msg: 'Login required.' }));
+    if (u.startsWith('/omadac123/api/v2/sites?')) return res.end(R({ errorCode: 0, result: { totalRows: 1, data: [{ id: 'site01abc', name: 'Home' }] } }));
+    if (u === '/omadac123/api/v2/sites/site01abc/devices') return res.end(R({ errorCode: 0, result: [
+      { type: 'gateway', mac: 'AA-BB-CC-00-00-01', name: 'ER605', model: 'ER605', status: 14, statusCategory: 1, ip: '192.168.0.1', cpuUtil: 9, memUtil: 41, uptimeLong: 86400, clientNum: 21, firmwareVersion: '2.2.4', needUpgrade: false },
+      { type: 'switch', mac: 'AA-BB-CC-00-00-02', name: 'Rack switch', model: 'TL-SG3428', status: 14, statusCategory: 1, ip: '192.168.0.2', cpuUtil: 4, memUtil: 33, uptimeLong: 86000, clientNum: 12, firmwareVersion: '3.0.1', needUpgrade: true, poeTotalPower: 0, poeRemain: 0 },
+      { type: 'ap', mac: 'AA-BB-CC-00-00-03', name: 'Garage EAP', model: 'EAP650', status: 0, statusCategory: 0, ip: null, clientNum: 0, firmwareVersion: '1.0.9' },
+    ] }));
+    res.writeHead(404);
+    return res.end('{}');
   }
   if (u === '/api/auth/login' && req.method === 'POST') {
     let body = '';

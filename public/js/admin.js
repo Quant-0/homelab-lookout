@@ -6,9 +6,27 @@ const $ = (id) => document.getElementById(id);
 const TYPE_TEXT = {
   idrac: {
     username: 'Username',
-    usernameHint: 'iDRAC user (a read-only account is enough)',
+    usernameHint: 'A user on the iDRAC, iLO, XClarity or Supermicro BMC; a read-only role is enough.',
     secret: 'Password',
-    address: 'iDRAC host or IP (default port 443)',
+    address: 'Management controller host or IP (default port 443)',
+  },
+  snmp: {
+    username: 'SNMPv3 user',
+    usernameHint: 'A read-only SNMPv3 user with authentication and privacy (SHA + AES). Ports, CPU, storage and UPS values are read with standard MIBs.',
+    secret: 'Authentication password',
+    address: 'Device host or IP (SNMP, default UDP port 161)',
+  },
+  nut: {
+    username: 'UPS name',
+    usernameHint: 'The name in ups.conf on the NUT server, e.g. "ups". Only values are read; no login is needed.',
+    secret: null,
+    address: 'NUT server host or IP (default port 3493). Its upsd must listen on the network.',
+  },
+  omada: {
+    username: 'Viewer account',
+    usernameHint: 'A local Omada account with the Viewer role.',
+    secret: 'Password',
+    address: 'Omada controller host or IP (default port 443; software controllers often use :8043)',
   },
   proxmox: {
     username: 'API token ID',
@@ -221,7 +239,8 @@ $('pw-form').addEventListener('submit', async (ev) => {
 let rackData = null; // dashboard data, for live faceplates and status LEDs
 let draft = null; // device in the editor; typed secrets live here only until saved
 
-const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway' };
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway' };
+const SNMP_TYPES = ['synology', 'snmp'];
 const deviceForm = () => $('device-form').elements;
 const hostsOf = (dev) => state.hosts.filter((h) => h.deviceId === dev.id);
 const placementText = (d) =>
@@ -425,7 +444,7 @@ async function setHidden(d, hidden) {
 function connFromHost(h) {
   return {
     id: h.id, type: h.type, address: h.address, username: h.username, tlsMode: h.tlsMode, fingerprint: h.fingerprint,
-    options: { ...h.options }, secret: '', secret2: '', clearSecret: false, hasSecret: h.hasSecret, status: h.status, nodes: h.nodes || [],
+    options: { ...h.options }, secret: '', secret2: '', clearSecret: false, hasSecret: h.hasSecret, status: h.status, nodes: h.nodes || [], found: [],
     orig: { address: h.address, username: h.username, tlsMode: h.tlsMode, fingerprint: h.fingerprint },
   };
 }
@@ -433,8 +452,8 @@ function connFromHost(h) {
 function newConn(type) {
   return {
     id: null, type, address: '', username: '', tlsMode: 'pin', fingerprint: '',
-    options: type === 'synology' ? { snmpAuth: 'sha' } : type === 'proxmox' ? { node: '' } : {},
-    secret: '', secret2: '', clearSecret: false, hasSecret: false, status: null, nodes: [], orig: null,
+    options: SNMP_TYPES.includes(type) ? { snmpAuth: 'sha' } : type === 'proxmox' ? { node: '' } : type === 'omada' ? { mac: '' } : {},
+    secret: '', secret2: '', clearSecret: false, hasSecret: false, status: null, nodes: [], found: [], orig: null,
   };
 }
 
@@ -516,7 +535,8 @@ function renderConnections() {
 
 function connCard(c) {
   const t = TYPE_TEXT[c.type];
-  const snmp = c.type === 'synology';
+  const snmp = SNMP_TYPES.includes(c.type);
+  const nut = c.type === 'nut';
   const stored = c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set';
   const result = el('div', { class: 'conn-result', role: 'status' });
   const warn = el('p', { class: 'banner hidden' });
@@ -557,9 +577,11 @@ function connCard(c) {
   const fields = [
     field('Address', input('address', { placeholder: 'host or IP[:port]' }), t.address),
     field(t.username, input('username'), t.usernameHint),
-    field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
-  ];
-  if (snmp) {
+    nut ? null : field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
+  ].filter(Boolean);
+  if (nut) {
+    // nothing secret is sent and NUT has no TLS here: no secret, no certificate
+  } else if (snmp) {
     fields.push(field('Privacy password (AES)', input('secret2', { type: 'password', autocomplete: 'new-password', placeholder: stored })));
     fields.push(field('Authentication protocol', select([['sha', 'SHA (SHA-1)'], ['sha256', 'SHA-256']], c.options.snmpAuth || 'sha', (v) => (c.options.snmpAuth = v))));
   } else {
@@ -574,7 +596,13 @@ function connCard(c) {
     fields.push(field('Node', select([['', 'Automatic (single node, or same name as the device)'], ...nodes.map((n) => [n, n])], c.options.node || '', (v) => (c.options.node = v)),
       'For a cluster: the node this device is. Press Test to list the nodes.'));
   }
-  fields.push(fpField);
+  if (c.type === 'omada') {
+    const found = [...(c.found || [])];
+    if (c.options.mac && !found.some((x) => x.mac === c.options.mac)) found.push({ mac: c.options.mac, name: c.options.mac, model: '' });
+    fields.push(field('Which Omada device', select([['', 'The whole controller (all its devices)'], ...found.map((x) => [x.mac, `${x.name}${x.model ? ` · ${x.model}` : ''}`])], c.options.mac || '', (v) => (c.options.mac = v)),
+      'Pick the switch, gateway or access point this device is. Press Test to list them.'));
+  }
+  if (!nut) fields.push(fpField);
   if (c.hasSecret) {
     const clear = el('input', { type: 'checkbox', checked: c.clearSecret });
     clear.addEventListener('change', () => {
@@ -603,9 +631,9 @@ function connCard(c) {
     c.type === 'unifi' ? el('p', { class: 'hint', text: 'Switches and access points found through this console appear as their own devices automatically.' }) : null,
     el('div', { class: 'form-grid two' }, fields),
     el('div', { class: 'form-actions' },
-      el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
+      nut ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
       el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
-      el('span', { class: 'hint', text: snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+      el('span', { class: 'hint', text: nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
     result,
     warn);
   updateWarning();
@@ -646,9 +674,10 @@ async function testConnection(c, box) {
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode,
       fingerprint: c.fingerprint, options: c.options, secret: c.secret, secret2: c.secret2,
     });
-    if (r.ok && r.nodes) {
-      c.nodes = r.nodes;
-      renderConnections(); // refresh the node list
+    if (r.ok && (r.nodes || r.devices)) {
+      if (r.nodes) c.nodes = r.nodes;
+      if (r.devices) c.found = r.devices;
+      renderConnections(); // refresh the node or device list
       return;
     }
     box.replaceChildren(r.ok ? el('span', { class: 'msg ok', text: `Connected: ${r.info}` }) : el('span', { class: 'msg error', text: r.error }));
