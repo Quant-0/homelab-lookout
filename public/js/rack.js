@@ -33,7 +33,7 @@ const Rack = (() => {
     for (const link of item.links || []) {
       if (link.startsWith('host:')) {
         const id = link.slice(5);
-        for (const type of ['idrac', 'proxmox', 'truenas', 'synology']) {
+        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada']) {
           const host = (data?.[type] || []).find((x) => x.id === id);
           if (host) out.push({ type, host, widget: `${type}:${id}` });
         }
@@ -76,6 +76,11 @@ const Rack = (() => {
         return !l.node ? 'critical' : l.node.status === 'online' ? 'good' : 'critical';
       case 'unifi':
         return !l.device ? 'critical' : l.device.online ? 'good' : 'critical';
+      case 'snmp':
+      case 'nut':
+        return d.ups?.lowBattery ? 'critical' : d.ups?.onBattery ? 'warning' : 'good';
+      case 'omada':
+        return 'good';
       default:
         return '';
     }
@@ -89,8 +94,11 @@ const Rack = (() => {
     let measuredW = null;
     if (idrac && typeof idrac.watts === 'number') measuredW = idrac.watts;
     const poeW = ud?.poe ? ud.poe.usedW : null;
-    const sub = idrac?.model || syno?.system?.model || ud?.model || (item.links?.length ? '' : KIND_LABELS[item.kind]);
-    return { links, status: worst(links.map(linkStatus)), measuredW, poeW, idrac, syno, ud, sub };
+    const sub = idrac?.model || syno?.system?.model || ud?.model || item.model?.name || (item.links?.length ? '' : KIND_LABELS[item.kind]);
+    // what the alerts say about the device counts too (a failed power supply, a full volume…)
+    const alerts = (data?.attention || []).filter((a) => a.deviceId === item.id);
+    const alerted = alerts.some((a) => a.severity === 'critical') ? 'critical' : alerts.length ? 'warning' : '';
+    return { links, status: worst([...links.map(linkStatus), alerted]), measuredW, poeW, idrac, syno, ud, sub };
   }
 
   // --- Which front: what the device reports decides, unless chosen in Admin ---
@@ -99,6 +107,9 @@ const Rack = (() => {
     auto: 'Automatic',
     dell13: 'Dell PowerEdge, 13th gen (R630, R730)',
     dell14: 'Dell PowerEdge, 14th gen or newer (R640, R740)',
+    hpe: 'HPE ProLiant (DL360, DL380)',
+    lenovo: 'Lenovo ThinkSystem (SR630, SR650)',
+    supermicro: 'Supermicro',
     'udm-pro': 'UniFi Dream Machine Pro',
     'usw-24-poe': 'UniFi Switch 24 PoE',
     'unifi-switch': 'UniFi switch',
@@ -111,7 +122,7 @@ const Rack = (() => {
   const DRIVE_LABELS = { auto: 'Automatic', none: 'No drive bays', '4x3.5': '4 × 3.5″', '8x3.5': '8 × 3.5″', '12x3.5': '12 × 3.5″', '8x2.5': '8 × 2.5″', '10x2.5': '10 × 2.5″', '16x2.5': '16 × 2.5″', '24x2.5': '24 × 2.5″' };
   const DRIVES = { '4x3.5': [4, 1, 'lff'], '8x3.5': [4, 2, 'lff'], '12x3.5': [4, 3, 'lff'], '8x2.5': [8, 1, 'sff'], '10x2.5': [10, 1, 'sff'], '16x2.5': [16, 1, 'sff'], '24x2.5': [24, 1, 'sff'] };
   const PASSIVE_LABELS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Brush panel', cable: 'Cable management', patch: 'Patch panel', shelf: 'Shelf' };
-  const WITH_DRIVES = new Set(['dell13', 'dell14', 'server']);
+  const WITH_DRIVES = new Set(['dell13', 'dell14', 'hpe', 'lenovo', 'supermicro', 'server']);
 
   // The bay layout that holds the drives the iDRAC reports (the highest bay number decides)
   function layoutForDrives(drives, oneU) {
@@ -134,6 +145,12 @@ const Rack = (() => {
         : dell[3] ? (oneU ? '10x2.5' : '12x3.5') : oneU ? (gen >= 14 ? '10x2.5' : '8x2.5') : '8x3.5';
       return { model: gen >= 14 ? 'dell14' : 'dell13', drives };
     }
+    const rf = `${info.idrac?.model || ''} ${item.model?.brand || ''} ${item.model?.name || ''}`;
+    const oneU = item.height === 1;
+    const drivesFor = (fallback) => (info.idrac?.drives?.length ? layoutForDrives(info.idrac.drives, oneU) : fallback);
+    if (/ProLiant|HPE/i.test(rf)) return { model: 'hpe', drives: drivesFor(oneU ? '8x2.5' : '8x3.5') };
+    if (/ThinkSystem|Lenovo/i.test(rf)) return { model: 'lenovo', drives: drivesFor(oneU ? '10x2.5' : '12x3.5') };
+    if (/Supermicro|SYS-\d/i.test(rf)) return { model: 'supermicro', drives: drivesFor(oneU ? '4x3.5' : '8x3.5') };
     const um = String(info.ud?.model || '');
     if (/^UDM-?PRO/i.test(um)) return { model: 'udm-pro' };
     if (/^(USL24P|US24P|USW-?24-?POE)/i.test(um)) return { model: 'usw-24-poe' };
@@ -502,6 +519,22 @@ const Rack = (() => {
     return out;
   }
 
+  // Other brands' servers: the same drive cage with each brand's own ears and colour
+  function brandServer(item, info, fr, h, id, brand) {
+    const on = info.idrac ? info.idrac.powerState === 'On' : Boolean(item.links?.length);
+    const look = {
+      hpe: { ear: '#3a3f46', body: `url(#${id('black')})`, mark: '#01a982' }, // HPE green
+      lenovo: { ear: '#1c1d20', body: `url(#${id('black')})`, mark: '#e2231a' }, // Lenovo red
+      supermicro: { ear: '#2a2d32', body: `url(#${id('black')})`, mark: '#2d6fd4' },
+    }[brand];
+    const out = [...ears(h, look.ear, item.height), r(19.6, 0.4, W - 39.2, h - 0.8, look.body, { rx: 1.6 })];
+    out.push(r(4, h / 2 - (h > U ? 14 : 8), 11.6, h > U ? 28 : 16, look.mark, { rx: 1.4, opacity: 0.9 }));
+    out.push(statusDot(30, 9, info, item));
+    out.push(g({ class: `dell-power${on ? ' on' : ''}` }, c(W - 30, 9, 3.6, '#17191c', { stroke: on ? GREEN : '#4a4f56', 'stroke-width': 1.2 })));
+    out.push(...driveArea({ x: 40, y: 3, w: W - 80, h: h - 6 }, fr.drives, item.height, on, info, 14, id));
+    return out;
+  }
+
   function plainFront(item, info, fr, h, id) {
     const out = [...ears(h, '#24272b', item.height), r(19.6, 0.4, W - 39.2, h - 0.8, `url(#${id('black')})`, { rx: 1.6 })];
     if (item.kind === 'pdu') {
@@ -518,6 +551,9 @@ const Rack = (() => {
   const FACES = {
     dell13: (item, info, fr, h, id) => dell(item, info, fr, h, id, 13),
     dell14: (item, info, fr, h, id) => dell(item, info, fr, h, id, 14),
+    hpe: (item, info, fr, h, id) => brandServer(item, info, fr, h, id, 'hpe'),
+    lenovo: (item, info, fr, h, id) => brandServer(item, info, fr, h, id, 'lenovo'),
+    supermicro: (item, info, fr, h, id) => brandServer(item, info, fr, h, id, 'supermicro'),
     'udm-pro': udmPro,
     'usw-24-poe': (item, info, fr, h, id) => unifiSwitch(item, info, fr, h, id, 24, 2),
     'unifi-switch': (item, info, fr, h, id) => unifiSwitch(item, info, fr, h, id, item.kind === 'gateway' ? 8 : 24, item.kind === 'gateway' ? 1 : 2),

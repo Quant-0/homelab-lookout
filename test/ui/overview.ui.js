@@ -1,13 +1,14 @@
 'use strict';
-// Overview: "needs attention" line, compact device cards with Details, one power card, one set of
-// status words, no placeholders, no sideways scrolling, and the folded rack on a phone.
+// Home: what needs you as cards, power and the internet, a tile per device (one status word each),
+// the details drawer, Customize (hide and reorder tiles), the look on this device, the phone layout,
+// and the wall display.
 const { chromium } = require('playwright');
 const S = process.env.SCREENSHOT_DIR || require('node:os').tmpdir();
 const B = process.env.BASE_URL || 'http://127.0.0.1:18080';
 const FP = process.env.MOCK_FP;
 const problems = [];
 const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) problems.push(m); };
-const WORDS = ['OK', 'Warning', 'Problem', 'Offline', 'Waiting', 'Not monitored'];
+const WORDS = ['OK', 'Warning', 'Fault', 'Offline', 'Waiting', 'Not monitored'];
 (async () => {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -25,66 +26,132 @@ const WORDS = ['OK', 'Warning', 'Problem', 'Offline', 'Waiting', 'Not monitored'
   await post('/api/admin/devices', { name: 'UDM Pro', kind: 'gateway', location: 'rack', u: 24, height: 1, connections: [c('unifi', { username: 'viewer', secret: 'unifipass' })] });
   await post('/api/admin/devices', { name: 'titan', kind: 'server', location: 'rack', u: 19, height: 2, connections: [c('idrac', { username: 'root', secret: 'calvin' }), c('proxmox', { username: 'root@pam!dash', secret: '11111111-2222-3333-4444-555555555555', options: { node: 'pve1' } })] });
   await post('/api/admin/devices', { name: 'truenas', kind: 'storage', location: 'rack', u: 13, height: 2, connections: [c('truenas', { username: 'truenas_admin', secret: '1-abcdefKEY' })] });
+  await post('/api/admin/devices', { name: 'Rack switch', kind: 'switch', location: 'outside', height: 1, connections: [c('omada', { username: 'omview', secret: 'omadapass', options: { mac: 'aa:bb:cc:00:00:02' } })] });
   await page.waitForTimeout(2000);
   await page.reload();
-  await page.waitForSelector('#attention .attn-list li');
+  await page.waitForSelector('#needs .need');
 
-  // needs attention
-  const items = await page.$$eval('#attention .attn-list li', (n) => n.map((x) => x.textContent));
-  check(items.some((t) => /titan.*PS2/.test(t)) && items.some((t) => /truenas.*pool fast/.test(t)), `attention lists the problems: ${items.slice(0, 3).join(' | ')}`);
-  check(await page.locator('#attention.critical').count() === 1 && /\d+\/\d+ devices online/.test(await page.textContent('#attention .attn-stats')), 'attention is red and shows the totals');
+  // what needs you
+  const needs = await page.$$eval('#needs .need', (n) => n.map((x) => x.textContent));
   const total = await page.evaluate(async () => (await (await fetch('/api/dashboard')).json()).attention.length);
-  check(items.length === Math.min(total, 5) && (total <= 5 || new RegExp(`Show all ${total}`).test(await page.textContent('#attention'))), `at most five at first, then "Show all" (${total} in all)`);
-  await page.locator('#attention .attn-link', { hasText: 'PS2' }).click();
-  await page.waitForTimeout(600);
-  check(await page.evaluate(() => document.querySelector('.widget.flash h3')?.textContent) === 'titan', 'clicking a problem jumps to its device');
+  check(needs.length === total && needs.some((t) => /titan.*PS2/.test(t)) && needs.some((t) => /truenas.*pool fast/.test(t)), `a card per problem (${needs.length}): ${needs.slice(0, 3).join(' | ')}`);
+  check(await page.locator('#summary .pill.critical').count() === 1 && /\d+\/\d+ devices online/.test(await page.textContent('#summary')), 'the summary counts faults and devices online');
+  await page.locator('#needs .need', { hasText: 'PS2' }).click();
+  await page.waitForSelector('dialog.drawer[open] h2');
+  check(await page.textContent('dialog.drawer h2') === 'titan', 'a problem opens its device');
+  await page.keyboard.press('Escape');
 
-  // compact cards
-  const words = await page.$$eval('.device-card > .dc-head .status', (n) => n.map((x) => x.textContent));
-  check(words.length === 5 && words.every((w) => WORDS.includes(w)), `one status per card, from one vocabulary: ${words.join(', ')}`);
-  const titan = page.locator('.device-card', { hasText: 'titan' });
-  check(await titan.locator('.dc-metrics > div').count() === 4 && await titan.locator('.dc-issues li').count() >= 2, 'titan: four key numbers and its problems');
-  check(await titan.locator('.fans.mini .fan').count() === 6, 'the spinning fans, small, on the card');
-  check(await titan.locator('.card-details').isHidden() && !(await page.textContent('body')).includes('Collecting history'), 'details closed; no placeholders');
-  const udm = (await page.textContent('.device-card:has(h3:text-is("UDM Pro"))'));
-  check(!/USW-24-POE/.test(udm) && !/PoE consumers/i.test(udm), 'the console card no longer repeats its switches and access points');
-  const w = page.locator('.widget[data-id^="device:"]', { has: page.locator('h3:text-is("titan")') });
-  const h0 = (await w.boundingBox()).height;
-  await titan.locator('.details-toggle').click();
-  await page.waitForTimeout(500);
-  const h1 = (await w.boundingBox()).height;
-  check(await titan.locator('.card-details').isVisible() && h1 > h0 + 200, `Details opens the full sections and the card grows (${Math.round(h0)} → ${Math.round(h1)} px)`);
-  check(await titan.locator('.card-details .section-title').allTextContents().then((t) => t.join()) === 'Hardware · iDRAC,Proxmox · node pve1' && await titan.locator('.card-details .fan').count() >= 6, 'details: iDRAC and Proxmox sections with the big fans');
-  check(!/Service tag|Power state/.test(await titan.locator('.card-details').textContent()), 'fixed facts are left to the Docs sheet');
-  await page.reload();
-  await page.waitForSelector('.device-card');
-  check(await page.locator('.device-card', { hasText: 'titan' }).locator('.card-details').isVisible(), 'open details are remembered after a reload');
-  await page.locator('.device-card', { hasText: 'titan' }).locator('.details-toggle').click();
-  await page.waitForTimeout(400);
-  check(Math.abs((await w.boundingBox()).height - h0) < 30, 'closing gives the card its size back');
-  check(await page.locator('.device-card a:text-is("Sheet")').count() === words.length, 'every card links to its Docs sheet');
+  // tiles
+  const words = await page.$$eval('#devices .dtile .status', (n) => n.map((x) => x.textContent));
+  check(words.length === 6 && words.every((w) => WORDS.includes(w)), `one status per tile, from one vocabulary: ${words.join(', ')}`);
+  const titan = page.locator('#devices .dtile', { hasText: 'titan' });
+  check(/PS2/.test(await titan.locator('.tile-state').textContent()) && /W power/.test(await titan.locator('.tile-val').textContent()), 'titan: its worst problem and its power');
+  check((await page.textContent('#devices .dtile:has-text("Rack switch")')).includes('Online'), 'a device bound to an Omada switch shows that switch');
+  check(await page.locator('#devices .place').allTextContents().then((t) => t.join()) === 'In the rack,Elsewhere', 'tiles grouped: in the rack, elsewhere');
+  check(!(await page.textContent('body')).includes('Collecting history'), 'no placeholders');
 
-  // one power card
-  check(await page.locator('.widget[data-id="power-chart"]').count() === 0 && await page.locator('.power-card .power-tiles > .ptile').count() === 4, 'one power card with four numbers');
-  check(await page.locator('.power-card .power-chart').count() === 0, 'no empty 30-day chart on a new install');
-  await page.locator('.power-card .details-toggle').click();
-  check(/Per year at this draw/.test(await page.textContent('.power-card .card-details')), 'yearly figures under Details');
+  // the drawer
+  await titan.click();
+  await page.waitForSelector('dialog.drawer[open] .section-title');
+  check(await page.locator('dialog.drawer .section-title').allTextContents().then((t) => t.join()) === 'Hardware · iDRAC,Proxmox · node pve1' && await page.locator('dialog.drawer .fan').count() >= 6, 'drawer: iDRAC and Proxmox sections with the fans');
+  check(await page.locator('dialog.drawer .callout').count() >= 2 && await page.locator('dialog.drawer .metrics .metric').count() >= 4, 'drawer: the problems first, then the numbers');
+  check(!/Service tag|Power state/.test(await page.textContent('dialog.drawer')), 'fixed facts are left to the Docs sheet');
+  check(await page.locator('dialog.drawer a:has-text("Server sheet")').count() === 1, 'the drawer links to the Docs sheet');
+  await page.screenshot({ path: `${S}/home-drawer.png` });
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('dialog.drawer', { state: 'detached', timeout: 3000 }).catch(() => {});
+  check(await page.locator('dialog.drawer').count() === 0, 'Esc closes the drawer');
+
+  // power
+  check(await page.locator('.power-tile').count() === 1 && /W/.test(await page.textContent('.power-tile .big-num')), 'one power tile');
+  await page.click('.power-tile');
+  await page.waitForSelector('dialog.drawer[open] .power-tiles');
+  check(await page.locator('dialog.drawer .power-tiles > .ptile').count() === 4 && /Per year at this draw/.test(await page.textContent('dialog.drawer')), 'power details: four numbers and the yearly figures');
+  check(await page.locator('dialog.drawer .power-chart').count() === 0, 'no empty 30-day chart on a new install');
+  await page.keyboard.press('Escape');
+  check(/Up/.test(await page.textContent('.big.net .big-num')), 'the internet tile, from the UniFi console');
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no sideways scrolling at 1440 px');
-  await page.screenshot({ path: `${S}/overview-new.png`, fullPage: true });
+  await page.screenshot({ path: `${S}/home.png`, fullPage: true });
+
+  // customize: hide truenas, move the UDM Pro last, save; survives a reload
+  await page.click('#customize');
+  await page.waitForSelector('#edit-bar:not([hidden])');
+  await page.locator('#devices .dtile', { hasText: 'truenas' }).locator('.tile-hide').click();
+  const udm = page.locator('#devices .dtiles[data-group="rack"] .dtile', { hasText: 'UDM Pro' });
+  const last = page.locator('#devices .dtiles[data-group="rack"] .dtile').last();
+  const from = await udm.boundingBox();
+  const to = await last.boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + from.width / 2 + 20, from.y + from.height / 2, { steps: 4 });
+  await page.mouse.move(to.x + to.width - 10, to.y + to.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await page.click('#edit-bar button:text-is("Save")');
+  await page.waitForSelector('#edit-bar[hidden]', { state: 'attached' });
+  await page.reload();
+  await page.waitForSelector('#devices .dtile');
+  const rackTiles = await page.$$eval('#devices .dtiles[data-group="rack"] .tile-name', (n) => n.map((x) => x.textContent));
+  check(!rackTiles.includes('truenas') && rackTiles[rackTiles.length - 1] === 'UDM Pro', `customize: hidden and reordered, kept after a reload (${rackTiles.join(', ')})`);
+
+  // the look on this device: light with a teal accent, then back to the owner's
+  await page.click('.look-button');
+  await page.waitForSelector('dialog.look-menu');
+  await page.click('dialog.look-menu .seg button:text-is("Light")');
+  await page.click('dialog.look-menu .swatch[aria-label="Teal"]');
+  await page.reload();
+  await page.waitForSelector('#devices .dtile');
+  check(await page.evaluate(() => [document.documentElement.dataset.theme, document.documentElement.dataset.accent].join()) === 'light,teal', 'this device keeps its own look after a reload');
+  check(await page.evaluate(() => getComputedStyle(document.body).backgroundColor) === 'rgb(251, 251, 252)', 'and the page is light');
+  const owner = await page.evaluate(async () => (await (await fetch('/api/admin/config')).json()).settings.appearance);
+  check(owner.theme === 'auto' && owner.accent === 'theme', 'the owner’s default is unchanged');
+  await page.click('.look-button');
+  await page.click('dialog.look-menu button:has-text("Use the owner")');
+  check(await page.evaluate(() => [document.documentElement.dataset.theme, document.documentElement.dataset.accent].join()) === 'auto,theme', '"Use the owner’s look" goes back');
+  await page.keyboard.press('Escape');
+
+  // the rack view
+  await page.click('.sidebar .nav-item:has-text("Rack")');
+  await page.waitForSelector('#rack-view .rack-item');
+  check(await page.isHidden('#view-home') && await page.locator('.sidebar .nav-item.active').textContent() === 'Rack', 'Rack is its own view in the top bar');
+
+  // the wall display
+  const wall = await (await browser.newContext({ viewport: { width: 1920, height: 1080 }, colorScheme: 'dark', storageState: await ctx.storageState() })).newPage();
+  wall.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
+  await wall.goto(B + '/wall');
+  await wall.waitForSelector('#spot h2');
+  check(/faults?/.test(await wall.textContent('#headline')) && await wall.locator('#probs li').count() === total, `wall: headline and every problem (${await wall.textContent('#headline')})`);
+  const first = await wall.textContent('#spot h2');
+  await wall.mouse.move(5, 1075);
+  await wall.waitForFunction((t) => document.querySelector('#spot h2')?.textContent !== t, first, { timeout: 12000 });
+  check(true, 'the spotlight moves on to the next problem by itself');
+  check(await wall.locator('#wall-rack .rack-item').count() >= 3 && /\d/.test(await wall.textContent('#power .huge')), 'wall: rack and power');
+  check(await wall.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1 && document.documentElement.scrollWidth <= innerWidth), 'wall: one screen, no scrolling at 1920 × 1080');
+  const rk = await wall.locator('#wall-rack').boundingBox();
+  const fig = await wall.locator('#wall-rack .rack-figure').boundingBox();
+  check(fig.y + fig.height <= rk.y + rk.height + 2, 'wall: the rack fits its column');
+  await wall.screenshot({ path: `${S}/wall.png` });
 
   // phone
+  await page.goto(B + '/');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(500);
+  await page.waitForSelector('#devices .dtile');
+  await page.waitForTimeout(400);
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no sideways scrolling on a phone');
-  check(await page.locator('#rack-panel .rack-view').isHidden() && await page.isVisible('#rack-panel .rack-toggle'), 'the rack starts folded on a phone');
-  const order = await page.evaluate(() => [document.getElementById('attention').getBoundingClientRect().top, document.querySelector('.power-card').getBoundingClientRect().top, document.getElementById('rack-panel').getBoundingClientRect().top]);
-  check(order[0] < order[1] && order[1] < order[2], 'phone order: attention, power, cards, rack');
-  await page.click('#rack-panel .rack-toggle');
-  check(await page.locator('#rack-panel .rack-view').isVisible(), '"Show rack" opens it');
-  await page.screenshot({ path: `${S}/overview-new-phone.png`, fullPage: true });
+  const cols = await page.$$eval('#devices .dtiles[data-group="other"] .dtile, #devices .dtiles[data-group="rack"] .dtile', (n) => new Set(n.map((x) => Math.round(x.getBoundingClientRect().left))).size);
+  check(cols === 2, 'phone: tiles two by two');
+  const order = await page.evaluate(() => ['needs-sec', 'hero', 'devices-sec'].map((id) => document.getElementById(id).getBoundingClientRect().top));
+  check(order[0] < order[1] && order[1] < order[2], 'phone order: what needs you, power, devices');
+  await page.locator('#devices .dtile', { hasText: 'titan' }).click();
+  await page.waitForSelector('dialog.drawer.open');
+  await page.waitForTimeout(400); // it slides up
+  const sheet = await page.locator('dialog.drawer').boundingBox();
+  check(Math.round(sheet.y + sheet.height) >= 843 && sheet.width >= 389, 'phone: details come up as a sheet from the bottom');
+  await page.screenshot({ path: `${S}/home-phone-sheet.png` });
+  await page.keyboard.press('Escape');
+  await page.screenshot({ path: `${S}/home-phone.png`, fullPage: true });
 
   await browser.close();
   for (const p of problems.filter((x) => x.startsWith('console') || x.startsWith('pageerror'))) console.log(`FAIL  ${p}`);
-  console.log(problems.length ? `\n${problems.length} PROBLEM(S)` : '\nALL OVERVIEW UI TESTS PASSED');
+  console.log(problems.length ? `\n${problems.length} PROBLEM(S)` : '\nALL HOME UI TESTS PASSED');
   process.exit(problems.length ? 1 : 0);
 })();

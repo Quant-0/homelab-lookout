@@ -37,13 +37,13 @@ let offline = false; // failed requests are expected while offline
   // two hours later: the session is gone, the device is still remembered
   await context.clearCookies({ name: 'hd_session' });
   await page.reload();
-  await page.waitForSelector('.tabbar a.tab:has-text("Docs")');
-  check(await page.locator('#nav > *').count() === 0, 'view only: no Customize');
+  await page.waitForSelector('.tabbar button.tab:has-text("More")');
+  check(await page.locator('#customize').count() === 0, 'view only: no Customize');
   const tabs = await page.$$eval('.tabbar .tab .label', (n) => n.map((x) => x.textContent));
   await page.click('.tabbar button.tab:has-text("More")');
   await page.waitForSelector('dialog.sheet[open]');
   const more = await page.$$eval('dialog.sheet .sheet-item span', (n) => n.map((x) => x.textContent));
-  check(tabs.join(',') === 'Overview,Services,Energy,Docs,More' && more.some((t) => t.startsWith('Updates')) && more.includes('Admin') && more.includes('Log out'), `phone: tab bar ${tabs.join(', ')}; More: ${more.join(', ')}`);
+  check(tabs.join(',') === 'Home,Rack,Services,Energy,More' && more.includes('Docs') && more.some((t) => t.startsWith('Updates')) && more.includes('Wall display') && more.includes('Admin') && more.includes('Log out'), `phone: tab bar ${tabs.join(', ')}; More: ${more.join(', ')}`);
   await page.keyboard.press('Escape');
   await page.goto(B + '/docs#network');
   await page.waitForSelector('.docs-toolbar h2:text-is("Network plan")');
@@ -84,7 +84,7 @@ let offline = false; // failed requests are expected while offline
   check(await page.isVisible('#retry'), 'offline: the app shows its offline screen');
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'offline screen fits the phone');
   await page.screenshot({ path: `${S}/app-offline.png` });
-  const cached = await page.evaluate(async () => (await (await caches.open('hd-shell-2')).keys()).map((r) => new URL(r.url).pathname).sort());
+  const cached = await page.evaluate(async () => (await (await caches.open('hd-shell-3')).keys()).map((r) => new URL(r.url).pathname).sort());
   check(cached.join(',') === '/offline,/static/css/style.css,/static/favicon.svg,/static/fonts/inter-5.3.0.woff2,/static/js/offline.js', `only the app shell is stored on the device (${cached.join(', ')})`);
   await page.click('#retry');
   await page.waitForFunction(() => /Still no answer/.test(document.getElementById('offline-msg').textContent));

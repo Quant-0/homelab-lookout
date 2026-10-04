@@ -49,34 +49,46 @@ Away from home, the same address works through Tailscale.
    **PC (Chrome or Edge):** the install icon at the right end of the address bar.
 3. Open the app and sign in with **Remember this device for viewing** ticked. On an iPhone, sign in *inside* the app: home-screen apps don't share Safari's login.
 
-The app opens on the Overview. When the dashboard can't be reached, the app shows **Can't reach the dashboard** with a **Try again** button. It opens the page by itself once the dashboard answers again. Nothing from the dashboard is stored on the phone, only that screen.
+The app opens on Home. When the dashboard can't be reached, the app shows **Can't reach the dashboard** with a **Try again** button. It opens the page by itself once the dashboard answers again. Nothing from the dashboard is stored on the phone, only that screen.
 
-**What "Remember this device for viewing" means:** for 30 days that device can *look at* the Overview, Services, Energy, Docs and Updates without the password. It can't change anything: Admin, edit buttons and *Check now* ask for the password. **Log out** on the device makes the server forget it. Tick it only on your own devices.
+**What "Remember this device for viewing" means:** for 30 days that device can *look at* Home, the rack, Services, Energy, Docs, Updates and the wall display without the password. It can't change anything: Admin, edit buttons and *Check now* ask for the password. **Log out** on the device makes the server forget it. Tick it only on your own devices.
 
 ---
 
 ## 2. Everyday use
 
-The pages are in the **sidebar** on the left: **Overview · Services · Energy · Docs · Updates**, with **Admin** and **Log out** at the bottom. On a tablet the sidebar shows only icons; on a phone the pages are in the **tab bar** at the bottom, and **More** has Updates, Admin, Search and Log out. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
+The pages are in the **bar at the top**: **Home · Rack · Services · Energy · Docs · Updates**, with **Search**, the **look** button (palette), **Admin** and **Log out** on the right. On a tablet the tabs show only icons; on a phone the pages are in the **tab bar** at the bottom (Home, Rack, Services, Energy), and **More** has Docs, Updates, the wall display, the look, Admin and Log out. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
 
-### Overview
+### Home
 
-- **Needs attention** at the top lists what is wrong right now, with totals for devices, services and power. The same findings drive the alerts.
-- **A card per device.** Each card shows:
-  - one status: **OK**, **Warning**, **Problem** or **Offline**
-  - up to four key numbers and a small graph (hover for value and time)
-  - its problems, if any
+- **The summary line** at the top: faults, things to watch, power now, the internet, devices online, services up and updates. Each one is a shortcut.
+- **Needs you:** a card per problem, worst first, with how long it has been going on. Click a card to open that device. The same findings drive the alerts. When nothing is wrong it says **All systems normal**.
+- **Power** and **Internet**, two big tiles with a graph of the last hours:
+  - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range (**24 h / 7 d / 30 d**) is remembered per browser.
+  - **Internet** comes from the UniFi console (speed test, latency, clients) and opens the gateway.
+- **Devices:** a tile per device, grouped *In the rack* and *Elsewhere*. Each tile has one status (**OK**, **Warning**, **Fault** or **Offline**), its worst problem or its model, and one key number. Click a tile to open its **details** (from the right, or from the bottom on a phone):
+  - its problems first, then up to eight numbers
+  - every connection's full view: fans, power supplies, pools, disks, ports, UPS battery, graphs (hover for value and time)
+  - **Server sheet** (its Docs page), **Update available**, and **Edit in Admin**
+- **Services** (down ones first) and **Virtual machines** per Proxmox node, with links to the Services page.
+- **Customize** (signed in): drag tiles into another order, and use the eye to hide one from Home. It stays in the rack and in search. **Save** keeps it on the server, so it's the same everywhere.
 
-  The links on a card:
-  - **Details** opens everything per connection: fans, PSUs, pools, disks, ports.
-  - **Sheet** opens the device's page in Docs.
-  - **Update available** goes to the Updates page.
-- **The power card:**
-  - the draw now, today, this month, and a forecast for the month
-  - the graph range, **24 h / 7 d / 30 d** (remembered per browser)
-  - **Details** for the yearly figures
-  - **Report** for the full energy report
-- **The rack** on the right is drawn to scale, like the real hardware, with live lights: the drives your servers really have (blanks for empty bays, amber when a drive is about to fail), switch ports lit by link and PoE, power buttons. The names stand beside it. **Realistic / Schematic** at the top switches to a plain view with names, status and power inside the blocks. Click a device or its name to jump to its card. On a phone and narrow screens the rack comes after the cards and starts folded.
+### Rack
+
+The rack is drawn to scale, like the real hardware, with live lights: the drives your servers really have (blanks for empty bays, amber when a drive is about to fail), switch ports lit by link and PoE, power buttons. A device with a problem gets a red or amber outline. The names stand beside it. **Realistic / Schematic** switches to a plain view with names, status and power inside the blocks. Click a device to open its details. Devices outside the rack are listed below it.
+
+### Wall display
+
+**Wall display** (top right on Home, or **More** on a phone) is one screen for a tablet or TV on the wall, at `/wall`. It never scrolls, and is readable from across the room:
+- the headline (*2 faults, 1 to watch* or *All systems normal*) and a clock
+- **Needs you:** one problem at a time, eight seconds each (point at it to pause), with the full list beside it
+- power now with its graph, the internet, the rack, and the services
+
+Tap anything to open it on Home. The full-screen button keeps the screen awake where the browser allows it. For a wall tablet, sign in once with **Remember this device for viewing**: it then shows the wall without a password and can't change anything.
+
+### The look on this device
+
+The **palette** button (top right, or **More** on a phone) changes the look **on this device only**: **Auto / Dark / Light**, eight more themes, and an **accent** colour. Everyone else keeps the owner's look, which is set in Admin → Dashboard & look. **Use the owner's look** goes back.
 
 ### Services
 
@@ -134,28 +146,35 @@ Use ↑ ↓ to choose, **Enter** to open and **Esc** to close.
 
 ## 3. Setting things up in Admin
 
-**Admin** (bottom of the sidebar, or **More** on a phone) has six tabs: **Devices · Services · Alerts · Power & cost · Dashboard & look · System**.
+**Admin** (top right, or **More** on a phone) has six tabs: **Devices · Services · Alerts · Power & cost · Dashboard & look · System**.
 
 > **Passwords, tokens and keys are entered here and nowhere else.** They're stored encrypted and never shown again. A form only says whether a secret is set. To change one, type the new one. If you change a device's address or user name without retyping the secret, the old secret is deleted, so it's never sent anywhere new.
 
 ### Devices
 
-**Add device** → name, type and where it sits:
+**Add device** opens the **catalog**: about 70 models from UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs and generic gear. Search or pick a brand, choose the model, and it shows the front in the rack, its size, and how it's read live (and what you need to set up on it). **Add this device** fills in the type, brand and model, height, front, drive bays, a typical power draw and the right connection. Then give it a name and fill in the connection. **Any other device** starts with an empty form.
+
+The device form: name, type, **brand and model**, and where it sits:
 - **In the rack**, with height and lowest U
 - **Outside the rack**, e.g. a ceiling access point
 - **Not placed**
 
-**Look** and **Drive bays** choose how it's drawn; *Auto* picks from the model the device reports.
+**Look** and **Drive bays** choose how it's drawn; *Auto* picks from the brand and model, or from what the device reports.
 
 **Add connection** for each way to read the device. Use **read-only** accounts everywhere:
 
-| Connection | What to create on the device | In the form |
-|---|---|---|
-| iDRAC | A local user with the *Read Only* role | Address, user, password |
-| Proxmox | A user `dashboard@pve` with role **PVEAuditor** and an API token (commands in the README) | User = token ID (e.g. `dashboard@pve!monitor`), secret = token UUID |
-| TrueNAS 25.04+ | An API key for a user with *Read-only Administrator* | User name, API key |
-| Synology | DSM → Control Panel → Terminal & SNMP → **SNMPv3**, protocol SHA, privacy AES | User, passwords, then **Fetch engine ID** |
-| UniFi | A local *View Only* user without MFA (UniFi OS → Admins & Users) | User, password |
+| Connection | For | What to create on the device | In the form |
+|---|---|---|---|
+| Redfish | Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro BMC | A local user with a read-only role | Address, user, password |
+| Proxmox | Proxmox VE | A user `dashboard@pve` with role **PVEAuditor** and an API token (commands in the README) | User = token ID (e.g. `dashboard@pve!monitor`), secret = token UUID |
+| TrueNAS 25.04+ | TrueNAS | An API key for a user with *Read-only Administrator* | User name, API key |
+| Synology | Synology DSM | DSM → Control Panel → Terminal & SNMP → **SNMPv3**, protocol SHA, privacy AES | User, passwords, then **Fetch engine ID** |
+| UniFi | UniFi OS consoles (UDM, Cloud Gateway) | A local *View Only* user without MFA (UniFi OS → Admins & Users) | User, password |
+| SNMPv3 | Switches and routers (Cisco, Aruba, MikroTik, Netgear…), QNAP, UPS network cards (APC, Eaton) | A read-only SNMPv3 user with SHA and AES | User, passwords, then **Fetch engine ID** |
+| NUT | A USB UPS, through the machine it's plugged into | NUT with `upsd` listening on the network (`LISTEN` in upsd.conf) | Address of that machine, the UPS name from ups.conf. No password: only values are read. |
+| Omada | TP-Link Omada gateways, switches and access points | A local *Viewer* account on the Omada controller | User, password; after **Test**, pick which Omada device this is (or the whole controller) |
+
+The SNMP connection reads standard values only: the ports (up, speed, traffic), CPU, memory and storage, and for a UPS its battery, runtime, load and output. A UPS running on battery, with a low battery or one that needs replacing shows up under *Needs you*.
 
 **Certificates.** Most devices have self-signed certificates. Choose **Pin SHA-256 fingerprint (self-signed)**, press **Fetch certificate**, and if you can, compare the fingerprint with the one shown on the device itself. The dashboard checks it *before* sending the password. If the certificate changes later (firmware update, renewal), the device stops answering with *"fingerprint mismatch; nothing was sent"*. Check why, then fetch and save the new fingerprint.
 
@@ -169,7 +188,7 @@ More on devices:
   - Drag devices and panels to move them, and click one to edit it.
   - Double-click an empty U, or use **Add panel…**, for blank panels, patch panels, shelves and cable management. These have no name and don't appear in Docs.
   - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
-  - **Drive bays** on *Automatic* follow the drives the iDRAC reports. Change it if your server has a different backplane than the drives suggest.
+  - **Drive bays** on *Automatic* follow the drives the management controller reports. Change it if your server has a different backplane than the drives suggest.
 
 ### Services
 
@@ -209,14 +228,15 @@ To arrange the page, press **Customize** on the Services page:
 
 - **Plan:** *Norgespris* or *spot price* with your price area, plus VAT, supplier markup and subsidy.
 - **Grid tariff (nettleie):** day and night/weekend rates and when the day starts and ends, *Elavgift*, the Enova fee, and the fixed monthly costs. Copy them from your grid company's price page (the grid company).
-- **Include estimated power in cost** decides whether estimated devices count, or only measured ones (iDRAC and PoE).
+- **Include estimated power in cost** decides whether estimated devices count, or only measured ones (Redfish and PoE).
 
 ### Dashboard & look
 
 - **Title** and **Refresh interval**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
-- **Theme** (11, including Auto), **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
-- **Layout:** press **Customize** on the Overview to drag, resize, hide and re-show cards. The layout is saved on the server, so it's the same everywhere.
+- **Theme** (11, including Auto) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
+- **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
+- **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.
 
 ### System
 
@@ -241,7 +261,7 @@ To arrange the page, press **Customize** on the Services page:
 This is what the safety check found worth doing in daily use.
 
 **Settings**
-- **Keep the dashboard private** (*Make the dashboard public* off). Public mode shows the Overview, Services and Energy report to anyone who can reach the server. The Overview hides addresses and versions, but the Services page still shows links and error messages.
+- **Keep the dashboard private** (*Make the dashboard public* off). Public mode shows Home, the rack, the wall display, Services and the Energy report to anyone who can reach the server. Home hides addresses and versions, but the Services page still shows links and error messages.
 - **Read-only accounts** for every device and service. Then even a leaked secret can't change anything.
 - **Pin fingerprints** for self-signed certificates, and don't just re-fetch when one changes: find out why first.
 - **HTTPS only:** keep HTTP on *Redirect to HTTPS*. *Serve* sends logins in plain text.

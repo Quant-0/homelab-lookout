@@ -30,7 +30,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   // --- dashboard tabs ---
   await page.reload();
   await page.waitForSelector('.sidebar .nav-list a');
-  check((await page.$$eval('.sidebar .nav-list .label', (a) => a.map((x) => x.textContent))).join() === 'Overview,Services,Energy,Docs,Updates', 'dashboard shows Overview · Services · Docs · Updates');
+  check((await page.$$eval('.sidebar .nav-list .label', (a) => a.map((x) => x.textContent))).join() === 'Home,Rack,Services,Energy,Docs,Updates', 'the top bar shows Home · Rack · Services · Energy · Docs · Updates');
 
   // --- admin: add Jellyfin through the form ---
   await page.goto(B + '/admin#services');

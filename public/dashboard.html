@@ -8,32 +8,48 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
 </head>
 <body class="app">
   <div class="app-bg" aria-hidden="true"></div>
   <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
   <div class="app-main">
     <header class="topbar">
-      <h1 class="page-title">Overview</h1>
+      <h1 class="page-title" id="page-title">Home</h1>
       <span class="page-meta" id="updated"></span>
       <span class="spacer"></span>
       <div class="page-actions" id="nav"></div>
     </header>
     <main>
       <p class="banner hidden" id="global-error" role="alert"></p>
-      <div class="edit-bar hidden" id="edit-bar" role="toolbar" aria-label="Customize dashboard"></div>
       <p class="empty hidden" id="empty-hint"></p>
-      <section class="attention" id="attention" aria-label="Status"></section>
-      <div class="dash" id="dash">
-        <div class="grid" id="grid"></div>
-        <aside class="rack-panel card" id="rack-panel" aria-label="Rack"></aside>
+      <div id="view-home">
+        <div class="summary" id="summary" role="group" aria-label="Summary"></div>
+        <div class="edit-bar" id="edit-bar" role="toolbar" aria-label="Customize Home" hidden></div>
+        <section class="home-sec" id="needs-sec" aria-labelledby="needs-h">
+          <div class="sec-head"><h2 id="needs-h">Needs you</h2><span class="count" id="needs-count"></span></div>
+          <div id="needs"></div>
+        </section>
+        <section class="home-sec hero-row" id="hero" aria-label="Power and internet"></section>
+        <section class="home-sec" id="devices-sec" aria-labelledby="devices-h" hidden>
+          <div class="sec-head"><h2 id="devices-h">Devices</h2><span class="count" id="devices-count"></span><a class="more" href="/#rack">See the rack</a></div>
+          <div id="devices"></div>
+        </section>
+        <section class="home-sec" id="services-sec" aria-labelledby="services-h" hidden>
+          <div class="sec-head"><h2 id="services-h">Services</h2><span class="count" id="services-count"></span><a class="more" href="/services">All services</a></div>
+          <div class="dtiles small" id="services"></div>
+        </section>
+        <section class="home-sec" id="vms-sec" aria-labelledby="vms-h" hidden>
+          <div class="sec-head"><h2 id="vms-h">Virtual machines</h2><span class="count" id="vms-count"></span><a class="more" href="/services#vms">Details</a></div>
+          <div class="dtiles" id="vms"></div>
+        </section>
       </div>
+      <div id="rack-view" hidden></div>
     </main>
   </div>
   <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
   <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
-  <script src="/static/js/layout.js"></script>
   <script src="/static/js/rack.js"></script>
   <script src="/static/js/dashboard.js"></script>
 </body>

@@ -8,6 +8,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
 </head>
 <body class="app admin">
   <div class="app-bg" aria-hidden="true"></div>
@@ -32,7 +33,7 @@
         <div class="card-head">
           <div class="title">
             <h3>Devices</h3>
-            <p class="hint">A device is one physical box, with its connections (iDRAC, Proxmox, TrueNAS, Synology, UniFi). Passwords and keys are stored encrypted and never shown again.</p>
+            <p class="hint">A device is one physical box, with the connections that read it (Redfish, SNMP, Proxmox, TrueNAS, Synology, UniFi, Omada, NUT). “Add device” starts from a catalog of models. Passwords and keys are stored encrypted and never shown again.</p>
           </div>
           <div class="head-actions">
             <select id="passive-add" aria-label="Add a panel to the rack"></select>
@@ -86,7 +87,11 @@
               <div class="form-grid two">
                 <label><span>Name</span><input name="name" maxlength="48" required placeholder="e.g. Orion"></label>
                 <label><span>Type</span><select name="kind" id="device-kind"></select></label>
+                <label><span>Brand</span><input name="brand" maxlength="40" placeholder="e.g. Dell" list="brand-list"></label>
+                <label><span>Model</span><input name="modelName" maxlength="60" placeholder="e.g. PowerEdge R730"></label>
               </div>
+              <datalist id="brand-list"></datalist>
+              <p class="hint" id="device-catalog-hint"></p>
               <fieldset class="placement">
                 <legend>Placement</legend>
                 <label class="check"><input type="radio" name="location" value="rack"> In the rack</label>
@@ -106,7 +111,7 @@
                 <p class="hint" id="device-front-hint"></p>
               </fieldset>
               <h4>Connections</h4>
-              <p class="hint">How this device is monitored. A server can have both its iDRAC (hardware, power) and Proxmox (VMs). Use Test to check a connection before saving.</p>
+              <p class="hint">How this device is monitored. A server can have both its management controller (hardware, power) and Proxmox (VMs). Use Test to check a connection before saving.</p>
               <div class="conn-list" id="conn-list"></div>
               <label class="add-conn"><span>Add connection</span><select id="conn-add"></select></label>
               <label><span>Estimated power (W)</span><input name="estimateW" type="number" min="0" max="5000" step="1" placeholder="Leave empty if measured"><span class="hint" id="device-est-hint"></span></label>
@@ -286,9 +291,11 @@
       </section>
       <section class="card" id="appearance-card">
         <h3>Appearance</h3>
-        <p class="hint">Changes preview on this page right away; save to apply them everywhere. To move and resize widgets, use <a href="/">Customize</a> on the dashboard.</p>
+        <p class="hint">The default look for everyone. Viewers can pick their own theme and accent on their device with the palette button. Changes preview on this page right away; save to apply them everywhere. To reorder or hide tiles, use <a href="/">Customize</a> on Home.</p>
         <h4>Theme</h4>
         <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
+        <h4>Accent</h4>
+        <div class="swatches-row" id="accent-row" role="group" aria-label="Accent"></div>
         <h4>Background</h4>
         <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
         <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
@@ -416,6 +423,7 @@
   <script src="/static/js/icons.js"></script>
   <script src="/static/js/common.js"></script>
   <script src="/static/js/rack.js"></script>
+  <script src="/static/js/catalog.js"></script>
   <script src="/static/js/admin.js"></script>
 </body>
 </html>

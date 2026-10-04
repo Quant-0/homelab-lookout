@@ -401,7 +401,7 @@ function deviceRow(d) {
   const conns = hostsOf(d);
   const errors = conns.filter((h) => h.status && !h.status.ok).length;
   const missing = conns.filter((h) => !h.hasSecret).length;
-  const what = [...conns.map((h) => state.types[h.type].label), d.unifi && !conns.some((h) => h.type === 'unifi') ? 'found via UniFi' : null].filter(Boolean).join(' + ');
+  const what = [...conns.map((h) => state.types[h.type].short || state.types[h.type].label), d.unifi && !conns.some((h) => h.type === 'unifi') ? 'found via UniFi' : null].filter(Boolean).join(' + ');
   const problems = [errors ? `${errors} with errors` : '', missing ? `${missing} without credentials` : ''].filter(Boolean).join(', ');
   return el('button', { type: 'button', class: `device-row${draft?.id === d.id ? ' selected' : ''}`, onclick: () => openDevice(d) },
     el('span', { class: `led ${info.status || 'off'}`, 'aria-hidden': 'true' }),
@@ -470,6 +470,9 @@ function openDevice(dev, preset = {}) {
   const passiveKinds = ['blank', 'patch-panel', 'shelf'];
   $('device-kind').replaceChildren(...state.rackKinds.filter((k) => !passiveKinds.includes(k) || k === draft.kind).map((k) => el('option', { value: k, text: Rack.KIND_LABELS[k] || k })));
   f.kind.value = draft.kind;
+  f.brand.value = draft.model?.brand || '';
+  f.modelName.value = draft.model?.name || '';
+  $('brand-list').replaceChildren(...[...new Set(CATALOG.map((x) => x.brand))].map((b) => el('option', { value: b })));
   f.frontModel.value = draft.front.model;
   f.frontDrives.value = draft.front.drives;
   f.location.value = draft.location;
@@ -477,6 +480,7 @@ function openDevice(dev, preset = {}) {
   f.u.value = draft.u ?? '';
   f.estimateW.value = draft.estimateW ?? '';
   $('device-editor-title').textContent = dev ? `Edit ${dev.name}` : 'Add device';
+  $('device-catalog-hint').textContent = draft.catalogNote || '';
   $('device-origin').textContent = dev?.discovered
     ? `Found automatically through the UniFi console (${dev.unifi.mac}). Rename it, choose its type and where it sits.`
     : '';
@@ -507,6 +511,7 @@ function syncDraft() {
   draft.height = Number(f.height.value) || 1;
   draft.u = f.u.value === '' ? null : Number(f.u.value);
   draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
+  draft.model = f.brand.value.trim() || f.modelName.value.trim() ? { brand: f.brand.value.trim(), name: f.modelName.value.trim() } : null;
   draft.front = { model: f.frontModel.value || 'auto', drives: f.frontDrives.value || 'auto' };
   for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
   // what "Automatic" means for this device, from what it reports
@@ -700,7 +705,87 @@ $('conn-add').addEventListener('change', (e) => {
 const ownField = (e) => !e.target.closest('.conn-card') && e.target.id !== 'conn-add';
 $('device-form').addEventListener('input', (e) => ownField(e) && syncDraft());
 $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
-$('device-new').addEventListener('click', () => openDevice(null));
+$('device-new').addEventListener('click', openCatalog);
+
+// --- Add device: start from the catalog ---
+const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', proxmox: 'Proxmox', truenas: 'TrueNAS', null: 'Drawn only' };
+
+function presetFrom(x) {
+  const desktopNas = x.front === 'synology-ds';
+  const rackable = x.height > 0 || desktopNas;
+  return {
+    name: x.brand === 'Generic' || x.brand === 'Proxmox' ? '' : x.model.replace(/^(PowerEdge|ProLiant|ThinkSystem|Catalyst) /, ''),
+    kind: x.kind,
+    location: rackable ? 'rack' : 'outside',
+    height: desktopNas ? 4 : Math.max(1, x.height),
+    estimateW: x.watts,
+    front: { model: x.front || 'auto', drives: x.drives || 'auto' },
+    model: x.brand === 'Generic' || x.brand === 'Proxmox' ? null : { brand: x.brand, name: x.model },
+    connections: x.connection && x.connection !== 'unifi-found' ? [newConn(x.connection)] : [],
+    catalogNote: x.connection === 'unifi-found' ? CATALOG_NEEDS['unifi-found'] : null,
+  };
+}
+
+function catalogFace(x) {
+  const box = el('div', { class: 'cat-face' });
+  if (x.height > 0 || x.front === 'synology-ds') {
+    const p = presetFrom(x);
+    const item = { id: 'preview', name: x.model, kind: x.kind, location: 'rack', u: 1, height: p.height, estimateW: x.watts, links: [], front: p.front, model: p.model };
+    Rack.render(box, { enabled: true, units: p.height, numbering: 'bottom', items: [item], passive: [] }, null, { mode: 'realistic' });
+  } else box.append(el('span', { class: 'tile-icon' }, HD.icon(Rack.KIND_ICONS[x.kind] || 'box')));
+  return box;
+}
+
+function openCatalog() {
+  let brand = 'All';
+  let q = '';
+  const search = el('input', { type: 'search', placeholder: 'R740, 2960, DS923, EAP, UPS…', 'aria-label': 'Search the catalog', autocomplete: 'off', spellcheck: 'false' });
+  const brands = el('div', { class: 'cat-brands', role: 'group', 'aria-label': 'Brand' });
+  const list = el('ul', { class: 'cat-list', 'aria-label': 'Models' });
+  const pickBox = el('div', { class: 'cat-pick', 'aria-live': 'polite' });
+  let close = () => {};
+  const add = (x) => {
+    close();
+    openDevice(null, x ? presetFrom(x) : {});
+  };
+  const show = (x) => {
+    pickBox.replaceChildren(el('div', { class: 'cat-chosen' },
+      catalogFace(x),
+      el('h3', { text: `${x.brand} ${x.model}` }),
+      el('p', { class: 'muted small', text: [Rack.KIND_LABELS[x.kind] || x.kind, x.height ? `${x.height} U` : x.front === 'synology-ds' ? 'Desktop, on a shelf' : 'Not rack-mounted', x.watts ? `about ${x.watts} W` : null].filter(Boolean).join(' · ') }),
+      el('div', { class: 'kv' }, el('div', null, el('div', { class: 'k', text: 'Live data' }), el('div', { class: 'v', text: CONN_TEXT[x.connection] }))),
+      el('p', { class: 'hint', text: CATALOG_NEEDS[x.connection] }),
+      el('div', { class: 'form-actions' },
+        el('button', { type: 'button', class: 'primary', text: x.connection === 'unifi-found' ? 'Add anyway (drawn only)' : 'Add this device', onclick: () => add(x) }),
+        el('button', { type: 'button', text: 'Back to the list', onclick: () => { pickBox.replaceChildren(); search.focus(); } }))));
+    pickBox.scrollIntoView({ block: 'nearest' });
+  };
+  const draw = () => {
+    const all = ['All', ...new Set(CATALOG.map((x) => x.brand))];
+    brands.replaceChildren(...all.map((b) => el('button', { type: 'button', 'aria-pressed': String(b === brand), text: b, onclick: () => { brand = b; draw(); } })));
+    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const found = CATALOG.filter((x) => (brand === 'All' || x.brand === brand) && terms.every((t) => `${x.brand} ${x.model} ${Rack.KIND_LABELS[x.kind] || ''} ${x.kind}`.toLowerCase().includes(t)));
+    list.replaceChildren(...(found.length ? found.map((x) => el('li', null, el('button', { type: 'button', onclick: () => show(x) },
+      el('span', { class: 'tile-icon' }, HD.icon(Rack.KIND_ICONS[x.kind] || 'box')),
+      el('span', { class: 'cat-text' }, el('b', { text: `${x.brand} ${x.model}` }), el('small', { text: [Rack.KIND_LABELS[x.kind] || x.kind, x.height ? `${x.height} U` : 'desktop', CONN_TEXT[x.connection]].join(' · ') })),
+      el('span', { class: `tag ${x.connection && x.connection !== 'unifi-found' ? 'live' : 'drawn'}`, text: x.connection === 'unifi-found' ? 'Found by itself' : x.connection ? 'Live data' : 'Drawn only' }))))
+      : [el('li', { class: 'muted small cat-none', text: 'Not in the catalog. Add it as “Any other device”: choose its type, size and connection yourself.' })]));
+  };
+  search.addEventListener('input', () => {
+    q = search.value;
+    draw();
+  });
+  const body = el('div', { class: 'detail catalog' },
+    el('div', null, el('h2', { class: 'cat-title', text: 'Add device' }), el('p', { class: 'muted', text: 'Pick the brand and model: you get its front in the rack, its size and the right way to read it.' })),
+    el('label', { class: 'cat-search' }, HD.icon('search'), search),
+    brands,
+    pickBox,
+    list,
+    el('button', { type: 'button', class: 'link-button', text: 'Any other device: start with an empty form', onclick: () => add(null) }));
+  ({ close } = HD.drawer('Catalog', body));
+  draw();
+  search.focus();
+}
 $('device-cancel').addEventListener('click', closeDevice);
 
 $('device-form').addEventListener('submit', async (ev) => {
@@ -708,7 +793,7 @@ $('device-form').addEventListener('submit', async (ev) => {
   syncDraft();
   const d = draft;
   const body = {
-    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false, front: d.front,
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false, front: d.front, model: d.model,
     connections: d.connections.map((c) => ({
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
       options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,
@@ -1813,6 +1898,16 @@ function renderAppearance() {
   }, el('strong', { text: THEME_NAMES[t] || t }),
   el('div', { class: 'swatches', 'aria-hidden': 'true' }, ['surface', 'text', 'accent', 'good'].map((k) => el('span', { class: `sw-${k}` }))))));
 
+  const ACCENT_NAMES = { theme: 'Theme colour', indigo: 'Indigo', blue: 'Blue', teal: 'Teal', green: 'Green', amber: 'Amber', pink: 'Pink', red: 'Red', graphite: 'Graphite' };
+  $('accent-row').replaceChildren(...Object.keys(HD_LOOK.ACCENTS).map((k) => {
+    const b = el('button', { type: 'button', class: `swatch${k === 'theme' ? ' theme' : ''}`, title: ACCENT_NAMES[k], 'aria-label': ACCENT_NAMES[k], 'aria-pressed': String((appearance.accent || 'theme') === k), onclick: () => {
+      appearance.accent = k;
+      renderAppearance();
+    } });
+    if (HD_LOOK.ACCENTS[k]) b.style.setProperty('--c', `light-dark(${HD_LOOK.ACCENTS[k][0]}, ${HD_LOOK.ACCENTS[k][1]})`);
+    return b;
+  }));
+
   const pick = (background) => () => {
     appearance.background = { ...appearance.background, ...background };
     renderAppearance();
@@ -1838,6 +1933,7 @@ function previewAppearance() {
   const a = appearance;
   const root = document.documentElement;
   root.dataset.theme = a.theme;
+  root.dataset.accent = a.accent || 'theme';
   root.dataset.bg = a.background.type === 'builtin' ? a.background.builtin : a.background.type === 'image' ? 'image' : 'none';
   root.style.setProperty('--bg-blur', `${a.blur}px`);
   root.style.setProperty('--bg-dim', String(a.dim / 100));

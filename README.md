@@ -1,6 +1,6 @@
 # Homelab dashboard
 
-A dashboard for Dell iDRAC (Redfish), Proxmox VE and TrueNAS, with estimates and logs of power cost for Norway (spot price or Norgespris, plus grid tariff).
+A homelab dashboard for servers (Redfish: Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro), Proxmox VE, TrueNAS, Synology, UniFi and Omada networks, any SNMPv3 switch, router, NAS or UPS card, and UPSes through NUT, with estimates and logs of power cost for Norway (spot price or Norgespris, plus grid tariff).
 
 It is built from one Node.js server file (`server.js`, Node 18+) plus static HTML/CSS/JS in `public/`. There are no npm dependencies.
 
@@ -8,25 +8,31 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 
 ## What it shows
 
-- **iDRAC**: power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s). The drives in the front bays (model, size, health, "predicted to fail") are read from Redfish every 15 minutes: they're drawn in the rack, listed on the Docs sheet, and a failing drive raises a *Storage problem* alert.
+- **Redfish** (Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro BMC): power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s). The drives in the front bays (model, size, health, "predicted to fail") are read from Redfish every 15 minutes: they're drawn in the rack, listed on the Docs sheet, and a failing drive raises a *Storage problem* alert.
 - **Proxmox**: nodes (CPU, memory, root disk, uptime) on the Overview; VMs/containers with their status on the Services page.
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
 - **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
-- **Overview**: a "needs attention" line at the top lists what is wrong right now (the same findings the alerts use, whether or not they notify), with totals for devices, services and power. Each device has a compact card: one status (OK, Warning, Problem, Offline), up to four key numbers, one history graph and its problems. **Details** opens the full view per connection; fixed facts such as service tag and firmware are on the device's Docs sheet. On phones the rack starts folded.
+- **Any SNMPv3 device** (Cisco, HPE Aruba, MikroTik, Netgear, QNAP, UPS network cards from APC and Eaton…), with standard MIBs only: ports (up, speed, traffic per port from the counters), CPU, memory and storage (HOST-RESOURCES), and UPS battery, runtime, load, output and input (UPS-MIB, RFC 1628).
+- **NUT**: a USB UPS through Network UPS Tools on the machine it's plugged into. Only `LIST VAR` is sent; no login, nothing secret.
+- **Omada** controllers (software, OC200/OC300): gateways, switches and access points with status, clients, CPU/RAM, PoE and firmware. A device can be bound to one Omada device; otherwise it shows the whole controller.
+- **UPS alerts**: on battery, low battery, battery needs replacing.
+- **Home**: a summary line (faults, power, internet, devices online, services, updates), then **Needs you**, a card per problem (the same findings the alerts use, whether or not they notify), big tiles for **Power** and the **Internet**, a tile per device (one status: OK, Warning, Fault, Offline; its worst problem; one key number), services and VMs. A tile opens the **details drawer** (a bottom sheet on phones) with the full view per connection; fixed facts such as service tag and firmware are on the device's Docs sheet. **Customize** reorders and hides tiles.
+- **Wall display** (`/wall`): one screen for a tablet or TV that never scrolls: a headline, one problem at a time in a spotlight (8 s each), power with its graph, the internet, the rack and the services, a clock, and full screen with the screen kept awake where allowed.
+- **Device catalog**: Admin → Add device starts from ~70 models (UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs, generic). A model fills in the type, brand/model, height, rack front, drive bays, typical power and the connection to add, and says what to set up on the device.
 - **Devices**: everything is organised around physical devices (server, NAS, switch, patch panel…).
   - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
   - The dashboard shows one widget per device, with a section per connection.
   - Switches and access points found through a UniFi console appear as devices automatically. Deleting one hides it; it isn't re-created.
-- **Rack**: the right of the Overview shows your rack (1–60 U), **drawn to scale**: a 19″ front is 482.6 mm wide and 1 U is 44.45 mm, so every device keeps its real proportions at any size. Two views, switched in the rack's header and remembered per browser:
+- **Rack** (its own view, `/#rack`): your rack (1–60 U), **drawn to scale**: a 19″ front is 482.6 mm wide and 1 U is 44.45 mm, so every device keeps its real proportions at any size. Two views, switched in the rack's header and remembered per browser:
   - **Realistic**: fronts modelled on the real hardware, with live LEDs, and the names beside the rack instead of on the fronts;
   - **Schematic**: flat blocks in the theme's colours with icon, name, status and one number;
-  - fronts chosen from the model each device reports: Dell PowerEdge 13th gen (R630/R730, with the LCD showing watts) and 14th gen (R640/R740, with the fault icons for power and temperature), UniFi Dream Machine Pro and Switch 24 PoE (touchscreen, ports lit by link and PoE), other UniFi and generic switches, Synology RackStation and DiskStation (a DiskStation stands on a shelf at its real size), and generic servers. Dell servers show the drives the iDRAC reports in their bays (blanks where a bay is empty, amber for a warning) and pick the bay layout from them. Each device's front and drive-bay layout can be changed in Admin → Devices;
+  - fronts chosen from the brand and model (chosen in Admin, or reported by the device): HPE ProLiant, Lenovo ThinkSystem and Supermicro servers with their own colours, Dell PowerEdge 13th gen (R630/R730, with the LCD showing watts) and 14th gen (R640/R740, with the fault icons for power and temperature), UniFi Dream Machine Pro and Switch 24 PoE (touchscreen, ports lit by link and PoE), other UniFi and generic switches, Synology RackStation and DiskStation (a DiskStation stands on a shelf at its real size), and generic servers. Dell servers show the drives the iDRAC reports in their bays (blanks where a bay is empty, amber for a warning) and pick the bay layout from them. Each device's front and drive-bay layout can be changed in Admin → Devices;
   - **passive items** without a name: blank, vented and brush panels, cable management, patch panels (12/24/48 ports) and shelves. Add them from "Add panel" or by double-clicking an empty U. They are not devices, so they don't appear in the docs or as widgets. Blank panels, patch panels and shelves that were devices before are converted automatically;
   - click a device to jump to its widget; devices outside the rack (e.g. access points) are listed below it.
   - Edit it in Admin → Devices: drag to move, double-click an empty U to add.
 - **Services** tab on the dashboard (Homepage-style): grouped cards with icon, link, live status (up/down; response time on hover) and up to 4 numbers from the app, in one row. Each integration shows the 2–3 numbers that say something is waiting for you (queued, wanted, streams, pending, failed); pick others per service in Admin after a Test.
-  - Proxmox **VMs and containers** are listed here too, with CPU, memory and uptime. The Overview keeps each node's health and links here.
+  - Proxmox **VMs and containers** are listed here too, with CPU, memory and uptime. Home keeps each node's health and links here.
   - **Customize** (as admin): drag services between groups and groups up or down, rename groups, set the number of columns per group, and hide services. Keyboard: focus a service and use the arrow keys.
   - 28 integrations: Jellyfin, Emby, Plex, Tautulli, Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, Overseerr/Jellyseerr, qBittorrent, Transmission, SABnzbd, Pi-hole (v5/v6), AdGuard Home, Nginx Proxy Manager, Traefik, Home Assistant, Nextcloud, Immich, Paperless-ngx, Uptime Kuma, Grafana, Portainer, Speedtest Tracker, Prometheus, authentik, plus **Custom JSON API** for anything else.
   - Icons come from the [dashboard-icons](https://github.com/homarr-labs/dashboard-icons) library (downloaded once by the server and served locally) or are uploaded.
@@ -48,28 +54,29 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
   - When a host stops answering, its other alerts (e.g. a degraded pool) are kept as they are, not reported as resolved. Deleting a device drops its alerts without a "resolved" message.
   - Tokens, passwords and webhook URLs are encrypted and write-only, like device credentials, and bound to where they are sent: changing the server or user without retyping deletes them.
   - E-mail uses TLS or STARTTLS before logging in (refused if the server doesn't offer it). ntfy and SMTP can pin a certificate fingerprint. Discord messages can't mention anyone.
-- **Updates** (logged in only): one list of what can be updated, with the installed and the new version, release notes, and the package list for Proxmox. Checked once a night (04:00) and with "Check now": Proxmox pending packages, TrueNAS and its apps, Sonarr, Radarr, Lidarr, Prowlarr, Seerr, Pi-hole, Paperless-ngx, authentik, Portainer, Home Assistant, Tautulli, Plex and AdGuard Home. UniFi firmware and Synology DSM come with every refresh. The Overview shows the count, and device cards say "Update available". Nothing is ever installed from the dashboard. A public dashboard shows visitors no versions at all.
+- **Updates** (logged in only): one list of what can be updated, with the installed and the new version, release notes, and the package list for Proxmox. Checked once a night (04:00) and with "Check now": Proxmox pending packages, TrueNAS and its apps, Sonarr, Radarr, Lidarr, Prowlarr, Seerr, Pi-hole, Paperless-ngx, authentik, Portainer, Home Assistant, Tautulli, Plex and AdGuard Home. UniFi firmware and Synology DSM come with every refresh. Home shows the count, and a device's details say "Update available". Nothing is ever installed from the dashboard. A public dashboard shows visitors no versions at all.
   - Proxmox only lets a read-only (PVEAuditor) token list pending updates on newer versions; older ones show "not allowed".
 - **Search**: press **Ctrl K** (or **/**) on any page to find services, VMs, devices, Docs sheets and pages (also text inside pages), IP reservations and settings. Docs and settings only show up when you're logged in.
-- **Install as an app** (PWA) on a phone or PC: Chrome/Edge offer *Install app*; on an iPhone use Safari's *Share → Add to Home Screen*. The device must trust the local CA first (Admin → System → Web server). The app opens on the Overview in its own window. When the dashboard can't be reached (away from home without Tailscale), it shows a *Can't reach the dashboard* screen and opens the page again once the dashboard answers. Only that screen and its style, script and icon are stored on the device; no pages or data are cached.
-- **Remember this device for viewing**: a box at sign-in, meant for the app on a phone. For 30 days after signing in, that device can view the Overview, Services, Energy, Docs and Updates without the password, even after the 2-hour session ends or the server restarts. It can't change anything: Admin, edit buttons and *Check now* ask for the password. **Log out** on the device forgets it. Admin → System lists remembered devices (browser, last used, from which address) and can sign them out one by one or all at once. Changing the password signs out all of them except the one you're using.
+- **Install as an app** (PWA) on a phone or PC: Chrome/Edge offer *Install app*; on an iPhone use Safari's *Share → Add to Home Screen*. The device must trust the local CA first (Admin → System → Web server). The app opens on Home in its own window. When the dashboard can't be reached (away from home without Tailscale), it shows a *Can't reach the dashboard* screen and opens the page again once the dashboard answers. Only that screen and its style, script and icon are stored on the device; no pages or data are cached.
+- **Remember this device for viewing**: a box at sign-in, meant for the app on a phone. For 30 days after signing in, that device can view Home, the rack, the wall display, Services, Energy, Docs and Updates without the password, even after the 2-hour session ends or the server restarts. It can't change anything: Admin, edit buttons and *Check now* ask for the password. **Log out** on the device forgets it. Admin → System lists remembered devices (browser, last used, from which address) and can sign them out one by one or all at once. Changing the password signs out all of them except the one you're using.
 - **Admin** is organised in six tabs: Devices, Services, Alerts, Power & cost, Dashboard & look, and System (web server, backup, password).
 - **Power cost**:
   - Price plans: spot price per price area (NO1–NO5, from [hvakosterstrommen.no](https://www.hvakosterstrommen.no/strompris-api)), or Norgespris (40 øre/kWh excl. VAT, 50 incl.).
   - Optional supplier markup and strømstøtte.
   - Grid tariff with day/night energy rates.
   - Estimated cost per day/month/year at the current draw.
-  - Actual logged usage, from integrating iDRAC readings into hourly buckets, priced at the time of use.
+  - Actual logged usage, from integrating Redfish readings into hourly buckets, priced at the time of use.
   - All in one card: the draw now with its graph, today, this month and a forecast for the month; the 30-day chart appears once there are two days of data, and yearly figures are under Details.
   - **Energy report** (the card's *Report* link, or search "energy"): a month by day or a year by month, with kWh, cost and average price compared with the period before, and how much each device used. Per-device figures are logged from when this version was installed; earlier hours have only the total. The page follows the dashboard: private means login, public means visitors see it too.
   - **CSV export** from the report, per day or (for a year) per month, in two formats: *Excel (NO)* uses semicolons, decimal commas and a BOM, so Norwegian Excel opens it directly with æøå intact; *CSV* uses commas and decimal points for other tools. Each file ends with the per-device totals. Names that start with `=`, `+`, `-` or `@` are written so a spreadsheet can't run them as formulas.
 
-- **Look**: a sidebar with the pages on wide screens (icons only on tablets) and a tab bar at the bottom on phones, like an app. The Inter font and Lucide icons are served by the dashboard itself, so nothing is fetched from elsewhere (licences in `public/licenses/`).
+- **Look**: crisp and dark-first, with a bar at the top on wide screens (icons only on tablets) and a tab bar at the bottom on phones, like an app. The Inter font and Lucide icons are served by the dashboard itself, so nothing is fetched from elsewhere (licences in `public/licenses/`).
 - **Appearance**:
-  - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night.
+  - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night, and 8 accent colours (or the theme's own).
+  - The owner picks the default in Admin; each viewer can pick their own theme and accent on their device with the palette button (kept in that browser only).
   - Backgrounds: 6 built-in gradients, or upload your own (JPEG/PNG/WebP, max 10 MB).
   - Sliders for blur, dimming and card opacity (frosted glass).
-- **Layout**: press **Customize** on the dashboard (as admin) to drag widgets on a 12-column grid. You can resize them from the corner, hide and re-show them, "fit height" to their content, or reset everything. The layout is saved on the server, so it's the same on every device. On phones the widgets stack in one column.
+- **Layout**: press **Customize** on Home (as admin) to drag device tiles into another order and hide the ones you don't need there. It's saved on the server, so it's the same on every device.
 
 Multiple hosts of each type are supported. The server polls hosts every *refresh interval* and the browser reads the cached results. Logging therefore continues while no browser is open.
 
@@ -91,7 +98,10 @@ Multiple hosts of each type are supported. The server polls hosts every *refresh
 | CSP | `default-src 'none'; script-src 'self'; style-src 'self'; …`. No inline scripts, no inline styles, DOM built without `innerHTML`. Also sends `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and `Cache-Control: no-store`. |
 | Restoring a backup | Everything in the file is checked again as if it were entered now: images get their type from their content (JPEG/PNG/WebP only, metadata stripped), settings go through the same validation as Admin (a section that fails gets the defaults), service links must be http(s). Theme names and stored image types are checked once more where they're written into a page or sent. A backup is AES-256-GCM with a key from your passphrase (scrypt), so nobody can change one without the passphrase. |
 | Uploaded images | Accepted only if the content is really JPEG/PNG/WebP (SVG is rejected). EXIF/XMP/IPTC metadata, PNG text chunks and comments are stripped on upload, keeping only JPEG orientation. Files are stored 0600 under random ids and served with `nosniff`, under the same access rules as the dashboard. |
-| SNMPv3 (Synology) | authPriv only: HMAC-SHA-96/SHA-256-192 plus AES-128; passwords never leave the server. The agent's engine ID is pinned and checked before any authenticated message is sent, so a device impersonating the NAS gets nothing to attack offline. Responses that fail the HMAC check are dropped. |
+| SNMPv3 (Synology and any other device) | authPriv only: HMAC-SHA-96/SHA-256-192 plus AES-128; passwords never leave the server. The agent's engine ID is pinned and checked before any authenticated message is sent, so a device impersonating it gets nothing to attack offline. Responses that fail the HMAC check are dropped. |
+| NUT | Plain TCP, read-only: one `LIST VAR` command, no login, so there is no secret to store or to leak. |
+| Omada | HTTPS with the same pinning as the other HTTPS devices; the Viewer session lives in memory only, with a 15-minute pause after a failed login. |
+| Look | The owner's theme and accent come from fixed lists, checked again before they go into a page. A viewer's own look is kept in their browser (`localStorage`) and only changes attributes on their own page. |
 | Services | API keys/passwords are encrypted and write-only like device secrets; bound to the service URL (changing it without re-entering deletes the key). Over plain `http://` the admin page warns that the key travels unencrypted. Links (`href`) must be http(s); cards open them with `noopener noreferrer`. Connection URLs are never sent to the browser. |
 | Docs | Login always required. Markdown is rendered to DOM nodes (no `innerHTML`): HTML in documents is shown as text, and only http(s)/mailto links are created. UniFi network settings are reduced to safe fields (no PPPoE/VPN secrets). |
 | Network exposure | Refuses `0.0.0.0` / `::` and any non-private address. The `Host` header is checked against an allow-list to block DNS rebinding. |
@@ -169,7 +179,7 @@ How the file is encrypted: secrets are decrypted with the server key and travel 
 
 ## Credentials for the devices (read-only is enough)
 
-- **iDRAC**: create a local user with the *Read Only* role.
+- **Redfish** (iDRAC, iLO, XClarity, Supermicro): create a local user with a read-only role (*Read Only* on iDRAC, *Login* only on iLO).
 - **Proxmox**: use a token with the `PVEAuditor` role. In the admin UI, the username is the full token ID (e.g. `dashboard@pve!monitor`) and the secret is the token UUID.
   ```sh
   pveum user add dashboard@pve
@@ -178,6 +188,9 @@ How the file is encrypted: secrets are decrypted with the server key and travel 
   ```
 - **Synology**: DSM → Control Panel → Terminal & SNMP → SNMP. Enable the **SNMPv3** service with a user, protocol **SHA** (or SHA-256), and privacy **AES** with its own password. In Admin, use "Fetch engine ID from device" to pin the NAS's engine ID; authenticated requests are only sent if it matches.
 - **UniFi**: create a local user on the console (UniFi OS → Admins & Users) with the **View Only** role for Network and no MFA ("Restrict to local access only"). The session is kept in memory only. After a failed login the dashboard waits 15 minutes before trying again, so the account isn't locked.
+- **SNMPv3** (switches, routers, QNAP, UPS network cards): a user with authentication (SHA or SHA-256) and privacy (AES), read-only view. Pin the engine ID like for Synology.
+- **NUT**: on the machine the UPS is plugged into, let `upsd` listen on the network (`LISTEN 0.0.0.0 3493` in upsd.conf, or its LAN address) and allow the dashboard's address. The dashboard only lists the variables; it never logs in.
+- **Omada**: a local account with the *Viewer* role on the controller. Same session handling and 15-minute backoff as UniFi.
 - **TrueNAS 25.04+**: create an API key for a user with the *Read-only Administrator* role. Enter that user's name as the username. TrueNAS revokes keys that are used over plain `ws://`; this app only uses `wss://`.
 
 ## Development
@@ -197,4 +210,4 @@ node test/run.js --ui         # also browser tests (needs Playwright); 820 check
 node test/run.js --verbose    # print every check
 ```
 
-No npm packages needed: the runner generates a throwaway certificate, starts mock devices (iDRAC, Proxmox, TrueNAS, UniFi OS) and mock service APIs (all 28 integrations), and runs each suite against its own fresh server and data directory. The SNMPv3 suite runs against a real net-snmp agent if `snmpd` is installed (`apt install snmpd`, or set `SNMPD=/path/to/snmpd`) and is skipped otherwise.
+No npm packages needed: the runner generates a throwaway certificate, starts mock devices (Redfish, Proxmox, TrueNAS, UniFi OS, Omada, a NUT server) and mock service APIs (all 28 integrations), and runs each suite against its own fresh server and data directory. The SNMPv3 suite runs against a real net-snmp agent if `snmpd` is installed (`apt install snmpd`, or set `SNMPD=/path/to/snmpd`) and is skipped otherwise.

@@ -21,11 +21,20 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const conn = (i) => page.locator('#conn-list .conn-card').nth(i);
   const fill = async (card, label, value) => card.locator('label', { hasText: label }).locator('input').first().fill(value);
 
-  // --- Add device: Orion with iDRAC + Proxmox ---
+  // --- Add device from the catalog: a Dell PowerEdge R740 called Orion, with Redfish + Proxmox ---
   await page.click('#device-new');
+  await page.waitForSelector('dialog.drawer[open] .cat-list li');
+  check(await page.locator('.cat-list li').count() >= 50 && await page.locator('.cat-brands button').count() >= 15, `catalog: ${await page.locator('.cat-list li').count()} models from ${await page.locator('.cat-brands button').count() - 1} brands`);
+  await page.fill('.cat-search input', 'r740');
+  check((await page.locator('.cat-list li').allTextContents()).every((t) => /R740/.test(t)), 'catalog search narrows the list');
+  await page.locator('.cat-list button', { hasText: 'PowerEdge R740xd' }).click();
+  check(/Redfish/.test(await page.textContent('.cat-chosen')) && await page.locator('.cat-chosen .rack-item').count() === 1, 'a chosen model shows its front, size and how it is read');
+  await page.click('.cat-chosen button:text-is("Add this device")');
+  await page.waitForSelector('#device-editor:not([hidden])');
+  check(await page.inputValue('#device-form input[name=brand]') === 'Dell' && await page.inputValue('#device-form input[name=modelName]') === 'PowerEdge R740xd'
+    && await page.inputValue('#device-form input[name=height]') === '2' && await page.inputValue('#device-front') === 'dell14' && await page.inputValue('#device-drives') === '24x2.5'
+    && await page.locator('#conn-list .conn-card').count() === 1, 'the catalog fills brand, model, height, front and bays, and adds a Redfish connection');
   await page.fill('#device-form input[name=name]', 'Orion');
-  await page.fill('#device-form input[name=height]', '2');
-  await page.selectOption('#conn-add', 'idrac');
   let c = conn(0);
   await fill(c, 'Address', '127.0.0.1:18443');
   await fill(c, 'Username', 'root');
@@ -56,7 +65,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.click('#device-save');
   await page.waitForSelector('#device-editor[hidden]', { state: 'attached' });
   const row = page.locator('#device-list .device-row', { hasText: 'Orion' });
-  check((await row.textContent()).includes('iDRAC + Proxmox'), `device list: ${await row.locator('.device-links').textContent()}`);
+  check((await row.textContent()).includes('Redfish + Proxmox'), `device list: ${await row.locator('.device-links').textContent()}`);
 
   // re-open: secrets are not shown, only "Stored"
   await row.click();
@@ -66,8 +75,10 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(/Orion/.test(await page.textContent('#device-editor-title')), 'edit opens with the device');
   await page.click('#device-cancel');
 
-  // --- UDM Pro with a UniFi connection; switch + AP appear by themselves ---
+  // --- UDM Pro with a UniFi connection, without the catalog; switch + AP appear by themselves ---
   await page.click('#device-new');
+  await page.click('dialog.drawer button:has-text("Any other device")');
+  await page.waitForSelector('#device-editor:not([hidden])');
   await page.fill('#device-form input[name=name]', 'UDM Pro');
   await page.selectOption('#conn-add', 'unifi');
   check(await page.inputValue('#device-kind') === 'gateway', 'adding a UniFi connection sets the type to gateway');
@@ -88,18 +99,19 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(/Not placed \(1\)/.test(listText) && /Outside the rack \(1\)/.test(listText), 'switch is "not placed", AP is "outside the rack"');
   await page.screenshot({ path: `${S}/ui5-devices.png`, fullPage: true });
 
-  // --- dashboard: one widget per device ---
+  // --- Home: one tile per device; its drawer has a section per connection ---
   await page.goto(B + '/');
-  await page.waitForSelector('.widget[data-id^="device:"]');
+  await page.waitForSelector('#devices .dtile');
   await page.waitForTimeout(800);
-  const widgets = await page.$$eval('.widget[data-id^="device:"]', (ws) => ws.map((w) => ({
-    name: w.querySelector('h3')?.textContent,
-    sections: [...w.querySelectorAll('.section-title')].map((h) => h.textContent),
-  })));
-  console.log('  widgets:', JSON.stringify(widgets));
-  const odinW = widgets.find((w) => w.name === 'Orion');
-  check(odinW && odinW.sections.includes('Hardware · iDRAC') && odinW.sections.includes('Proxmox · node pve1'), 'Orion: one widget with iDRAC and Proxmox sections');
-  const odinText = await page.$$eval('.widget', (ws) => ws.find((x) => x.querySelector('h3')?.textContent === 'Orion').textContent);
+  const tiles = await page.$$eval('#devices .dtile .tile-name', (n) => n.map((x) => x.textContent));
+  console.log('  tiles:', JSON.stringify(tiles));
+  await page.locator('#devices .dtile', { hasText: 'Orion' }).click();
+  await page.waitForSelector('dialog.drawer[open] .section-title');
+  const sections = await page.$$eval('dialog.drawer .section-title', (n) => n.map((x) => x.textContent));
+  check(tiles.filter((t) => t === 'Orion').length === 1 && sections.includes('Hardware · iDRAC') && sections.includes('Proxmox · node pve1'), `Orion: one tile; its drawer has the iDRAC and Proxmox sections (${sections.join(', ')})`);
+  check(/Dell PowerEdge R740xd|PowerEdge R730xd/.test(await page.textContent('dialog.drawer .d-head p')), 'the drawer names the model');
+  const odinText = await page.textContent('dialog.drawer');
+  await page.keyboard.press('Escape');
   check(odinText.includes('pve1') && !odinText.includes('pve2') && /VMs & containers, \d+ running/.test(odinText) && !odinText.includes('truenas'), 'Orion shows its own node; VMs are summarised with a link to Services');
   const vmPage = await page.context().newPage();
   await vmPage.goto(B + '/services#vms');
@@ -108,13 +120,20 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(vms.includes('truenas') && !vms.includes('tmpl'), `Services page lists the VMs and containers (${vms.join(', ')})`);
   await vmPage.screenshot({ path: `${S}/vms-services.png`, fullPage: true });
   await vmPage.close();
-  const udmW = widgets.find((w) => w.name === 'UDM Pro');
-  check(udmW && udmW.sections.includes('Network · UniFi') && udmW.sections.some((x) => /UniFi · UDMPRO/.test(x)), 'UDM Pro: network overview + its own gateway section');
-  check(widgets.some((w) => w.name === 'USW-24-POE Rack'), 'switch gets its own widget');
+  await page.locator('#devices .dtile', { hasText: 'UDM Pro' }).click();
+  await page.waitForSelector('dialog.drawer[open] .section-title');
+  const udmSecs = await page.$$eval('dialog.drawer .section-title', (n) => n.map((x) => x.textContent));
+  check(udmSecs.includes('Network · UniFi') && udmSecs.some((x) => /UniFi · UDMPRO/.test(x)), `UDM Pro: network overview + its own gateway section (${udmSecs.join(', ')})`);
+  await page.keyboard.press('Escape');
+  check(tiles.includes('USW-24-POE Rack'), 'switch gets its own tile');
+  await page.goto(B + '/#rack');
+  await page.waitForSelector('#rack-view .rack-item.kind-server');
   await page.click('.rack-item.kind-server');
-  await page.waitForTimeout(700);
-  const flashed = await page.evaluate(() => document.querySelector('.widget.flash h3')?.textContent);
-  check(flashed === 'Orion', 'clicking Orion in the rack jumps to the Orion widget');
+  await page.waitForSelector('dialog.drawer[open]');
+  check(await page.textContent('dialog.drawer h2') === 'Orion', 'clicking Orion in the rack opens Orion');
+  await page.keyboard.press('Escape');
+  await page.goto(B + '/');
+  await page.waitForSelector('#devices .dtile');
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({ path: `${S}/ui5-dashboard.png` });
 

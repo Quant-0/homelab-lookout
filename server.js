@@ -62,7 +62,8 @@ const shortLabel = (type) => HOST_TYPES[type].short || HOST_TYPES[type].label;
 // What a Redfish connection is called on the device itself, from the model it reported
 function controllerName(h, data) {
   if (h.type !== 'idrac') return shortLabel(h.type);
-  const model = String(data?.model || '');
+  const dev = config.devices.find((d) => d.id === h.deviceId);
+  const model = String(data?.model || [dev?.model?.brand, dev?.model?.name].filter(Boolean).join(' '));
   return /ProLiant|HPE/i.test(model) ? 'iLO' : /ThinkSystem|Lenovo/i.test(model) ? 'XClarity' : /Super|SYS-|X1[0-3]/i.test(model) ? 'BMC' : /PowerEdge|Dell/i.test(model) ? 'iDRAC' : 'Redfish';
 }
 const AREAS = ['NO1', 'NO2', 'NO3', 'NO4', 'NO5'];
@@ -70,6 +71,7 @@ const THEMES = [
   'auto', 'light', 'dark', 'nord', 'dracula', 'catppuccin-mocha', 'catppuccin-latte',
   'solarized-dark', 'solarized-light', 'gruvbox-dark', 'tokyo-night',
 ];
+const ACCENTS = ['theme', 'indigo', 'blue', 'teal', 'green', 'amber', 'pink', 'red', 'graphite'];
 const BUILTIN_BACKGROUNDS = ['aurora', 'sunset', 'ocean', 'forest', 'nebula', 'graphite'];
 const MAX_BACKGROUNDS = 20;
 const MAX_BACKGROUND_BYTES = 10 << 20;
@@ -80,7 +82,7 @@ const DEFAULT_RACK = { enabled: true, units: 24, numbering: 'bottom', passive: [
 // Passive rack items: no name, no monitoring, not in the docs
 const PASSIVE_KINDS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Brush panel', cable: 'Cable management', patch: 'Patch panel', shelf: 'Shelf' };
 // How a device's front is drawn in the rack ('auto' = from the model it reports)
-const FRONTS = ['auto', 'dell13', 'dell14', 'udm-pro', 'usw-24-poe', 'unifi-switch', 'synology-rs', 'synology-ds', 'server', 'switch', 'plain'];
+const FRONTS = ['auto', 'dell13', 'dell14', 'hpe', 'lenovo', 'supermicro', 'udm-pro', 'usw-24-poe', 'unifi-switch', 'synology-rs', 'synology-ds', 'server', 'switch', 'plain'];
 const DRIVE_LAYOUTS = ['auto', 'none', '4x3.5', '8x3.5', '12x3.5', '8x2.5', '10x2.5', '16x2.5', '24x2.5'];
 const DEVICE_LOCATIONS = ['rack', 'outside', 'none']; // none = not placed
 const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway' };
@@ -117,6 +119,7 @@ const DEFAULT_SETTINGS = {
   },
   appearance: {
     theme: 'auto',
+    accent: 'theme', // 'theme' keeps the theme's own accent colour
     background: { type: 'none', builtin: 'aurora', imageId: null },
     blur: 12, // px
     dim: 35, // % scrim over the background
@@ -575,12 +578,14 @@ function validatePower(p) {
 function validateAppearance(a) {
   const bg = a.background || {};
   if (!THEMES.includes(a.theme)) throw new UserError('Unknown theme');
+  if (a.accent !== undefined && !ACCENTS.includes(a.accent)) throw new UserError('Unknown accent colour');
   if (!['none', 'builtin', 'image'].includes(bg.type)) throw new UserError('Invalid background type');
   const builtin = BUILTIN_BACKGROUNDS.includes(bg.builtin) ? bg.builtin : 'aurora';
   const imageId = typeof bg.imageId === 'string' && config.backgrounds.some((b) => b.id === bg.imageId) ? bg.imageId : null;
   if (bg.type === 'image' && !imageId) throw new UserError('Choose an uploaded image');
   return {
     theme: a.theme,
+    accent: a.accent ?? config.settings.appearance.accent ?? 'theme',
     background: { type: bg.type, builtin, imageId },
     blur: num(a.blur, 0, 40, 'Blur', { int: true }),
     dim: num(a.dim, 0, 90, 'Background dimming', { int: true }),
@@ -668,12 +673,20 @@ function validatePlacement(b, selfId, name) {
   return { location, u, height };
 }
 
+// Brand and model, from the catalog or typed in: shown on the device and used to name its controller
+function validateModel(m) {
+  if (m === null) return null;
+  const brand = String(m?.brand ?? '').trim();
+  const name = String(m?.name ?? '').trim();
+  if (brand.length > 40 || name.length > 60 || hasControlChars(brand + name)) throw new UserError('Brand or model is too long');
+  return brand || name ? { brand, name } : null;
+}
 function validateDeviceFields(b, selfId) {
   const name = String(b.name ?? '').trim();
   if (!name || name.length > 48 || hasControlChars(name)) throw new UserError('Name is required (max 48 characters)');
   if (!RACK_KINDS.includes(b.kind)) throw new UserError('Invalid device type');
   const estimateW = b.estimateW === null || b.estimateW === undefined || b.estimateW === '' ? null : num(b.estimateW, 0, 5000, 'Estimated power');
-  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.front !== undefined ? { front: validateFront(b.front) } : {}) };
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
 }
 
 // Creates or updates a connection from request data. A changed address, user name or pinned
@@ -779,6 +792,16 @@ function validateLayout(b) {
   const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
   if (!Array.isArray(b.items) || b.items.length > 300) throw new UserError('Invalid layout');
   const seen = new Set();
+  const hidden = Array.isArray(b.hidden) ? b.hidden.filter((id) => typeof id === 'string' && WIDGET_ID.test(id)).slice(0, 300) : [];
+  if (b.v === 3) {
+    // v3: the tiles on Home in an order
+    const items = b.items.map((i) => {
+      if (!i || typeof i.id !== 'string' || !WIDGET_ID.test(i.id) || seen.has(i.id)) throw new UserError('Invalid layout item');
+      seen.add(i.id);
+      return { id: i.id };
+    });
+    return { v: 3, items, hidden: [...new Set(hidden)] };
+  }
   const items = b.items.map((i) => {
     if (!i || typeof i.id !== 'string' || !WIDGET_ID.test(i.id) || seen.has(i.id)) throw new UserError('Invalid layout item');
     seen.add(i.id);
@@ -786,7 +809,6 @@ function validateLayout(b) {
       throw new UserError('Invalid layout position');
     return { id: i.id, x: i.x, y: i.y, w: i.w, h: i.h };
   });
-  const hidden = Array.isArray(b.hidden) ? b.hidden.filter((id) => typeof id === 'string' && WIDGET_ID.test(id)).slice(0, 300) : [];
   // v2: sizes made for the compact cards; older layouts keep their places but re-measure heights
   return { v: b.v === 2 ? 2 : 1, items, hidden: [...new Set(hidden)] };
 }
@@ -4082,10 +4104,10 @@ function csrfOk(req, session) {
 
 // Static files are loaded once into memory from an explicit allow-list.
 const STATIC = {};
-const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/favicon.svg', '/static/js/offline.js',
+const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/js/look.js', '/static/favicon.svg', '/static/js/offline.js',
   '/static/js/icons.js', '/static/fonts/inter-5.3.0.woff2', '/static/licenses/Inter-OFL.txt', '/static/licenses/Lucide-LICENSE.txt',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
-const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/layout.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
+const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
   const files = {
@@ -4096,6 +4118,7 @@ function loadStatic() {
     'docs.html': 'docs.html',
     'updates.html': 'updates.html',
     'energy.html': 'energy.html',
+    'wall.html': 'wall.html',
     'offline.html': 'offline.html',
     '/sw.js': 'sw.js',
     '/static/js/offline.js': 'js/offline.js',
@@ -4112,9 +4135,11 @@ function loadStatic() {
     '/static/js/common.js': 'js/common.js',
     '/static/js/login.js': 'js/login.js',
     '/static/js/dashboard.js': 'js/dashboard.js',
-    '/static/js/layout.js': 'js/layout.js',
+    '/static/js/wall.js': 'js/wall.js',
+    '/static/js/look.js': 'js/look.js',
     '/static/js/rack.js': 'js/rack.js',
     '/static/js/admin.js': 'js/admin.js',
+    '/static/js/catalog.js': 'js/catalog.js',
     '/static/favicon.svg': 'favicon.svg',
     '/static/js/icons.js': 'js/icons.js',
     '/static/fonts/inter-5.3.0.woff2': 'fonts/inter-5.3.0.woff2',
@@ -4304,12 +4329,13 @@ function htmlAttrs(session) {
     a.background.type === 'builtin' ? a.background.builtin : a.background.type === 'image' && backgroundVisible(session) ? 'image' : 'none';
   // Both go into the page's HTML: only values from the fixed lists, checked here as well
   const theme = THEMES.includes(a.theme) ? a.theme : 'auto';
-  return `data-theme="${theme}" data-bg="${[...BUILTIN_BACKGROUNDS, 'image', 'none'].includes(bg) ? bg : 'none'}"`;
+  const accent = ACCENTS.includes(a.accent) ? a.accent : 'theme';
+  return `data-theme="${theme}" data-accent="${accent}" data-bg="${[...BUILTIN_BACKGROUNDS, 'image', 'none'].includes(bg) ? bg : 'none'}"`;
 }
 
 // The bar colour of the installed app follows the theme (its --surface colour)
 const THEME_COLORS = {
-  light: '#fcfcfb', dark: '#1a1a19', nord: '#3b4252', dracula: '#282a36', 'catppuccin-mocha': '#1e1e2e', 'catppuccin-latte': '#eff1f5',
+  light: '#fbfbfc', dark: '#08090a', nord: '#3b4252', dracula: '#282a36', 'catppuccin-mocha': '#1e1e2e', 'catppuccin-latte': '#eff1f5',
   'solarized-dark': '#073642', 'solarized-light': '#fdf6e3', 'gruvbox-dark': '#282828', 'tokyo-night': '#1a1b26',
 };
 
@@ -4334,7 +4360,7 @@ function manifest(sees) {
     start_url: '/',
     scope: '/',
     display: 'standalone',
-    background_color: '#1a1a19',
+    background_color: '#08090a',
     theme_color: THEME_COLORS[config.settings.appearance.theme] || THEME_COLORS.dark,
     icons: [
       { src: '/static/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
@@ -4423,9 +4449,10 @@ function dashboardPayload() {
       height: d.height,
       estimateW: d.estimateW,
       front: d.front || null,
+      model: d.model || null,
       unifi: d.unifi,
       links: deviceLinks(d),
-      connections: deviceHosts(d).map((h) => ({ id: h.id, type: h.type, node: h.type === 'proxmox' ? effectiveNode(h, d) : undefined })),
+      connections: deviceHosts(d).map((h) => ({ id: h.id, type: h.type, node: h.type === 'proxmox' ? effectiveNode(h, d) : undefined, mac: h.type === 'omada' ? h.options?.mac || null : undefined })),
     }));
   return {
     title: s.title,
@@ -5415,6 +5442,10 @@ async function handle(req, res) {
     if (p === '/') {
       if (!sees) return redirect(res, '/login');
       return sendPage(res, 'dashboard.html', seer);
+    }
+    if (p === '/wall') {
+      if (!sees) return redirect(res, '/login?next=wall');
+      return sendPage(res, 'wall.html', seer);
     }
     if (p === '/admin') return session ? sendPage(res, 'admin.html', session) : redirect(res, '/login?next=admin');
     if (p === '/services') {
@@ -6453,7 +6484,16 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     backgrounds: restoredImages.backgrounds.map((x) => x.rec),
     layout: c.layout?.items ? c.layout : null,
     rack: { ...DEFAULT_RACK, ...(c.rack || {}), passive: cleanPassive(c.rack?.passive) },
-    devices: arr(c.devices),
+    devices: arr(c.devices).map((d) => {
+      // brand/model and front are re-checked like in Admin
+      let model = null;
+      try {
+        model = d?.model ? validateModel(d.model) : null;
+      } catch {
+        /* dropped */
+      }
+      return { ...d, model, ...(d?.front ? { front: validateFront(d.front) } : {}) };
+    }),
     services,
     icons: restoredImages.icons.map((x) => x.rec),
     servicesLayout: Array.isArray(c.servicesLayout?.groups) ? { groups: c.servicesLayout.groups.filter((k) => typeof k === 'string').slice(0, 200), columns: c.servicesLayout.columns || {} } : null,

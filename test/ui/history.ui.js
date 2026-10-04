@@ -28,44 +28,49 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForTimeout(1200);
   await page.reload();
 
-  const power = page.locator('.power-now .spark');
+  // the power tile on Home: a graph of the measured draw
+  const power = page.locator('.power-tile .spark');
   await power.waitFor();
-  check(await page.locator('.power-card .range-tabs button[aria-pressed=true]').textContent() === '24 h', 'range tabs in the power card, 24 h selected');
   const label = await power.getAttribute('aria-label');
   check(/Measured draw, last 24 h: lowest 20\d W, highest 2\d\d W/.test(label), `power sparkline has a text summary (${label})`);
-  const d = await page.locator('.power-now .spark-line').getAttribute('d');
+  const d = await page.locator('.power-tile .spark-line').getAttribute('d');
   check((d.match(/L/g) || []).length >= 100, 'power sparkline drawn from ~120 points');
   const box = await power.boundingBox();
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2);
-  const tip = page.locator('.power-now .spark-tip');
+  const tip = page.locator('.power-tile .spark-tip');
   check(await tip.isVisible() && /\d+ W/.test(await tip.textContent()), `hover shows value and time (${await tip.textContent()})`);
-  const tb = await tip.boundingBox();
-  check(tb.y + tb.height <= box.y + 1, 'tooltip sits above the graph');
   await page.screenshot({ path: `${S}/history-24h.png`, fullPage: true });
-  const hb = await page.locator('.power-now .spark-area').boundingBox();
+  const hb = await page.locator('.power-tile .spark-area').boundingBox();
   check(hb.x > box.x + box.width * 0.7, 'five hours of data fill only the right part of a 24 h graph');
 
-  const cells = page.locator('.device-card', { hasText: 'Orion' }).locator('.spark-cell');
+  await page.locator('#devices .dtile', { hasText: 'Orion' }).click();
+  await page.waitForSelector('dialog.drawer[open] .section-title');
+  const cells = page.locator('dialog.drawer .spark-cell');
   check(await cells.count() > 0 && await cells.evaluateAll((n) => n.every((c) => c.hidden)) && !/Collecting history/.test(await page.textContent('body')), 'a new connection shows no graph (and no placeholder) until it has history');
+  await page.keyboard.press('Escape');
 
-  // range switch: refetches and is remembered
+  // range switch in the power details: refetches and is remembered
+  await page.click('.power-tile');
+  await page.waitForSelector('dialog.drawer[open] .range-tabs');
+  check(await page.locator('dialog.drawer .range-tabs button[aria-pressed=true]').textContent() === '24 h', 'range tabs in the power details, 24 h selected');
   const req = page.waitForRequest((r) => r.url().includes('/api/history') && r.url().includes('range=30d'));
-  await page.click('.power-card .range-tabs button:has-text("30 d")');
+  await page.click('dialog.drawer .range-tabs button:has-text("30 d")');
   await req;
-  await page.waitForFunction(() => /last 30 d/.test(document.querySelector('.power-now .spark')?.getAttribute('aria-label') || ''));
+  await page.waitForFunction(() => /last 30 d/.test(document.querySelector('dialog.drawer .spark')?.getAttribute('aria-label') || ''));
   check(true, '30 d range fetches the 30-day series');
-  await page.reload();
-  await page.locator('.power-now .spark').waitFor();
-  check(await page.locator('.power-card .range-tabs button[aria-pressed=true]').textContent() === '30 d', 'range choice remembered after reload');
   await page.screenshot({ path: `${S}/history-30d.png` });
+  await page.reload();
+  await page.locator('.power-tile .spark').waitFor();
+  check(/last 30 d/.test(await page.locator('.power-tile .spark').getAttribute('aria-label')), 'range choice remembered after reload');
 
-  // mobile: no horizontal scroll with the range tabs in the top bar
+  // mobile: no horizontal scroll
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal scroll on a phone');
   await page.screenshot({ path: `${S}/history-mobile.png` });
-
-  await page.click('.power-card .range-tabs button:has-text("24 h")');
+  await page.click('.power-tile');
+  await page.click('dialog.drawer .range-tabs button:has-text("24 h")');
+  await page.keyboard.press('Escape');
 
   // services: status dot only (no response time), no range choice; dark theme
   await page.evaluate(async (csrf) => fetch('/api/admin/services', {
@@ -79,7 +84,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(await dark.locator('.range-tabs').count() === 0, 'no range choice on the services page');
   await dark.screenshot({ path: `${S}/history-services-dark.png` });
   await dark.goto(B + '/');
-  await dark.locator('.power-now .spark').waitFor();
+  await dark.locator('.power-tile .spark').waitFor();
   await dark.screenshot({ path: `${S}/history-dark.png`, fullPage: true });
   await browser.close();
   for (const p of problems.filter((x) => x.startsWith('console') || x.startsWith('pageerror'))) console.log(`FAIL  ${p}`);

@@ -23,7 +23,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await post('/api/admin/services', { name: 'Jellyfin', group: 'Media', href: 'https://jellyfin.example.lan', connection: { url: `${M}/jellyfin` }, integration: { type: 'jellyfin', options: {} }, secret: 'svc-key-123' });
   await post('/api/docs/pages', { title: 'Restore from backup', body: 'Stop the VM, then restore it from PBS and start it again.', group: 'pages' });
   await page.reload();
-  await page.waitForSelector('.device-card');
+  await page.waitForSelector('#devices .dtile');
 
   const results = () => page.$$eval('#search-results li[role=option]', (n) => n.map((x) => `${x.querySelector('.kind').textContent}: ${x.querySelector('.title').textContent}`));
   check(await page.isVisible('.sidebar .search-button'), 'search button in the sidebar');
@@ -53,8 +53,9 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForFunction(() => /Device/.test(document.getElementById('search-results').textContent));
   await page.locator('#search-results li', { hasText: 'Device' }).click();
   await page.waitForURL(B + '/');
-  await page.waitForTimeout(1200);
-  check(await page.evaluate(() => document.querySelector('.widget.flash h3')?.textContent) === 'titan', 'choosing the device opens the Overview at its card');
+  await page.waitForSelector('dialog.drawer[open] h2');
+  check(await page.textContent('dialog.drawer h2') === 'titan', 'choosing the device opens Home with its details');
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Control+k');
   await page.keyboard.type('backup');
   await page.waitForFunction(() => /Settings/.test(document.getElementById('search-results').textContent));

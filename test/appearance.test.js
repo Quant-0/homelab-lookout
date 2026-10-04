@@ -119,8 +119,15 @@ function orientationOf(jpeg) {
   r = await req('PUT', '/api/admin/settings', { appearance: { theme: 'nord', background: { type: 'image', imageId: jpg.id }, blur: 20, dim: 40, cardOpacity: 70 } });
   ok(r.status === 200 && r.json.settings.appearance.theme === 'nord', 'appearance saved');
   ok(JSON.stringify(r.json.settings.power) === JSON.stringify(before), 'partial settings update keeps power settings');
+  // the owner's accent colour: one of a fixed list, put on <html> for every page
+  r = await req('PUT', '/api/admin/settings', { appearance: { ...r.json.settings.appearance, accent: 'neon"><script>' } });
+  ok(r.status === 400, 'unknown accent colour rejected');
+  r = await req('PUT', '/api/admin/settings', { appearance: { ...(await req('GET', '/api/admin/config')).json.settings.appearance, accent: 'teal' } });
+  ok(r.status === 200 && r.json.settings.appearance.accent === 'teal', 'accent colour saved');
+  ok((await req('GET', '/')).text.includes('data-accent="teal"'), 'accent colour on the page');
+  r = await req('PUT', '/api/admin/settings', { appearance: { ...r.json.settings.appearance, accent: 'theme' } });
   r = await req('GET', '/');
-  ok(r.text.includes('<html lang="en" data-theme="nord" data-bg="image">'), 'theme + background injected into page');
+  ok(r.text.includes('<html lang="en" data-theme="nord" data-accent="theme" data-bg="image">'), 'theme + background injected into page');
   r = await req('GET', '/appearance.css');
   ok(r.text.includes(`/media/bg/${jpg.id}`) && r.text.includes('--bg-blur:20px') && r.text.includes('--card-alpha:0.7'), 'appearance.css has image and values for logged-in user');
 
@@ -138,7 +145,7 @@ function orientationOf(jpeg) {
   const loggedInCookie = cookie;
   cookie = '';
   r = await req('GET', '/login');
-  ok(r.text.includes('data-theme="nord" data-bg="none"'), 'login page themed, background image hidden');
+  ok(r.text.includes('data-theme="nord" data-accent="theme" data-bg="none"'), 'login page themed, background image hidden');
   r = await req('GET', '/appearance.css');
   ok(!r.text.includes('/media/bg'), 'appearance.css hides image when logged out');
   r = await req('GET', `/media/bg/${jpg.id}`);

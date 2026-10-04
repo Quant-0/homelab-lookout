@@ -186,19 +186,20 @@ const HD = (() => {
     }
   }
 
-  // --- App shell: a sidebar on wide screens, a tab bar at the bottom on phones ---
+  // --- App shell: a bar at the top on wide screens, a tab bar at the bottom on phones ---
   // Docs and Updates need a login or a remembered device; Admin always asks for the password.
   const NAV = [
-    { key: 'overview', label: 'Overview', href: '/', icon: 'layout-dashboard' },
+    { key: 'overview', label: 'Home', href: '/', icon: 'house' },
+    { key: 'rack', label: 'Rack', href: '/#rack', icon: 'server', rack: true },
     { key: 'services', label: 'Services', href: '/services', icon: 'layout-grid' },
     { key: 'energy', label: 'Energy', href: '/energy', icon: 'zap' },
     { key: 'docs', label: 'Docs', href: '/docs', icon: 'book-open', signed: true },
     { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
   ];
-  let shellState = { active: null, title: 'Homelab', admin: false, viewer: false, updates: 0 };
+  let shellState = { active: null, title: 'Homelab', admin: false, viewer: false, updates: 0, rack: true };
   let userName = null;
 
-  // opts: { active, title, admin (logged in), viewer (remembered device), updates (count) }
+  // opts: { active, title, admin (logged in), viewer (remembered device), updates (count), rack (shown) }
   function shell(opts = {}) {
     shellState = { ...shellState, ...opts };
     const st = shellState;
@@ -208,35 +209,31 @@ const HD = (() => {
     const navLink = (n, cls) => el('a', { class: `${cls}${n.key === st.active ? ' active' : ''}`, href: n.href, 'aria-current': n.key === st.active ? 'page' : null, title: n.label },
       icon(n.icon), el('span', { class: 'label', text: n.label }),
       n.key === 'updates' && st.updates ? el('span', { class: 'nav-badge num', text: String(st.updates), title: `${st.updates} available` }) : null);
-    const items = NAV.filter((n) => !n.signed || signed);
+    const items = NAV.filter((n) => (!n.signed || signed) && (!n.rack || st.rack));
     const admin = { key: 'admin', label: 'Admin', href: st.admin ? '/admin' : '/login?next=admin', icon: 'settings' };
     const next = st.active && st.active !== 'overview' && st.active !== 'admin' ? `?next=${st.active}` : '';
     if (side) {
+      side.setAttribute('aria-label', 'Main');
       side.replaceChildren(
-        el('a', { class: 'brand', href: '/', title: st.title }, el('img', { src: '/static/favicon.svg', alt: '' }), el('span', { class: 'label brand-name', text: st.title })),
-        el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
-          icon('search'), el('span', { class: 'label', text: 'Search' }), el('kbd', { class: 'label', text: 'Ctrl K' })),
+        el('a', { class: 'brand', href: '/', title: st.title }, el('img', { src: '/static/favicon.svg', alt: '' }), el('span', { class: 'brand-name', text: st.title })),
         el('div', { class: 'nav-list' }, items.map((n) => navLink(n, 'nav-item'))),
         el('div', { class: 'nav-foot' },
+          el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-label': 'Search', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
+            icon('search'), el('span', { class: 'label', text: 'Search' }), el('kbd', { text: navigator.platform?.startsWith('Mac') ? '⌘K' : 'Ctrl K' })),
+          el('button', { type: 'button', class: 'icon-button look-button', title: 'Look on this device', 'aria-label': 'Look on this device', 'aria-haspopup': 'dialog', onclick: (e) => openLook(e.currentTarget) }, icon('palette')),
           signed ? navLink(admin, 'nav-item') : null,
           signed
             ? el('div', { class: 'user-row' },
-              el('span', { class: 'avatar', 'aria-hidden': 'true', text: (userName || (st.viewer ? 'V' : 'A')).charAt(0).toUpperCase() }),
+              el('span', { class: 'avatar', title: `${userName || (st.viewer ? 'This device' : 'Admin')} · ${st.viewer ? 'view only' : 'administrator'}`, text: (userName || (st.viewer ? 'V' : 'A')).charAt(0).toUpperCase() }),
               el('span', { class: 'label user-text' }, el('strong', { text: userName || (st.viewer ? 'This device' : 'Admin') }), el('small', { text: st.viewer ? 'View only' : 'Administrator' })),
               el('button', { type: 'button', class: 'icon-button label', title: 'Log out', 'aria-label': 'Log out', onclick: logout }, icon('log-out')))
             : el('a', { class: 'nav-item', href: `/login${next}` }, icon('log-in'), el('span', { class: 'label', text: 'Log in' }))));
     }
     if (bar) {
-      const tabs = NAV.filter((n) => !n.signed || (signed && n.key === 'docs'));
-      const more = el('button', { type: 'button', class: `tab${['updates', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
+      const tabs = items.filter((n) => ['overview', 'rack', 'services', 'energy'].includes(n.key));
+      const more = el('button', { type: 'button', class: `tab${['docs', 'updates', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
         icon('ellipsis'), el('span', { class: 'label', text: 'More' }), st.updates && signed ? el('span', { class: 'nav-badge num', text: String(st.updates) }) : null);
       bar.replaceChildren(...tabs.map((n) => navLink(n, 'tab')), more);
-    }
-    // Phones: the logo and a search button in the page header
-    const top = document.querySelector('.topbar');
-    if (top && !top.querySelector('.topbar-logo')) {
-      top.prepend(el('a', { class: 'topbar-logo', href: '/', 'aria-label': 'Overview' }, el('img', { src: '/static/favicon.svg', alt: '' })));
-      top.append(el('button', { type: 'button', class: 'icon-button topbar-search', title: 'Search', 'aria-label': 'Search', onclick: openSearch }, icon('search')));
     }
     if (signed && userName === null) {
       userName = '';
@@ -247,7 +244,7 @@ const HD = (() => {
     }
   }
 
-  // Phones: Updates, Admin, Search and Log out in a sheet from the bottom
+  // Phones: Docs, Updates, Wall, Admin and Log out in a sheet from the bottom
   function openMore() {
     const st = shellState;
     const signed = st.admin || st.viewer;
@@ -256,14 +253,97 @@ const HD = (() => {
     const row = (ic, label, attrs) => el(attrs.href ? 'a' : 'button', { class: 'sheet-item', ...(attrs.href ? {} : { type: 'button' }), ...attrs }, icon(ic), el('span', { text: label }));
     dlg.append(el('div', { class: 'sheet-body' },
       el('div', { class: 'sheet-handle', 'aria-hidden': 'true' }),
+      signed ? row('book-open', 'Docs', { href: '/docs' }) : null,
       signed ? row('circle-arrow-up', st.updates ? `Updates · ${st.updates} available` : 'Updates', { href: '/updates' }) : null,
+      row('tv', 'Wall display', { href: '/wall' }),
+      row('palette', 'Look on this device', { onclick: () => { close(); openLook(null); } }),
       signed ? row('settings', 'Admin', { href: st.admin ? '/admin' : '/login?next=admin' }) : null,
-      row('search', 'Search', { onclick: () => { close(); openSearch(); } }),
       signed ? row('log-out', 'Log out', { onclick: logout }) : row('log-in', 'Log in', { href: '/login' })));
     dlg.addEventListener('click', (e) => e.target === dlg && close());
     dlg.addEventListener('close', () => dlg.remove());
     document.body.append(dlg);
     dlg.showModal();
+  }
+
+  // --- Look on this device: theme and accent over the owner's default (see look.js) ---
+  const ACCENT_NAMES = { theme: 'Theme colour', indigo: 'Indigo', blue: 'Blue', teal: 'Teal', green: 'Green', amber: 'Amber', pink: 'Pink', red: 'Red', graphite: 'Graphite' };
+  function openLook(anchor) {
+    if (typeof HD_LOOK === 'undefined') return;
+    document.querySelector('.look-menu')?.remove();
+    const dlg = el('dialog', { class: 'look-menu', 'aria-label': 'Look on this device' });
+    const draw = () => {
+      const own = HD_LOOK.read();
+      const theme = own.theme || HD_LOOK.owner.theme;
+      const accent = own.accent || HD_LOOK.owner.accent;
+      const basic = ['auto', 'dark', 'light'];
+      const themes = el('select', { 'aria-label': 'Theme' }, Object.entries(HD_LOOK.THEMES).filter(([k]) => !basic.includes(k)).map(([k, l]) => el('option', { value: k, text: l })));
+      themes.prepend(el('option', { value: '', text: 'More themes…' }));
+      themes.value = basic.includes(theme) ? '' : theme;
+      themes.addEventListener('change', () => themes.value && pick({ theme: themes.value }));
+      dlg.replaceChildren(...[
+        el('h4', { text: 'Appearance' }),
+        el('div', { class: 'seg', role: 'group', 'aria-label': 'Light or dark' }, basic.map((k) => el('button', { type: 'button', 'aria-pressed': String(theme === k), text: HD_LOOK.THEMES[k], onclick: () => pick({ theme: k }) }))),
+        themes,
+        el('h4', { text: 'Accent' }),
+        el('div', { class: 'swatches-row', role: 'group', 'aria-label': 'Accent' }, Object.keys(HD_LOOK.ACCENTS).map((k) => {
+          const b = el('button', { type: 'button', class: `swatch${k === 'theme' ? ' theme' : ''}`, title: ACCENT_NAMES[k], 'aria-label': ACCENT_NAMES[k], 'aria-pressed': String(accent === k), onclick: () => pick({ accent: k }) });
+          if (HD_LOOK.ACCENTS[k]) b.style.setProperty('--c', `light-dark(${HD_LOOK.ACCENTS[k][0]}, ${HD_LOOK.ACCENTS[k][1]})`);
+          return b;
+        })),
+        el('p', { text: own.theme || own.accent ? 'Only on this device. Everyone else sees the owner’s choice.' : 'This is the owner’s choice. What you pick here stays on this device.' }),
+        own.theme || own.accent ? el('button', { type: 'button', class: 'link-button', text: 'Use the owner’s look', onclick: () => pick({ theme: null, accent: null }) }) : null].filter(Boolean));
+    };
+    const pick = (next) => {
+      HD_LOOK.save(next);
+      draw();
+      document.dispatchEvent(new CustomEvent('hd:look'));
+    };
+    draw();
+    document.body.append(dlg);
+    dlg.show();
+    const r = anchor?.getBoundingClientRect();
+    if (r) {
+      dlg.style.top = `${Math.min(r.bottom + 8, innerHeight - dlg.offsetHeight - 8)}px`;
+      dlg.style.left = `${Math.max(8, Math.min(r.right - dlg.offsetWidth, innerWidth - dlg.offsetWidth - 8))}px`;
+    } else {
+      dlg.style.left = `${Math.max(8, (innerWidth - dlg.offsetWidth) / 2)}px`;
+      dlg.style.top = `${Math.max(8, innerHeight - dlg.offsetHeight - 96)}px`;
+    }
+    const outside = (e) => {
+      if (!dlg.contains(e.target) && e.target !== anchor && !anchor?.contains(e.target)) close();
+    };
+    const esc = (e) => e.key === 'Escape' && close();
+    const close = () => {
+      dlg.remove();
+      removeEventListener('pointerdown', outside, true);
+      removeEventListener('keydown', esc);
+      anchor?.focus();
+    };
+    setTimeout(() => addEventListener('pointerdown', outside, true), 0);
+    addEventListener('keydown', esc);
+    dlg.querySelector('button')?.focus();
+  }
+
+  // --- Details drawer: from the right on wide screens, a sheet from the bottom on phones ---
+  // `content` is a node; `onClose` runs once when it closes. Returns { dialog, close }.
+  function drawer(title, content, { onClose } = {}) {
+    document.querySelector('dialog.drawer')?.close();
+    const dlg = el('dialog', { class: 'drawer', 'aria-label': title });
+    const close = () => dlg.close();
+    dlg.append(
+      el('div', { class: 'drawer-top' },
+        el('span', { class: 'drawer-title', text: title }),
+        el('button', { type: 'button', class: 'icon-button', title: 'Close', 'aria-label': 'Close', onclick: close }, icon('x'))),
+      el('div', { class: 'drawer-body' }, content));
+    dlg.addEventListener('click', (e) => e.target === dlg && close());
+    dlg.addEventListener('close', () => {
+      dlg.remove();
+      if (onClose) onClose();
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    requestAnimationFrame(() => dlg.classList.add('open'));
+    return { dialog: dlg, close };
   }
 
   // A button with an icon (and a label that hides on phones when `compact`)
@@ -502,15 +582,17 @@ const HD = (() => {
       for (const x of g.services || []) items.push({ kind: 'Service', title: x.name, sub: [g.name, x.description].filter(Boolean).join(' · '), href: x.href || '/services', external: Boolean(x.href), words: [g.name, x.description, x.integration].join(' ') });
       for (const v of g.vms?.items || []) items.push({ kind: v.type === 'lxc' ? 'Container' : 'VM', title: v.name, sub: `${v.vmid} on ${v.node} · ${v.status}`, href: '/services#vms', words: `${v.vmid} ${v.node}` });
     }
-    for (const d of dash?.devices || []) items.push({ kind: 'Device', title: d.name, sub: 'On the Overview', href: `/#device-${d.id}`, words: d.kind });
+    for (const d of dash?.devices || []) items.push({ kind: 'Device', title: d.name, sub: 'Device', href: `/#device-${d.id}`, words: d.kind });
     if (dash) items.push({ kind: 'Page', title: 'Energy report', sub: 'Power & cost per month and year', href: '/energy', words: 'kwh cost csv excel export power' });
+    if (dash?.rack?.enabled) items.push({ kind: 'Page', title: 'Rack', sub: 'The rack, drawn to scale', href: '/#rack', words: 'front schematic units' });
+    if (dash) items.push({ kind: 'Page', title: 'Wall display', sub: 'One screen for a tablet or TV', href: '/wall', words: 'kiosk tv tablet fullscreen' });
     if (docs) {
       for (const d of docs.auto.devices) items.push({ kind: 'Docs', title: `${d.name} sheet`, sub: [d.model, ...d.ips].filter(Boolean).join(' · '), href: `/docs#server/${d.id}`, words: [d.name, d.model, d.serviceTag, d.hostName, ...d.ips].join(' ') });
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
-      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection idrac proxmox truenas synology unifi'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
-        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
+      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada cisco mikrotik'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
+        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }
     }
@@ -623,5 +705,5 @@ const HD = (() => {
   // The installable app's service worker (offline screen only; see sw.js)
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, iconButton, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

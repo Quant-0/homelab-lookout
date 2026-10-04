@@ -2,7 +2,7 @@
 // Service worker for the installed app. It only keeps the offline screen and the public files it
 // needs (style, icon); pages and API data are never cached, so nothing about the lab is stored on
 // the device. Pages always come from the server; when it can't be reached, the offline screen.
-const CACHE = 'hd-shell-2';
+const CACHE = 'hd-shell-3';
 const SHELL = ['/offline', '/static/css/style.css', '/static/js/offline.js', '/static/favicon.svg', '/static/fonts/inter-5.3.0.woff2'];
 
 self.addEventListener('install', (event) => {

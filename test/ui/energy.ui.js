@@ -16,11 +16,12 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.fill('#password', 'correct horse battery');
   await page.click('button[type=submit]');
   await page.waitForURL(B + '/');
-  await page.waitForSelector('.power-card');
-  await page.click('.power-card a:has-text("Energy report")');
+  await page.waitForSelector('.power-tile');
+  await page.click('.power-tile');
+  await page.click('dialog.drawer a:has-text("Energy report")');
   await page.waitForURL(B + '/energy');
   await page.waitForSelector('#en-tiles .tile');
-  check(true, 'the power card links to the report');
+  check(true, 'the power tile opens the details, which link to the report');
 
   await page.goto(B + '/energy#2026-09');
   await page.waitForFunction(() => document.getElementById('en-period').value === '2026-09');

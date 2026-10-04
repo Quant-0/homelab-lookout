@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Wall</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body class="app wall-body">
+  <div class="app-bg" aria-hidden="true"></div>
+  <main class="wall" id="wall">
+    <header class="wall-head">
+      <span class="orb" id="orb" aria-hidden="true"></span>
+      <div class="wall-state"><h1 id="headline">Loading…</h1><div class="sub" id="wall-sub"></div></div>
+      <span class="spacer"></span>
+      <div class="wall-tools" id="wall-tools"></div>
+      <div class="clock"><b id="clock-time"></b><span id="clock-date"></span></div>
+    </header>
+    <section class="w spot" id="spot" aria-live="polite" aria-label="Needs you"></section>
+    <section class="w list" aria-labelledby="list-h"><div class="lbl" id="list-h"></div><ul class="probs" id="probs"></ul></section>
+    <section class="w power" id="power" aria-label="Power"></section>
+    <section class="w net" id="net" aria-label="Network"></section>
+    <section class="w rack" aria-label="Rack"><div class="lbl" id="rack-h"></div><div class="wall-rack" id="wall-rack"></div></section>
+    <section class="svc" id="svc" aria-label="Services"></section>
+  </main>
+  <p class="banner hidden wall-error" id="global-error" role="alert"></p>
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/rack.js"></script>
+  <script src="/static/js/wall.js"></script>
+</body>
+</html>
