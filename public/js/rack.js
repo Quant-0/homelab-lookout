@@ -23,9 +23,10 @@ const Rack = (() => {
     ups: 'UPS',
     blank: 'Blanking panel',
     ap: 'Access point',
+    camera: 'Camera',
     other: 'Other',
   };
-  const KIND_ICONS = { server: 'server', storage: 'database', nas: 'hard-drive', switch: 'network', gateway: 'router', ap: 'wifi', pdu: 'plug', ups: 'battery-charging', 'patch-panel': 'cable', shelf: 'layers', blank: 'square-stack', other: 'box' };
+  const KIND_ICONS = { server: 'server', storage: 'database', nas: 'hard-drive', switch: 'network', gateway: 'router', ap: 'wifi', camera: 'cctv', pdu: 'plug', ups: 'battery-charging', 'patch-panel': 'cable', shelf: 'layers', blank: 'square-stack', other: 'box' };
 
   // Find the monitored data behind each link of an item.
   function resolve(item, data) {
@@ -119,6 +120,7 @@ const Rack = (() => {
     switch: 'Generic switch',
     plain: 'Plain front',
   };
+  if (typeof UNIFI_MODELS !== 'undefined') for (const m of UNIFI_MODELS) if (!FRONT_LABELS[m.front]) FRONT_LABELS[m.front] = `UniFi ${m.name}`;
   const DRIVE_LABELS = { auto: 'Automatic', none: 'No drive bays', '4x3.5': '4 × 3.5″', '8x3.5': '8 × 3.5″', '12x3.5': '12 × 3.5″', '8x2.5': '8 × 2.5″', '10x2.5': '10 × 2.5″', '16x2.5': '16 × 2.5″', '24x2.5': '24 × 2.5″' };
   const DRIVES = { '4x3.5': [4, 1, 'lff'], '8x3.5': [4, 2, 'lff'], '12x3.5': [4, 3, 'lff'], '8x2.5': [8, 1, 'sff'], '10x2.5': [10, 1, 'sff'], '16x2.5': [16, 1, 'sff'], '24x2.5': [24, 1, 'sff'] };
   const PASSIVE_LABELS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Brush panel', cable: 'Cable management', patch: 'Patch panel', shelf: 'Shelf' };
@@ -152,6 +154,8 @@ const Rack = (() => {
     if (/ThinkSystem|Lenovo/i.test(rf)) return { model: 'lenovo', drives: drivesFor(oneU ? '10x2.5' : '12x3.5') };
     if (/Supermicro|SYS-\d/i.test(rf)) return { model: 'supermicro', drives: drivesFor(oneU ? '4x3.5' : '8x3.5') };
     const um = String(info.ud?.model || '');
+    const known = unifiOf({ ...item, front: null }, info);
+    if (known) return { model: known.front };
     if (/^UDM-?PRO/i.test(um)) return { model: 'udm-pro' };
     if (/^(USL24P|US24P|USW-?24-?POE)/i.test(um)) return { model: 'usw-24-poe' };
     if (info.ud && /^(US|USW|USL|USM)/i.test(um)) return { model: 'unifi-switch' };
@@ -453,6 +457,145 @@ const Rack = (() => {
     return out;
   }
 
+  // --- Any UniFi model, from its build in models.js: screen, jacks, SFP cages, bays, outlets ---
+
+  // the small status display of Standard and Enterprise switches
+  function lcm(x, y, w, hh, ud) {
+    return g({ class: 'u-lcm' }, tip(ud ? `${ud.clients ?? 0} clients` : 'Display'),
+      r(x, y, w, hh, '#05070b', { rx: 1.4, stroke: '#9aa0a8', 'stroke-width': 0.5 }),
+      ud?.online ? r(x + 2.5, y + hh / 2 - 0.6, w - 5, 1.2, '#4f8dff', { rx: 0.6, opacity: 0.8 }) : null);
+  }
+
+  // a 3.5" tray: silver with a handle and two LEDs
+  function uBay(x, y, w, hh, n, on) {
+    return g({ class: 'u-bay' }, tip(`Drive bay ${n}`),
+      r(x, y, w, hh, '#c3c8ce', { rx: 1.2, stroke: '#9aa0a8', 'stroke-width': 0.5 }),
+      r(x + 3, y + 2.5, w - 6, hh - 5, '#b4b9c0', { opacity: 0.9 }),
+      r(x + w / 2 - 6, y + hh - 4.2, 12, 2, '#8a9098', { rx: 1 }),
+      led(x + w - 4, y + 3.5, 0.9, GREEN, on));
+  }
+
+  function outlet(x, y, s) {
+    return g(null, r(x, y, s, s, '#15171a', { rx: s * 0.22, stroke: '#7b8189', 'stroke-width': 0.5 }),
+      c(x + s * 0.32, y + s * 0.5, s * 0.1, '#050506'), c(x + s * 0.68, y + s * 0.5, s * 0.1, '#050506'));
+  }
+
+  function unifiFace(item, info, fr, h, id, m) {
+    if (m.form !== 'rack') return onShelf(item, info, h, m);
+    const out = [...unifiChassis(h, item.height, id)];
+    const mid = h / 2;
+    let x;
+    if (m.screen === 'touch') {
+      out.push(uScreen(26, mid - Math.min(31.5, h - 13) / 2, 24, Math.min(31.5, h - 13), info.ud));
+      x = 58;
+    } else if (m.screen === 'lcm') {
+      out.push(lcm(26, mid - 7, 16, 14, info.ud));
+      x = 50;
+    } else x = 30;
+    const right = W - 30;
+    const on = Boolean(info.ud?.online) || Boolean(item.links?.length);
+    if (m.ups) {
+      out.push(r(x + 6, 6, right - x - 60, h - 12, `url(#${id('hex-light')})`, { rx: 1.5 }));
+      out.push(c(right - 22, mid, 5.5, '#d7dbe0', { stroke: '#9aa0a8', 'stroke-width': 0.6 }), led(right - 22, mid, 1.4, on ? '#9fd0ff' : OFF, on));
+    } else if (m.outlets) {
+      const rows = Math.max(1, Math.min(m.outlets <= 16 ? 1 : 3, item.height + 1));
+      const cols = Math.ceil(m.outlets / rows);
+      const s = Math.min(15, (h - 8 - (rows - 1) * 3) / rows, (right - x - 4) / cols - 3);
+      const gap = (right - x - cols * s) / Math.max(1, cols);
+      for (let i = 0; i < m.outlets; i++) out.push(outlet(x + (i % cols) * (s + gap), mid - (rows * s + (rows - 1) * 3) / 2 + Math.floor(i / cols) * (s + 3), s));
+    } else {
+      // jacks, then the WAN jack, then SFP cages
+      const { rj, sfp: sfps } = portList(info.ud, (m.rj || 0) + (m.wan || 0), m.sfp || 0);
+      const y0 = mid - 11.6;
+      let px = x;
+      if (m.rj) {
+        const lan = jackBlocks(rj.slice(0, m.rj), px, y0, m.type === 'gateway' ? 4 : 6);
+        out.push(...lan.nodes);
+        px += lan.width + 6;
+      }
+      if (m.wan) {
+        rj.slice(m.rj, m.rj + m.wan).forEach((p, i) => out.push(jack(px, y0 + (i % 2) * 12.6, p, i % 2 === 1)));
+        px += 17;
+      }
+      if (sfps.length) {
+        const cols = Math.ceil(sfps.length / 2);
+        const room = (m.bays ? 236 : right) - px;
+        const pitch = Math.min(17, room / cols);
+        sfps.forEach((p, i) => out.push(sfp(px + Math.floor(i / 2) * pitch, y0 + 1 + (i % 2) * 12.6, p)));
+        px += cols * pitch + 6;
+      }
+      if (m.bays) {
+        // network gear with drive bays (UDM SE, Pro Max): on the right; recorders: across the front
+        const nvr = m.type === 'nvr' || m.type === 'other';
+        const bx = nvr ? Math.max(px, x + 6) : 236;
+        const rows = nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1;
+        const cols = Math.ceil(m.bays / rows);
+        const bw = (right - bx - (cols - 1) * 2) / cols;
+        const bh = (h - 10 - (rows - 1) * 2) / rows;
+        for (let i = 0; i < m.bays; i++) out.push(uBay(bx + (i % cols) * (bw + 2), 5 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on));
+      }
+    }
+    out.push(statusDot(456, mid, info, item));
+    return out;
+  }
+
+  // A desktop UniFi device placed in the rack stands on a shelf: its shape, at the bottom
+  function onShelf(item, info, h, m) {
+    const sh = SHAPES[m.shape] || SHAPES['gateway-small'];
+    const s = Math.min(1, (h - 2) / sh.h);
+    const g0 = g({ transform: `translate(${(W - sh.w * s) / 2} ${h - sh.h * s - 0.5}) scale(${s})` }, ...sh.draw(statusColor(info)));
+    return [g0];
+  }
+
+  const statusColor = (info) => (info.status === 'critical' ? RED : info.status === 'warning' ? AMBER : info.status === 'good' ? '#9fd0ff' : '#c9d6e4');
+
+  // --- Shapes of devices that aren't rack-mounted, in millimetres (front or below view) ---
+  const WHITE = '#f3f4f6';
+  const EDGE = '#c8ccd2';
+  const SHAPES = {
+    'ap-square': { w: 206, h: 206, draw: (st) => [r(0, 0, 206, 206, WHITE, { rx: 34, stroke: EDGE, 'stroke-width': 2 }), r(14, 14, 178, 178, 'none', { rx: 26, stroke: '#e3e6ea', 'stroke-width': 2 }), c(103, 103, 30, 'none', { stroke: st, 'stroke-width': 3.5, opacity: 0.9 }), c(103, 103, 5, '#b9bec5')] },
+    'ap-round': { w: 160, h: 160, draw: (st) => [c(80, 80, 79, WHITE, { stroke: EDGE, 'stroke-width': 2 }), c(80, 80, 62, 'none', { stroke: '#e3e6ea', 'stroke-width': 2 }), c(80, 80, 13, 'none', { stroke: st, 'stroke-width': 4 })] },
+    'ap-wall': { w: 120, h: 190, draw: (st) => [r(0, 0, 120, 190, WHITE, { rx: 18, stroke: EDGE, 'stroke-width': 2 }), r(40, 160, 40, 4, st, { rx: 2 })] },
+    'in-wall': { w: 86, h: 150, draw: (st) => [r(0, 0, 86, 150, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 2 }), r(33, 18, 20, 3, st, { rx: 1.5 }), ...[0, 1, 2, 3].map((i) => r(9 + i * 18, 122, 14, 12, '#16181b', { rx: 1.5 }))] },
+    mesh: { w: 46, h: 180, draw: (st) => [r(0, 0, 46, 180, WHITE, { rx: 23, stroke: EDGE, 'stroke-width': 2 }), c(23, 26, 4, st)] },
+    outdoor: { w: 110, h: 240, draw: (st) => [r(0, 0, 110, 240, WHITE, { rx: 22, stroke: EDGE, 'stroke-width': 2 }), ...[0, 1, 2, 3].map((i) => r(20, 40 + i * 40, 70, 2, '#e1e4e8')), c(55, 214, 4, st)] },
+    cylinder: { w: 110, h: 184, draw: (st) => [r(0, 10, 110, 174, WHITE, { rx: 30, stroke: EDGE, 'stroke-width': 2 }), S('ellipse', { cx: 55, cy: 14, rx: 50, ry: 10, fill: '#fbfbfc', stroke: EDGE, 'stroke-width': 1.5 }), r(34, 60, 42, 26, '#05070b', { rx: 4 }), c(55, 160, 3, st)] },
+    'gateway-small': { w: 141, h: 34, draw: (st) => [r(0, 0, 141, 34, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), r(10, 8, 24, 18, '#05070b', { rx: 2.5 }), ...[0, 1, 2, 3, 4].map((i) => r(46 + i * 16, 10, 12, 13, '#16181b', { rx: 1.2 })), c(130, 17, 2.4, st)] },
+    'gateway-max': { w: 100, h: 132, draw: (st) => [r(0, 0, 100, 132, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 1.8 }), r(26, 22, 48, 30, '#05070b', { rx: 4 }), r(30, 112, 40, 3, st, { rx: 1.5 })] },
+    cube: { w: 100, h: 100, draw: (st) => [r(0, 0, 100, 100, WHITE, { rx: 16, stroke: EDGE, 'stroke-width': 1.8 }), r(24, 26, 52, 32, '#05070b', { rx: 4 }), c(50, 82, 3, st)] },
+    'dream-wall': { w: 290, h: 470, draw: (st) => [r(0, 0, 290, 470, WHITE, { rx: 20, stroke: EDGE, 'stroke-width': 2 }), r(95, 50, 100, 70, '#05070b', { rx: 6 }), ...Array.from({ length: 12 }, (_, i) => r(55 + (i % 6) * 31, 380 + Math.floor(i / 6) * 30, 24, 22, '#16181b', { rx: 2 })), c(145, 440, 4, st)] },
+    'switch-desk': { w: 200, h: 34, draw: (st) => [r(0, 0, 200, 34, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }), ...Array.from({ length: 8 }, (_, i) => r(14 + i * 20, 10, 15, 14, '#16181b', { rx: 1.2 })), c(186, 17, 2.4, st)] },
+    'switch-small': { w: 120, h: 32, draw: (st) => [r(0, 0, 120, 32, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), ...Array.from({ length: 5 }, (_, i) => r(12 + i * 18, 9, 14, 14, '#16181b', { rx: 1.2 })), c(108, 16, 2.4, st)] },
+    'flex-mini': { w: 86, h: 22, draw: (st) => [r(0, 0, 86, 22, WHITE, { rx: 5, stroke: EDGE, 'stroke-width': 1.2 }), ...Array.from({ length: 5 }, (_, i) => r(6 + i * 14, 5, 11, 11, '#16181b', { rx: 1 })), c(80, 11, 1.8, st)] },
+    'cam-bullet': { w: 190, h: 120, draw: (st) => [r(20, 20, 150, 56, WHITE, { rx: 28, stroke: EDGE, 'stroke-width': 1.8 }), c(150, 48, 20, '#0b0c0e'), c(150, 48, 9, '#26303d'), r(80, 76, 30, 26, '#e7e9ec', { stroke: EDGE }), r(55, 100, 80, 14, WHITE, { rx: 6, stroke: EDGE }), c(40, 48, 3, st)] },
+    'cam-turret': { w: 130, h: 120, draw: (st) => [r(10, 86, 110, 28, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 1.8 }), c(65, 58, 46, WHITE, { stroke: EDGE, 'stroke-width': 1.8 }), c(65, 58, 22, '#0b0c0e'), c(65, 58, 9, '#26303d'), c(65, 99, 3, st)] },
+    'cam-dome': { w: 140, h: 80, draw: (st) => [r(0, 56, 140, 22, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 1.8 }), S('path', { d: 'M18 58a52 52 0 0 1 104 0z', fill: '#1b1d21', stroke: EDGE, 'stroke-width': 1.5 }), c(70, 38, 10, '#26303d'), c(70, 67, 2.6, st)] },
+    'cam-flex': { w: 80, h: 100, draw: (st) => [r(10, 0, 60, 64, WHITE, { rx: 14, stroke: EDGE, 'stroke-width': 1.8 }), c(40, 30, 15, '#0b0c0e'), c(40, 30, 6, '#26303d'), r(32, 64, 16, 22, '#e7e9ec', { stroke: EDGE }), r(14, 86, 52, 12, WHITE, { rx: 5, stroke: EDGE }), c(40, 54, 2.2, st)] },
+    doorbell: { w: 50, h: 140, draw: (st) => [r(0, 0, 50, 140, '#1b1d21', { rx: 25, stroke: '#3a3d42', 'stroke-width': 1.8 }), c(25, 32, 12, '#0b0c0e', { stroke: '#3a3d42' }), c(25, 32, 5, '#26303d'), c(25, 108, 11, 'none', { stroke: st, 'stroke-width': 2.5 })] },
+    'ups-tower': { w: 150, h: 230, draw: (st) => [r(0, 0, 150, 230, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 2 }), r(45, 30, 60, 40, '#05070b', { rx: 4 }), ...Array.from({ length: 6 }, (_, i) => r(30, 100 + i * 18, 90, 3, '#e1e4e8')), c(75, 205, 6, 'none', { stroke: st, 'stroke-width': 2.4 })] },
+    plug: { w: 70, h: 70, draw: (st) => [r(0, 0, 70, 70, WHITE, { rx: 14, stroke: EDGE, 'stroke-width': 1.8 }), c(35, 35, 20, '#e7e9ec'), c(27, 35, 3.2, '#16181b'), c(43, 35, 3.2, '#16181b'), c(58, 12, 2.4, st)] },
+    'cloud-key': { w: 120, h: 34, draw: (st) => [r(0, 0, 120, 34, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }), r(10, 7, 30, 20, '#05070b', { rx: 2.5 }), c(108, 17, 2.4, st)] },
+  };
+
+  // The shape of a device that isn't in the rack (for the cards beside it and the catalog)
+  function productShape(m, info = {}) {
+    const sh = SHAPES[m?.shape];
+    if (!sh) return null;
+    const pad = 4;
+    return S('svg', { class: `product-shape shape-${m.shape}`, viewBox: `${-pad} ${-pad} ${sh.w + pad * 2} ${sh.h + pad * 2}`, role: 'img', 'aria-label': m.name },
+      ...sh.draw(statusColor(info)));
+  }
+
+  // The UniFi model an item is: the front chosen in Admin, the model the console reports, or its name
+  function unifiOf(item, info) {
+    const f = item.front?.model;
+    if (f && f !== 'auto' && typeof UNIFI_BY_FRONT !== 'undefined') return UNIFI_BY_FRONT.get(f) || null;
+    if (typeof unifiModelFor === 'undefined') return null;
+    if (info?.ud) return unifiModelFor(info.ud.model, info.ud.name);
+    if (/unifi|ubiquiti/i.test(item.model?.brand || '')) return unifiModelFor(null, item.model.name);
+    return null;
+  }
+
   function synologyDs(item, info, fr, h) {
     // a DiskStation stands on a shelf: drawn at its real size (199 × 166 mm), shrunk only if it doesn't fit
     const s = Math.min(1, (h - 1) / 166);
@@ -663,7 +806,9 @@ const Rack = (() => {
   function realisticItem(item, info, id, opts) {
     const fr = frontOf(item, info);
     const h = item.height * U;
-    const face = S('svg', { class: 'face', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' }, FACES[fr.model](item, info, fr, h, id));
+    const um = fr.model.startsWith('u-') && typeof UNIFI_BY_FRONT !== 'undefined' ? UNIFI_BY_FRONT.get(fr.model) : null;
+    const draw = um ? (...a) => unifiFace(...a, um) : FACES[fr.model] || FACES.plain;
+    const face = S('svg', { class: 'face', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: um && um.form !== 'rack' ? 'xMidYMax meet' : 'none', 'aria-hidden': 'true' }, draw(item, info, fr, h, id));
     const node = el('div', {
       class: `rack-item front-${fr.model} kind-${item.kind} h${item.height}${info.status ? ` st-${info.status}` : ''}`,
       role: 'button',
@@ -728,8 +873,9 @@ const Rack = (() => {
     const detail = ud
       ? [ud.online ? 'Online' : 'Offline', ud.clients != null ? `${ud.clients} clients` : '', info.poeW == null && item.estimateW ? `~${item.estimateW} W` : ''].filter(Boolean).join(' · ')
       : wattsText(info, item);
+    const shape = productShape(unifiOf(item, info), info);
     const node = el('div', { class: `offrack-item${info.status ? ` st-${info.status}` : ''}${opts.selectedId === item.id ? ' selected' : ''}`, role: 'button', tabindex: '0', 'data-id': item.id },
-      el('span', { class: `dc-icon kind-${item.kind}`, 'aria-hidden': 'true' }, HD.icon(KIND_ICONS[item.kind] || 'box')),
+      shape ? el('span', { class: 'offrack-shape', 'aria-hidden': 'true' }, shape) : el('span', { class: `dc-icon kind-${item.kind}`, 'aria-hidden': 'true' }, HD.icon(KIND_ICONS[item.kind] || 'box')),
       el('div', null, el('strong', { text: item.name }), el('div', { class: 'small muted', text: detail || KIND_LABELS[item.kind] })),
       el('span', { class: `led ${info.status || ''}`, title: info.status || 'Not monitored' }));
     activate(node, () => opts.onSelect && opts.onSelect(item, info));
@@ -828,5 +974,5 @@ const Rack = (() => {
     });
   }
 
-  return { render, modeToggle, resolve, itemInfo, linkStatus, inRack, frontOf, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
+  return { render, modeToggle, resolve, itemInfo, linkStatus, inRack, frontOf, productShape, unifiOf, SHAPES, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
 })();

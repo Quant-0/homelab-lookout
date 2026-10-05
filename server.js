@@ -75,7 +75,7 @@ const ACCENTS = ['theme', 'indigo', 'blue', 'teal', 'green', 'amber', 'pink', 'r
 const BUILTIN_BACKGROUNDS = ['aurora', 'sunset', 'ocean', 'forest', 'nebula', 'graphite'];
 const MAX_BACKGROUNDS = 20;
 const MAX_BACKGROUND_BYTES = 10 << 20;
-const RACK_KINDS = ['server', 'storage', 'nas', 'switch', 'gateway', 'patch-panel', 'shelf', 'pdu', 'ups', 'blank', 'ap', 'other'];
+const RACK_KINDS = ['server', 'storage', 'nas', 'switch', 'gateway', 'patch-panel', 'shelf', 'pdu', 'ups', 'blank', 'ap', 'camera', 'other'];
 // host:<host id> | unifi:<host id>:<device mac> | pve:<host id>:<node name>
 const RACK_LINK = /^(host:[0-9a-f-]{36}|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}|pve:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
 const DEFAULT_RACK = { enabled: true, units: 24, numbering: 'bottom', passive: [] };
@@ -655,8 +655,10 @@ function validatePassive(b, selfId) {
 const cleanPassive = (list) => (Array.isArray(list) ? list : []).filter((x) => UUID.test(x?.id) && PASSIVE_KINDS[x.kind] && Number.isInteger(x.u) && Number.isInteger(x.height) && x.height >= 1 && x.height <= 4)
   .slice(0, 120).map((x) => ({ id: x.id, kind: x.kind, u: x.u, height: x.height, ...(x.kind === 'patch' ? { ports: [12, 24, 48].includes(x.ports) ? x.ports : 24 } : {}) }));
 
+// UniFi models (public/js/models.js) are "u-<id>"; anything unknown is drawn plainly by the browser
+const UNIFI_FRONT = /^u-[a-z0-9+-]{2,40}$/;
 function validateFront(f) {
-  return { model: FRONTS.includes(f?.model) ? f.model : 'auto', drives: DRIVE_LAYOUTS.includes(f?.drives) ? f.drives : 'auto' };
+  return { model: FRONTS.includes(f?.model) || UNIFI_FRONT.test(f?.model) ? f.model : 'auto', drives: DRIVE_LAYOUTS.includes(f?.drives) ? f.drives : 'auto' };
 }
 
 function validatePlacement(b, selfId, name) {
@@ -4107,7 +4109,7 @@ const STATIC = {};
 const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/js/look.js', '/static/favicon.svg', '/static/js/offline.js',
   '/static/js/icons.js', '/static/fonts/inter-5.3.0.woff2', '/static/licenses/Inter-OFL.txt', '/static/licenses/Lucide-LICENSE.txt',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
-const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/services.js', '/static/js/energy.js']);
+const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/models.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
   const files = {
@@ -4138,6 +4140,7 @@ function loadStatic() {
     '/static/js/wall.js': 'js/wall.js',
     '/static/js/look.js': 'js/look.js',
     '/static/js/rack.js': 'js/rack.js',
+    '/static/js/models.js': 'js/models.js',
     '/static/js/admin.js': 'js/admin.js',
     '/static/js/catalog.js': 'js/catalog.js',
     '/static/favicon.svg': 'favicon.svg',

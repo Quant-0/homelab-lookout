@@ -1537,5 +1537,29 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .cat-chosen .form-actions { margin-top: 6px; }
 .cat-face { max-width: 100%; }
 .cat-face .rack2 { grid-template-columns: minmax(0, 1fr); }
-.cat-face .rack-labels { display: none; }
+.cat-face .rack-labels, .cat-face .rk-num { display: none; }
 .cat-face > .tile-icon { width: 44px; height: 44px; }
+.cat-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.cat-crumbs .here { font-weight: 600; }
+.cat-crumbs .sep { color: var(--muted); }
+.cat-crumbs .link-button { color: var(--accent); }
+.cat-brands-grid, .cat-types, .cat-models { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.cat-brands-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.cat-types { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.cat-models { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.cat-brand, .cat-type, .cat-model { display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; height: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: left; }
+.cat-brand:hover, .cat-type:hover, .cat-model:hover { border-color: var(--accent-line); background: var(--surface); }
+.cat-brand b { font-size: 15px; font-weight: 600; }
+.cat-brand small, .cat-type small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.4; }
+.cat-type b { font-weight: 600; margin-top: 4px; }
+.cat-model .tag { align-self: flex-start; margin-top: 4px; }
+.cat-face { display: flex; align-items: center; justify-content: center; min-height: 64px; max-width: 100%; }
+.cat-face > * { width: 100%; }
+.cat-face .product-shape { width: auto; max-width: 100%; height: 72px; }
+.cat-face > .tile-icon { width: 44px; height: 44px; }
+.cat-chosen .cat-face { min-height: 90px; }
+.cat-chosen .cat-face .product-shape { height: 120px; }
+.cat-type .cat-face, .cat-model .cat-face { padding: 4px 0 6px; }
+.offrack-shape { width: 44px; height: 40px; flex: none; display: grid; place-items: center; }
+.offrack-shape svg { max-width: 44px; max-height: 40px; width: auto; height: auto; }
+.product-shape { display: block; overflow: visible; }

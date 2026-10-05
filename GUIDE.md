@@ -152,7 +152,9 @@ Use ↑ ↓ to choose, **Enter** to open and **Esc** to close.
 
 ### Devices
 
-**Add device** opens the **catalog**: about 70 models from UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs and generic gear. Search or pick a brand, choose the model, and it shows the front in the rack, its size, and how it's read live (and what you need to set up on it). **Add this device** fills in the type, brand and model, height, front, drive bays, a typical power draw and the right connection. Then give it a name and fill in the connection. **Any other device** starts with an empty form.
+**Add device** opens the **catalog** in three steps: choose the **brand** (UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs, generic), then the **type** (gateway, switch, access point, NAS or recorder, camera, UPS, power…), then the **model**. A brand with only one type skips step two, and **Search** finds a model from any step. Every model is drawn as it looks: its front in the rack, or its shape for access points, desktop gateways, cameras and the like. Choosing one shows its size, its ports and bays, how it's read live and what you need to set up on it. **Add this device** fills in the type, brand and model, height, front, drive bays, a typical power draw and the right connection; then give it a name and fill in the connection. **Any other device** starts with an empty form.
+
+The whole **UniFi** range is there (about 90 models): every gateway, switch, access point, Protect recorder and camera, UPS and power device. Network devices appear by themselves once their console is added, and are then drawn as their model. Cameras and Protect recorders are drawn and counted with their estimated power; their live data (from UniFi Protect) isn't read yet.
 
 The device form: name, type, **brand and model**, and where it sits:
 - **In the rack**, with height and lowest U

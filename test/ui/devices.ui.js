@@ -23,11 +23,27 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
 
   // --- Add device from the catalog: a Dell PowerEdge R740 called Orion, with Redfish + Proxmox ---
   await page.click('#device-new');
-  await page.waitForSelector('dialog.drawer[open] .cat-list li');
-  check(await page.locator('.cat-list li').count() >= 50 && await page.locator('.cat-brands button').count() >= 15, `catalog: ${await page.locator('.cat-list li').count()} models from ${await page.locator('.cat-brands button').count() - 1} brands`);
+  await page.waitForSelector('dialog.drawer[open] .cat-brand');
+  check(await page.locator('.cat-brand').count() >= 18, `catalog step 1: ${await page.locator('.cat-brand').count()} brands`);
+  await page.click('.cat-brand:has-text("UniFi")');
+  await page.waitForSelector('.cat-type');
+  const uniTypes = await page.$$eval('.cat-type b', (n) => n.map((x) => x.textContent));
+  check(['Gateways & routers', 'Switches', 'Access points', 'NAS & recorders', 'Cameras', 'UPS', 'Power'].every((t) => uniTypes.includes(t)), `step 2, UniFi's types: ${uniTypes.join(', ')}`);
+  await page.click('.cat-type:has-text("Access points")');
+  await page.waitForSelector('.cat-model');
+  check(await page.locator('.cat-model').count() >= 15 && await page.locator('.cat-model .product-shape').count() === await page.locator('.cat-model').count(), 'step 3: every UniFi access point, drawn as its shape');
+  await page.click('.cat-crumbs button:has-text("UniFi")');
+  await page.click('.cat-type:has-text("Switches")');
+  await page.waitForSelector('.cat-model');
+  check(/48 ports \(PoE\) · 4 SFP/.test(await page.textContent('.cat-model:has-text("Pro Max 48 PoE")')) && await page.locator('.cat-model:has-text("Pro Max 48 PoE") .rack-item .port').count() === 52, 'a rack switch is drawn with its real ports (48 + 4 SFP)');
+  await page.click('.cat-crumbs button:has-text("All brands")');
+  await page.click('.cat-brand:has-text("Dell")');
+  await page.waitForSelector('.cat-model');
+  const dellCrumbs = await page.textContent('.cat-crumbs');
+  check(await page.locator('.cat-type').count() === 0 && /Dell\s*›\s*Servers/.test(dellCrumbs), `a brand with one type goes straight to its models (${dellCrumbs})`);
   await page.fill('.cat-search input', 'r740');
-  check((await page.locator('.cat-list li').allTextContents()).every((t) => /R740/.test(t)), 'catalog search narrows the list');
-  await page.locator('.cat-list button', { hasText: 'PowerEdge R740xd' }).click();
+  check((await page.locator('.cat-model').allTextContents()).every((t) => /R740/.test(t)), 'search narrows to models from any step');
+  await page.locator('.cat-model', { hasText: 'PowerEdge R740xd' }).click();
   check(/Redfish/.test(await page.textContent('.cat-chosen')) && await page.locator('.cat-chosen .rack-item').count() === 1, 'a chosen model shows its front, size and how it is read');
   await page.click('.cat-chosen button:text-is("Add this device")');
   await page.waitForSelector('#device-editor:not([hidden])');

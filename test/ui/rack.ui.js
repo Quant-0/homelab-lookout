@@ -32,6 +32,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await call('POST', '/api/admin/devices', { name: 'DS418', kind: 'nas', location: 'rack', u: 11, height: 3, front: { model: 'synology-ds', drives: 'auto' } });
   // a server picked from the catalog: the brand chooses the front
   await call('POST', '/api/admin/devices', { name: 'lynx', kind: 'server', location: 'rack', u: 7, height: 2, model: { brand: 'HPE', name: 'ProLiant DL380 Gen10' } });
+  await call('POST', '/api/admin/devices', { name: 'core', kind: 'switch', location: 'rack', u: 3, height: 1, front: { model: 'u-usw-pro-max-48-poe', drives: 'auto' } });
   for (const [kind, u, height, ports] of [['patch', 23, 1, 24], ['brush', 21, 1], ['cable', 16, 1], ['blank', 15, 1], ['vented', 14, 1], ['shelf', 10, 1], ['blank', 1, 2]]) {
     await call('POST', '/api/admin/rack/passive', { kind, u, height, ...(ports ? { ports } : {}) });
   }
@@ -45,6 +46,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const fronts = await page.$$eval('#rack-view .rack-item:not(.passive)', (n) => n.map((x) => x.className.match(/front-([a-z0-9-]+)/)[1]));
   check(['udm-pro', 'usw-24-poe', 'dell13', 'dell14', 'synology-ds', 'hpe'].every((f) => fronts.includes(f)), `fronts follow the models: ${fronts.join(', ')}`);
   check(await page.locator('#rack-view .front-hpe .drive').count() === 8, 'HPE from the catalog: its own front with 8 × 3.5″ bays');
+  check(await page.locator('#rack-view .front-u-usw-pro-max-48-poe .port').count() === 52 && await page.locator('#rack-view .front-u-usw-pro-max-48-poe .u-screen').count() === 1, 'UniFi Pro Max 48 PoE: its touchscreen, 48 jacks and 4 SFP cages');
+  check(await page.locator('#rack-view .offrack-item .shape-ap-square').count() === 1, 'the U7 Pro found through the console is drawn as itself beside the rack');
   check(await page.locator('#rack-view .front-dell13 .drive').count() === 12, 'R730xd (13th gen, xd): 12 × 3.5″ bays');
   check(await page.locator('#rack-view .front-dell13 .drive.on').count() === 10 && await page.locator('#rack-view .front-dell13 .drive.empty').count() === 2 && await page.locator('#rack-view .front-dell13 .dell-power.on').count() === 1, 'the drives the iDRAC reports are lit, empty bays are blanks; power LED lit');
   check(await page.locator('#rack-view .front-dell13 .drive.warning').count() === 1 && /Bay 4 · ST4000NM0035 · 4\.0 TB · HDD · predicted to fail/.test(await page.locator('#rack-view .front-dell13 .drive.warning title').textContent()), 'the drive predicted to fail shows amber, with its details on hover');
@@ -60,7 +63,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.locator('#rack-view').screenshot({ path: `${S}/rack-dashboard.png` });
   await page.click('#rack-view .rack-mode button:has-text("Schematic")');
   await page.waitForSelector('#rack-view .rack2.schematic');
-  check(await page.locator('#rack-view .rack-item.sch:not(.passive)').count() === 6 && await page.locator('#rack-view .rack-label').count() === 0 && /titan/.test(await page.textContent('#rack-view .rack-item.sch.front-dell13, #rack-view .rack-item.sch.kind-server')), 'Schematic: flat blocks with the names inside');
+  check(await page.locator('#rack-view .rack-item.sch:not(.passive)').count() === 7 && await page.locator('#rack-view .rack-label').count() === 0 && /titan/.test(await page.textContent('#rack-view .rack-item.sch.front-dell13, #rack-view .rack-item.sch.kind-server')), 'Schematic: flat blocks with the names inside');
   await page.locator('#rack-view').screenshot({ path: `${S}/rack-schematic.png` });
   await page.reload();
   await page.waitForSelector('#rack-view .rack2');

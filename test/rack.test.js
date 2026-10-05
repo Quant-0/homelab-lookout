@@ -92,6 +92,14 @@ async function run() {
   r = await req('GET', '/api/dashboard');
   ok(r.json.devices.find((d) => d.id === ORION).front.drives === '8x3.5', 'front is in the dashboard data');
 
+  // UniFi models from the catalog: "u-<id>", nothing else
+  r = await req('PUT', `/api/admin/devices/${ORION}`, { ...orion, front: { model: 'u-usw-pro-max-24-poe', drives: 'auto' }, model: { brand: 'UniFi', name: 'Switch Pro Max 24 PoE' } });
+  ok(r.status === 200 && r.json.device.front.model === 'u-usw-pro-max-24-poe' && r.json.device.model.name === 'Switch Pro Max 24 PoE', 'UniFi front and model saved');
+  r = await req('PUT', `/api/admin/devices/${ORION}`, { ...orion, front: { model: 'u-"><img src=x>', drives: 'auto' } });
+  ok(r.status === 200 && r.json.device.front.model === 'auto', 'a made-up UniFi front falls back to automatic');
+  r = await req('PUT', `/api/admin/devices/${ORION}`, { ...orion, kind: 'camera' });
+  ok(r.status === 200 && r.json.device.kind === 'camera', 'cameras are a device type');
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL RACK TESTS PASSED');
   process.exit(failures ? 1 : 0);
 }

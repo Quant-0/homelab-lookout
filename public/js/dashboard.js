@@ -1248,6 +1248,7 @@ window.addEventListener('hashchange', () => {
   if (lastData) render(lastData);
   jumpToHash();
   scrollTo(0, 0);
+  if (lastData && Date.now() - lastData.generatedAt > 5000) refresh(); // the other view may need newer data
 });
 
 // tiles light up where the pointer is

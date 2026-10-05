@@ -9,19 +9,6 @@
 
 const CATALOG = (() => {
   const rows = [
-    ['UniFi', 'Dream Machine Pro', 'gateway', 1, 'udm-pro', null, 'unifi', 25],
-    ['UniFi', 'Dream Machine Pro Max', 'gateway', 1, 'udm-pro', null, 'unifi', 30],
-    ['UniFi', 'Dream Machine SE', 'gateway', 1, 'udm-pro', null, 'unifi', 30],
-    ['UniFi', 'Cloud Gateway Ultra', 'gateway', 0, 'plain', null, 'unifi', 8],
-    ['UniFi', 'Cloud Gateway Max', 'gateway', 0, 'plain', null, 'unifi', 12],
-    ['UniFi', 'Switch 24 PoE', 'switch', 1, 'usw-24-poe', null, 'unifi-found', 20],
-    ['UniFi', 'Switch 48 PoE', 'switch', 1, 'unifi-switch', null, 'unifi-found', 35],
-    ['UniFi', 'Switch Pro Max 24 PoE', 'switch', 1, 'unifi-switch', null, 'unifi-found', 25],
-    ['UniFi', 'Switch Aggregation', 'switch', 1, 'unifi-switch', null, 'unifi-found', 15],
-    ['UniFi', 'Switch Lite 8 PoE', 'switch', 0, 'plain', null, 'unifi-found', 6],
-    ['UniFi', 'U7 Pro', 'ap', 0, 'plain', null, 'unifi-found', null],
-    ['UniFi', 'U6 Lite', 'ap', 0, 'plain', null, 'unifi-found', null],
-    ['UniFi', 'UNVR', 'nas', 1, 'server', '4x3.5', 'unifi-found', 25],
     ['Cisco', 'Catalyst 2960X-24PS-L', 'switch', 1, 'switch', null, 'snmp', 40],
     ['Cisco', 'Catalyst 9200L-24P', 'switch', 1, 'switch', null, 'snmp', 50],
     ['Cisco', 'CBS350-24P', 'switch', 1, 'switch', null, 'snmp', 30],
@@ -78,8 +65,17 @@ const CATALOG = (() => {
     ['Generic', 'Rack switch', 'switch', 1, 'switch', null, 'snmp', 20],
     ['Generic', 'PDU', 'pdu', 1, 'plain', null, null, null],
   ];
-  return rows.map(([brand, model, kind, height, front, drives, connection, watts], i) => ({ id: i, brand, model, kind, height, front, drives, connection, watts }));
+  const KIND = { gateway: 'gateway', switch: 'switch', ap: 'ap', nvr: 'nas', camera: 'camera', ups: 'ups', pdu: 'pdu', other: 'other' };
+  // UniFi: every model in models.js, drawn as it is built
+  const unifi = (typeof UNIFI_MODELS === 'undefined' ? [] : UNIFI_MODELS).map((m) => ['UniFi', m.name, KIND[m.type] || 'other', m.form === 'rack' ? m.h : 0, m.front, null, m.live, m.watts ?? null, m]);
+  return [...unifi, ...rows].map(([brand, model, kind, height, front, drives, connection, watts, unifiModel = null], i) => ({ id: i, brand, model, kind, height, front, drives, connection, watts, unifi: unifiModel }));
 })();
+
+// Types in the order they are offered after choosing a brand
+const CATALOG_TYPES = [
+  ['gateway', 'Gateways & routers'], ['switch', 'Switches'], ['ap', 'Access points'], ['server', 'Servers'], ['nas', 'NAS & recorders'],
+  ['camera', 'Cameras'], ['ups', 'UPS'], ['pdu', 'Power'], ['other', 'Other'],
+];
 
 // What the owner has to set up on the device so it can be read (shown before adding)
 const CATALOG_NEEDS = {
@@ -93,4 +89,5 @@ const CATALOG_NEEDS = {
   proxmox: 'A Proxmox API token with the PVEAuditor role, if it runs Proxmox. Otherwise add it without a connection.',
   truenas: 'An API key for a read-only user on TrueNAS.',
   null: 'Nothing: it is drawn in the rack and counted with its estimated power, without live data.',
+  protect: 'Nothing for now: UniFi Protect isn’t read yet, so it is drawn and counted with its estimated power.',
 };

@@ -708,79 +708,123 @@ $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
 $('device-new').addEventListener('click', openCatalog);
 
 // --- Add device: start from the catalog ---
-const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', proxmox: 'Proxmox', truenas: 'TrueNAS', null: 'Drawn only' };
+const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
 function presetFrom(x) {
   const desktopNas = x.front === 'synology-ds';
   const rackable = x.height > 0 || desktopNas;
+  const generic = x.brand === 'Generic' || x.brand === 'Proxmox';
   return {
-    name: x.brand === 'Generic' || x.brand === 'Proxmox' ? '' : x.model.replace(/^(PowerEdge|ProLiant|ThinkSystem|Catalyst) /, ''),
+    name: generic ? '' : x.model.replace(/^(PowerEdge|ProLiant|ThinkSystem|Catalyst) /, ''),
     kind: x.kind,
     location: rackable ? 'rack' : 'outside',
     height: desktopNas ? 4 : Math.max(1, x.height),
     estimateW: x.watts,
     front: { model: x.front || 'auto', drives: x.drives || 'auto' },
-    model: x.brand === 'Generic' || x.brand === 'Proxmox' ? null : { brand: x.brand, name: x.model },
+    model: generic ? null : { brand: x.brand, name: x.model },
     connections: x.connection && x.connection !== 'unifi-found' ? [newConn(x.connection)] : [],
-    catalogNote: x.connection === 'unifi-found' ? CATALOG_NEEDS['unifi-found'] : null,
+    catalogNote: x.connection === 'unifi-found' ? CATALOG_NEEDS['unifi-found'] : x.unifi && !x.connection ? CATALOG_NEEDS.protect : null,
   };
 }
 
+// What a UniFi model has on its front
+const buildText = (m) => (m ? [m.rj ? `${m.rj + (m.wan || 0)} ports${m.poe ? ' (PoE)' : ''}` : m.ports ? `${m.ports} ports` : null, m.sfp ? `${m.sfp} SFP` : null, m.bays ? `${m.bays} drive bay${m.bays === 1 ? '' : 's'}` : null, m.outlets ? `${m.outlets} outlets` : null].filter(Boolean).join(' · ') : '');
+const connKey = (x) => (x.unifi && !x.connection ? 'protect' : x.connection);
+const sizeText = (x) => (x.height ? `${x.height} U` : x.unifi ? { desktop: 'Desktop', ceiling: 'Ceiling', wall: 'Wall', inwall: 'In-wall', outdoor: 'Outdoor', mesh: 'Mesh', camera: 'Camera' }[x.unifi.form] || 'Desktop' : x.front === 'synology-ds' ? 'Desktop, on a shelf' : 'Not rack-mounted');
+
+// The model as it looks: its front in a rack, or its shape
 function catalogFace(x) {
   const box = el('div', { class: 'cat-face' });
-  if (x.height > 0 || x.front === 'synology-ds') {
+  const shape = x.unifi && x.unifi.form !== 'rack' ? Rack.productShape(x.unifi) : null;
+  if (shape) box.append(shape);
+  else if (x.height > 0 || x.front === 'synology-ds') {
     const p = presetFrom(x);
-    const item = { id: 'preview', name: x.model, kind: x.kind, location: 'rack', u: 1, height: p.height, estimateW: x.watts, links: [], front: p.front, model: p.model };
+    const item = { id: `preview-${x.id}`, name: x.model, kind: x.kind, location: 'rack', u: 1, height: p.height, estimateW: x.watts, links: [], front: p.front, model: p.model };
     Rack.render(box, { enabled: true, units: p.height, numbering: 'bottom', items: [item], passive: [] }, null, { mode: 'realistic' });
   } else box.append(el('span', { class: 'tile-icon' }, HD.icon(Rack.KIND_ICONS[x.kind] || 'box')));
   return box;
 }
 
+// Add device: brand → type → model, each step with what is in it; search jumps straight to models
 function openCatalog() {
-  let brand = 'All';
+  let brand = null;
+  let type = null;
   let q = '';
-  const search = el('input', { type: 'search', placeholder: 'R740, 2960, DS923, EAP, UPS…', 'aria-label': 'Search the catalog', autocomplete: 'off', spellcheck: 'false' });
-  const brands = el('div', { class: 'cat-brands', role: 'group', 'aria-label': 'Brand' });
-  const list = el('ul', { class: 'cat-list', 'aria-label': 'Models' });
+  const search = el('input', { type: 'search', placeholder: 'Search: R740, Pro Max, U7, DS923, UPS…', 'aria-label': 'Search the catalog', autocomplete: 'off', spellcheck: 'false' });
+  const crumbs = el('nav', { class: 'cat-crumbs', 'aria-label': 'Steps' });
+  const stage = el('div', { class: 'cat-stage' });
   const pickBox = el('div', { class: 'cat-pick', 'aria-live': 'polite' });
   let close = () => {};
   const add = (x) => {
     close();
     openDevice(null, x ? presetFrom(x) : {});
   };
+  const typeName = (k) => (CATALOG_TYPES.find(([t]) => t === k) || [k, Rack.KIND_LABELS[k] || k])[1];
+  const typeOf = (x) => (x.kind === 'storage' ? 'nas' : CATALOG_TYPES.some(([t]) => t === x.kind) ? x.kind : 'other');
   const show = (x) => {
     pickBox.replaceChildren(el('div', { class: 'cat-chosen' },
       catalogFace(x),
       el('h3', { text: `${x.brand} ${x.model}` }),
-      el('p', { class: 'muted small', text: [Rack.KIND_LABELS[x.kind] || x.kind, x.height ? `${x.height} U` : x.front === 'synology-ds' ? 'Desktop, on a shelf' : 'Not rack-mounted', x.watts ? `about ${x.watts} W` : null].filter(Boolean).join(' · ') }),
-      el('div', { class: 'kv' }, el('div', null, el('div', { class: 'k', text: 'Live data' }), el('div', { class: 'v', text: CONN_TEXT[x.connection] }))),
-      el('p', { class: 'hint', text: CATALOG_NEEDS[x.connection] }),
+      el('p', { class: 'muted small', text: [typeName(typeOf(x)), sizeText(x), buildText(x.unifi), x.watts ? `about ${x.watts} W` : null].filter(Boolean).join(' · ') }),
+      el('div', { class: 'kv' }, el('div', null, el('div', { class: 'k', text: 'Live data' }), el('div', { class: 'v', text: CONN_TEXT[connKey(x)] }))),
+      el('p', { class: 'hint', text: CATALOG_NEEDS[connKey(x)] }),
       el('div', { class: 'form-actions' },
         el('button', { type: 'button', class: 'primary', text: x.connection === 'unifi-found' ? 'Add anyway (drawn only)' : 'Add this device', onclick: () => add(x) }),
-        el('button', { type: 'button', text: 'Back to the list', onclick: () => { pickBox.replaceChildren(); search.focus(); } }))));
+        el('button', { type: 'button', text: 'Back', onclick: () => { pickBox.replaceChildren(); stage.hidden = false; } }))));
+    stage.hidden = true;
     pickBox.scrollIntoView({ block: 'nearest' });
   };
+  const modelCard = (x) => el('li', null, el('button', { type: 'button', class: 'cat-model', onclick: () => show(x) },
+    catalogFace(x),
+    el('span', { class: 'cat-text' }, el('b', { text: brand ? x.model : `${x.brand} ${x.model}` }), el('small', { text: [sizeText(x), buildText(x.unifi) || CONN_TEXT[connKey(x)]].filter(Boolean).join(' · ') })),
+    el('span', { class: `tag ${x.connection && x.connection !== 'unifi-found' ? 'live' : 'drawn'}`, text: x.connection === 'unifi-found' ? 'Found by itself' : x.connection ? 'Live data' : 'Drawn only' })));
+  const crumb = (label, onclick, current) => el(current ? 'span' : 'button', { type: current ? null : 'button', class: current ? 'here' : 'link-button', text: label, onclick: current ? null : onclick, 'aria-current': current ? 'step' : null });
   const draw = () => {
-    const all = ['All', ...new Set(CATALOG.map((x) => x.brand))];
-    brands.replaceChildren(...all.map((b) => el('button', { type: 'button', 'aria-pressed': String(b === brand), text: b, onclick: () => { brand = b; draw(); } })));
+    pickBox.replaceChildren();
+    stage.hidden = false;
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-    const found = CATALOG.filter((x) => (brand === 'All' || x.brand === brand) && terms.every((t) => `${x.brand} ${x.model} ${Rack.KIND_LABELS[x.kind] || ''} ${x.kind}`.toLowerCase().includes(t)));
-    list.replaceChildren(...(found.length ? found.map((x) => el('li', null, el('button', { type: 'button', onclick: () => show(x) },
-      el('span', { class: 'tile-icon' }, HD.icon(Rack.KIND_ICONS[x.kind] || 'box')),
-      el('span', { class: 'cat-text' }, el('b', { text: `${x.brand} ${x.model}` }), el('small', { text: [Rack.KIND_LABELS[x.kind] || x.kind, x.height ? `${x.height} U` : 'desktop', CONN_TEXT[x.connection]].join(' · ') })),
-      el('span', { class: `tag ${x.connection && x.connection !== 'unifi-found' ? 'live' : 'drawn'}`, text: x.connection === 'unifi-found' ? 'Found by itself' : x.connection ? 'Live data' : 'Drawn only' }))))
-      : [el('li', { class: 'muted small cat-none', text: 'Not in the catalog. Add it as “Any other device”: choose its type, size and connection yourself.' })]));
+    if (terms.length) {
+      const found = CATALOG.filter((x) => terms.every((t) => `${x.brand} ${x.model} ${typeName(typeOf(x))} ${x.kind}`.toLowerCase().includes(t)));
+      crumbs.replaceChildren(crumb('All brands', () => { search.value = ''; q = ''; brand = type = null; draw(); }), crumb(`${found.length} found`, null, true));
+      stage.replaceChildren(found.length ? el('ul', { class: 'cat-models' }, found.slice(0, 60).map(modelCard))
+        : el('p', { class: 'muted small cat-none', text: 'Not in the catalog. Add it as “Any other device”: choose its type, size and connection yourself.' }));
+      return;
+    }
+    if (!brand) {
+      crumbs.replaceChildren(crumb('Choose the brand', null, true));
+      const brands = [...new Set(CATALOG.map((x) => x.brand))];
+      stage.replaceChildren(el('ul', { class: 'cat-brands-grid' }, brands.map((b) => {
+        const items = CATALOG.filter((x) => x.brand === b);
+        const kinds = [...new Set(items.map(typeOf))];
+        return el('li', null, el('button', { type: 'button', class: 'cat-brand', onclick: () => { brand = b; type = kinds.length === 1 ? kinds[0] : null; draw(); } },
+          el('b', { text: b }), el('small', { text: `${items.length} model${items.length === 1 ? '' : 's'} · ${kinds.map((k) => typeName(k).toLowerCase()).slice(0, 3).join(', ')}${kinds.length > 3 ? '…' : ''}` })));
+      })));
+      return;
+    }
+    const mine = CATALOG.filter((x) => x.brand === brand);
+    if (!type) {
+      crumbs.replaceChildren(crumb('All brands', () => { brand = null; draw(); }), el('span', { class: 'sep', text: '›' }), crumb(brand, null, true));
+      stage.replaceChildren(el('ul', { class: 'cat-types' }, CATALOG_TYPES.filter(([k]) => mine.some((x) => typeOf(x) === k)).map(([k, label]) => {
+        const items = mine.filter((x) => typeOf(x) === k);
+        return el('li', null, el('button', { type: 'button', class: 'cat-type', onclick: () => { type = k; draw(); } },
+          catalogFace(items.find((x) => x.height > 0) || items[0]),
+          el('b', { text: label }), el('small', { text: `${items.length} model${items.length === 1 ? '' : 's'}` })));
+      })));
+      return;
+    }
+    crumbs.replaceChildren(crumb('All brands', () => { brand = type = null; draw(); }), el('span', { class: 'sep', text: '›' }), crumb(brand, () => { type = null; draw(); }), el('span', { class: 'sep', text: '›' }), crumb(typeName(type), null, true));
+    stage.replaceChildren(el('ul', { class: 'cat-models' }, mine.filter((x) => typeOf(x) === type).map(modelCard)));
   };
   search.addEventListener('input', () => {
     q = search.value;
     draw();
   });
   const body = el('div', { class: 'detail catalog' },
-    el('div', null, el('h2', { class: 'cat-title', text: 'Add device' }), el('p', { class: 'muted', text: 'Pick the brand and model: you get its front in the rack, its size and the right way to read it.' })),
+    el('div', null, el('h2', { class: 'cat-title', text: 'Add device' }), el('p', { class: 'muted', text: 'Choose the brand, then the type, then the model: you get its front in the rack (or its shape), its size and the right way to read it.' })),
     el('label', { class: 'cat-search' }, HD.icon('search'), search),
-    brands,
+    crumbs,
     pickBox,
-    list,
+    stage,
     el('button', { type: 'button', class: 'link-button', text: 'Any other device: start with an empty form', onclick: () => add(null) }));
   ({ close } = HD.drawer('Catalog', body));
   draw();
