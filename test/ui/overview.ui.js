@@ -43,7 +43,7 @@ const WORDS = ['OK', 'Warning', 'Fault', 'Offline', 'Waiting', 'Not monitored'];
 
   // tiles
   const words = await page.$$eval('#devices .dtile .status', (n) => n.map((x) => x.textContent));
-  check(words.length === 6 && words.every((w) => WORDS.includes(w)), `one status per tile, from one vocabulary: ${words.join(', ')}`);
+  check(words.length === 8 && words.every((w) => WORDS.includes(w)), `one status per tile, from one vocabulary: ${words.join(', ')}`);
   const titan = page.locator('#devices .dtile', { hasText: 'titan' });
   check(/PS2/.test(await titan.locator('.tile-state').textContent()) && /W power/.test(await titan.locator('.tile-val').textContent()), 'titan: its worst problem and its power');
   check((await page.textContent('#devices .dtile:has-text("Rack switch")')).includes('Online'), 'a device bound to an Omada switch shows that switch');

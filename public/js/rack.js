@@ -121,6 +121,7 @@ const Rack = (() => {
     plain: 'Plain front',
   };
   if (typeof UNIFI_MODELS !== 'undefined') for (const m of UNIFI_MODELS) if (!FRONT_LABELS[m.front]) FRONT_LABELS[m.front] = `UniFi ${m.name}`;
+  if (typeof OTHER_MODELS !== 'undefined') for (const m of OTHER_MODELS) FRONT_LABELS[m.front] = `${m.brand} ${m.name}`;
   const DRIVE_LABELS = { auto: 'Automatic', none: 'No drive bays', '4x3.5': '4 × 3.5″', '8x3.5': '8 × 3.5″', '12x3.5': '12 × 3.5″', '8x2.5': '8 × 2.5″', '10x2.5': '10 × 2.5″', '16x2.5': '16 × 2.5″', '24x2.5': '24 × 2.5″' };
   const DRIVES = { '4x3.5': [4, 1, 'lff'], '8x3.5': [4, 2, 'lff'], '12x3.5': [4, 3, 'lff'], '8x2.5': [8, 1, 'sff'], '10x2.5': [10, 1, 'sff'], '16x2.5': [16, 1, 'sff'], '24x2.5': [24, 1, 'sff'] };
   const PASSIVE_LABELS = { blank: 'Blank panel', vented: 'Vented panel', brush: 'Brush panel', cable: 'Cable management', patch: 'Patch panel', shelf: 'Shelf' };
@@ -467,7 +468,15 @@ const Rack = (() => {
   }
 
   // a 3.5" tray: silver with a handle and two LEDs
-  function uBay(x, y, w, hh, n, on) {
+  function uBay(x, y, w, hh, n, on, dark = false) {
+    if (dark) {
+      // a black tray with a latch and its two LEDs (Synology, QNAP, TrueNAS)
+      return g({ class: 'u-bay' }, tip(`Drive bay ${n}`),
+        r(x, y, w, hh, '#141518', { rx: 1.2, stroke: '#08090a', 'stroke-width': 0.5 }),
+        r(x + 2, y + 2, w - 4, hh - 4, '#1f2125', { rx: 1 }),
+        r(x + w / 2 - 7, y + hh - 5, 14, 2.4, '#3a3d42', { rx: 1.2 }),
+        led(x + 4, y + 3.5, 0.9, GREEN, on), led(x + 8, y + 3.5, 0.9, on ? BLUE : OFF, on));
+    }
     return g({ class: 'u-bay' }, tip(`Drive bay ${n}`),
       r(x, y, w, hh, '#c3c8ce', { rx: 1.2, stroke: '#9aa0a8', 'stroke-width': 0.5 }),
       r(x + 3, y + 2.5, w - 6, hh - 5, '#b4b9c0', { opacity: 0.9 }),
@@ -480,9 +489,25 @@ const Rack = (() => {
       c(x + s * 0.32, y + s * 0.5, s * 0.1, '#050506'), c(x + s * 0.68, y + s * 0.5, s * 0.1, '#050506'));
   }
 
+  // Chassis colours of other brands: [front, ears, outline]
+  const CHASSIS = {
+    black: ['#1d1f23', '#2a2d32', '#0b0c0e'],
+    grey: ['#3a3e45', '#4a4f57', '#1b1d21'],
+    light: ['#e4e6e9', '#d3d6da', '#a9aeb5'],
+    cisco: ['#33414f', '#425263', '#1a232d'],
+    netgear: ['#34445a', '#46576e', '#1c2532'],
+    mikrotik: ['#cfd2d6', '#bfc3c8', '#9aa0a8'],
+  };
+  const darkChassis = (m) => ['black', 'grey', 'cisco', 'netgear'].includes(m.color);
+  function modelChassis(h, units, id, m) {
+    const c3 = CHASSIS[m.color];
+    if (!c3) return unifiChassis(h, units, id);
+    return [...ears(h, c3[1], units), r(19.6, 0.4, W - 39.2, h - 0.8, c3[0], { rx: 1.6, stroke: c3[2], 'stroke-width': 0.5 }), r(21, 0.9, W - 42, 0.8, darkChassis(m) ? '#4a4f57' : '#ffffff', { opacity: 0.5 })];
+  }
+
   function unifiFace(item, info, fr, h, id, m) {
     if (m.form !== 'rack') return onShelf(item, info, h, m);
-    const out = [...unifiChassis(h, item.height, id)];
+    const out = [...modelChassis(h, item.height, id, m)];
     const mid = h / 2;
     let x;
     if (m.screen === 'touch') {
@@ -492,9 +517,20 @@ const Rack = (() => {
       out.push(lcm(26, mid - 7, 16, 14, info.ud));
       x = 50;
     } else x = 30;
+    if (m.console) {
+      // the console port (RJ45, light blue on Cisco) and a mode/reset button
+      out.push(g({ class: 'console' }, tip('Console'), r(x, mid - 5.2, 12.4, 10.4, '#7fb2d9', { rx: 0.8 }), r(x + 2, mid - 3.2, 8.4, 6.4, '#0c0d0f', { rx: 0.5 })), c(x + 19, mid, 2, '#0c0d0f', { stroke: '#6b7079', 'stroke-width': 0.5 }));
+      x += 28;
+    }
     const right = W - 30;
     const on = Boolean(info.ud?.online) || Boolean(item.links?.length);
-    if (m.ups) {
+    if (m.ups === 'lcd') {
+      // UPS with a status display, buttons and a perforated front
+      out.push(r(x + 4, mid - 9, 38, 18, '#10283b', { rx: 1.5, stroke: '#3a3e44', 'stroke-width': 0.6 }), r(x + 7, mid - 5, 22, 2, '#5fb4e8', { opacity: on ? 0.9 : 0.25 }), r(x + 7, mid - 1, 14, 2, '#5fb4e8', { opacity: on ? 0.6 : 0.2 }));
+      for (let i = 0; i < 3; i++) out.push(c(x + 52 + i * 10, mid, 2.6, '#3a3e44'));
+      out.push(r(x + 90, 5, right - x - 120, h - 10, `url(#${id('holes')})`, { rx: 1, opacity: 0.85 }));
+      out.push(c(right - 14, mid, 5, '#17191c', { stroke: on ? GREEN : '#4a4f56', 'stroke-width': 1.2 }));
+    } else if (m.ups) {
       out.push(r(x + 6, 6, right - x - 60, h - 12, `url(#${id('hex-light')})`, { rx: 1.5 }));
       out.push(c(right - 22, mid, 5.5, '#d7dbe0', { stroke: '#9aa0a8', 'stroke-width': 0.6 }), led(right - 22, mid, 1.4, on ? '#9fd0ff' : OFF, on));
     } else if (m.outlets) {
@@ -508,6 +544,16 @@ const Rack = (() => {
       const { rj, sfp: sfps } = portList(info.ud, (m.rj || 0) + (m.wan || 0), m.sfp || 0);
       const y0 = mid - 11.6;
       let px = x;
+      if (m.type === 'nas' && m.bays) {
+        // a rack NAS is mostly drive trays; its ports are at the back
+        const rows = item.height >= 2 && m.bays > 4 ? Math.max(1, Math.round(m.bays / 4) > 2 ? 3 : 2) : 1;
+        const cols = Math.ceil(m.bays / rows);
+        const bw = (right - x - (cols - 1) * 2) / cols;
+        const bh = (h - 8 - (rows - 1) * 2) / rows;
+        for (let i = 0; i < m.bays; i++) out.push(uBay(x + (i % cols) * (bw + 2), 4 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on, darkChassis(m)));
+        out.push(statusDot(456, mid, info, item));
+        return out;
+      }
       if (m.rj) {
         const lan = jackBlocks(rj.slice(0, m.rj), px, y0, m.type === 'gateway' ? 4 : 6);
         out.push(...lan.nodes);
@@ -526,13 +572,13 @@ const Rack = (() => {
       }
       if (m.bays) {
         // network gear with drive bays (UDM SE, Pro Max): on the right; recorders: across the front
-        const nvr = m.type === 'nvr' || m.type === 'other';
+        const nvr = m.type === 'nvr' || m.type === 'other' || m.type === 'nas';
         const bx = nvr ? Math.max(px, x + 6) : 236;
         const rows = nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1;
         const cols = Math.ceil(m.bays / rows);
         const bw = (right - bx - (cols - 1) * 2) / cols;
         const bh = (h - 10 - (rows - 1) * 2) / rows;
-        for (let i = 0; i < m.bays; i++) out.push(uBay(bx + (i % cols) * (bw + 2), 5 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on));
+        for (let i = 0; i < m.bays; i++) out.push(uBay(bx + (i % cols) * (bw + 2), 5 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on, darkChassis(m)));
       }
     }
     out.push(statusDot(456, mid, info, item));
@@ -543,7 +589,7 @@ const Rack = (() => {
   function onShelf(item, info, h, m) {
     const sh = SHAPES[m.shape] || SHAPES['gateway-small'];
     const s = Math.min(1, (h - 2) / sh.h);
-    const g0 = g({ transform: `translate(${(W - sh.w * s) / 2} ${h - sh.h * s - 0.5}) scale(${s})` }, ...sh.draw(statusColor(info)));
+    const g0 = g({ transform: `translate(${(W - shW(sh, m) * s) / 2} ${h - sh.h * s - 0.5}) scale(${s})` }, ...sh.draw(statusColor(info), m));
     return [g0];
   }
 
@@ -574,25 +620,51 @@ const Rack = (() => {
     doorbell: { w: 50, h: 140, draw: (st) => [r(0, 0, 50, 140, '#1b1d21', { rx: 25, stroke: '#3a3d42', 'stroke-width': 1.8 }), c(25, 32, 12, '#0b0c0e', { stroke: '#3a3d42' }), c(25, 32, 5, '#26303d'), c(25, 108, 11, 'none', { stroke: st, 'stroke-width': 2.5 })] },
     'ups-tower': { w: 150, h: 230, draw: (st) => [r(0, 0, 150, 230, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 2 }), r(45, 30, 60, 40, '#05070b', { rx: 4 }), ...Array.from({ length: 6 }, (_, i) => r(30, 100 + i * 18, 90, 3, '#e1e4e8')), c(75, 205, 6, 'none', { stroke: st, 'stroke-width': 2.4 })] },
     plug: { w: 70, h: 70, draw: (st) => [r(0, 0, 70, 70, WHITE, { rx: 14, stroke: EDGE, 'stroke-width': 1.8 }), c(35, 35, 20, '#e7e9ec'), c(27, 35, 3.2, '#16181b'), c(43, 35, 3.2, '#16181b'), c(58, 12, 2.4, st)] },
+    // desktop NAS: black, a tray per bay (width follows the bays)
+    'nas-desk': { w: (m) => 34 + (m?.bays || 4) * 36, h: 166, draw: (st, m) => {
+      const n = m?.bays || 4;
+      const w = 34 + n * 36;
+      return [r(0, 0, w, 166, '#1b1c1f', { rx: 8, stroke: '#0a0a0b', 'stroke-width': 1 }), c(15, 20, 3, st), c(15, 34, 2.4, '#3ee07a'), c(15, 140, 5, 'none', { stroke: '#4a90ff', 'stroke-width': 1.4 }),
+        ...Array.from({ length: n }, (_, i) => [r(30 + i * 36, 8, 33, 150, '#141517', { rx: 2, stroke: '#0a0a0b' }), r(36 + i * 36, 18, 21, 104, '#1f2125', { rx: 1.5 }), r(38 + i * 36, 132, 17, 6, '#2c2f34', { rx: 2 })]).flat()];
+    } },
+    'mini-pc': { w: 112, h: 38, draw: (st) => [r(0, 0, 112, 38, '#1c1e22', { rx: 5, stroke: '#0b0c0e', 'stroke-width': 1 }), c(12, 19, 3.2, 'none', { stroke: st, 'stroke-width': 1.4 }), r(30, 14, 10, 10, '#08090a', { rx: 1 }), r(46, 14, 10, 10, '#08090a', { rx: 1 }), r(70, 16, 30, 3, '#2b2e33', { rx: 1.5 })] },
+    pi: { w: 98, h: 34, draw: (st) => [r(0, 10, 98, 24, '#d6283c', { rx: 4 }), r(0, 0, 98, 14, '#f3f4f6', { rx: 4, stroke: '#d4d6da' }), r(8, 20, 14, 10, '#c8ccd2', { rx: 1 }), r(28, 20, 14, 10, '#c8ccd2', { rx: 1 }), r(52, 22, 16, 8, '#1b1d21', { rx: 1 }), c(88, 24, 2, st)] },
+    'router-small': { w: 150, h: 40, draw: (st) => [r(0, 6, 150, 34, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), ...[0, 1, 2, 3, 4].map((i) => r(14 + i * 20, 18, 15, 13, '#16181b', { rx: 1.2 })), c(134, 22, 2.4, st)] },
+    'switch-metal': { w: (m) => 40 + (m?.ports || 8) * 17, h: 32, draw: (st, m) => {
+      const n = m?.ports || 8;
+      const w = 40 + n * 17;
+      return [r(0, 0, w, 32, m?.color || '#2a2d31', { rx: 4, stroke: '#0b0c0e', 'stroke-width': 1 }), ...Array.from({ length: n }, (_, i) => r(12 + i * 17, 9, 14, 14, '#0c0d0f', { rx: 1.2, stroke: '#5a5f66', 'stroke-width': 0.6 })), c(w - 12, 16, 2.4, st)];
+    } },
+    'ups-desk': { w: 100, h: 200, draw: (st) => [r(0, 0, 100, 200, '#1b1c1f', { rx: 10, stroke: '#0a0a0b', 'stroke-width': 1 }), r(20, 26, 60, 34, '#10283b', { rx: 3 }), r(26, 34, 34, 3, '#5fb4e8'), r(26, 42, 22, 3, '#5fb4e8', { opacity: 0.6 }), c(50, 90, 8, 'none', { stroke: st, 'stroke-width': 2 }), ...Array.from({ length: 5 }, (_, i) => r(18, 120 + i * 14, 64, 3, '#2a2d32'))] },
+    'oc-small': { w: 100, h: 28, draw: (st) => [r(0, 0, 100, 28, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.4 }), r(12, 8, 12, 12, '#16181b', { rx: 1 }), r(28, 8, 12, 12, '#16181b', { rx: 1 }), c(88, 14, 2.4, st)] },
+    tower: { w: 180, h: 430, draw: (st) => [r(0, 0, 180, 430, '#1b1d21', { rx: 6, stroke: '#0a0a0b', 'stroke-width': 1 }), r(14, 18, 152, 120, '#141518', { rx: 3 }), ...Array.from({ length: 4 }, (_, i) => r(20, 24 + i * 28, 140, 24, '#202226', { rx: 1.5, stroke: '#0a0a0b' })), ...Array.from({ length: 12 }, (_, i) => r(30, 160 + i * 20, 120, 4, '#26292e')), c(160, 410, 6, 'none', { stroke: st, 'stroke-width': 2 })] },
+    microserver: { w: 240, h: 240, draw: (st) => [r(0, 0, 240, 240, '#1b1d21', { rx: 10, stroke: '#0a0a0b' }), ...Array.from({ length: 10 }, (_, i) => r(20, 20 + i * 20, 200, 10, '#25282d', { rx: 5 })), c(220, 220, 5, 'none', { stroke: st, 'stroke-width': 2 })] },
     'cloud-key': { w: 120, h: 34, draw: (st) => [r(0, 0, 120, 34, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }), r(10, 7, 30, 20, '#05070b', { rx: 2.5 }), c(108, 17, 2.4, st)] },
   };
+
+  const shW = (sh, m) => (typeof sh.w === 'function' ? sh.w(m) : sh.w);
 
   // The shape of a device that isn't in the rack (for the cards beside it and the catalog)
   function productShape(m, info = {}) {
     const sh = SHAPES[m?.shape];
     if (!sh) return null;
     const pad = 4;
-    return S('svg', { class: `product-shape shape-${m.shape}`, viewBox: `${-pad} ${-pad} ${sh.w + pad * 2} ${sh.h + pad * 2}`, role: 'img', 'aria-label': m.name },
-      ...sh.draw(statusColor(info)));
+    return S('svg', { class: `product-shape shape-${m.shape}`, viewBox: `${-pad} ${-pad} ${shW(sh, m) + pad * 2} ${sh.h + pad * 2}`, role: 'img', 'aria-label': m.name },
+      ...sh.draw(statusColor(info), m));
   }
 
   // The UniFi model an item is: the front chosen in Admin, the model the console reports, or its name
   function unifiOf(item, info) {
     const f = item.front?.model;
-    if (f && f !== 'auto' && typeof UNIFI_BY_FRONT !== 'undefined') return UNIFI_BY_FRONT.get(f) || null;
+    if (f && f !== 'auto' && typeof MODEL_BY_FRONT !== 'undefined') return MODEL_BY_FRONT.get(f) || null;
     if (typeof unifiModelFor === 'undefined') return null;
     if (info?.ud) return unifiModelFor(info.ud.model, info.ud.name);
-    if (/unifi|ubiquiti/i.test(item.model?.brand || '')) return unifiModelFor(null, item.model.name);
+    const brand = item.model?.brand || '';
+    if (/unifi|ubiquiti/i.test(brand)) return unifiModelFor(null, item.model.name);
+    if (brand && typeof OTHER_MODELS !== 'undefined') {
+      const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9+]/g, '');
+      return OTHER_MODELS.find((m) => norm(m.brand) === norm(brand) && norm(m.name) === norm(item.model.name)) || null;
+    }
     return null;
   }
 
@@ -806,7 +878,12 @@ const Rack = (() => {
   function realisticItem(item, info, id, opts) {
     const fr = frontOf(item, info);
     const h = item.height * U;
-    const um = fr.model.startsWith('u-') && typeof UNIFI_BY_FRONT !== 'undefined' ? UNIFI_BY_FRONT.get(fr.model) : null;
+    let um = /^[um]-/.test(fr.model) && typeof MODEL_BY_FRONT !== 'undefined' ? MODEL_BY_FRONT.get(fr.model) || null : null;
+    // a desktop NAS that has its own drawing on a shelf (Synology DiskStation)
+    if (um?.rackFront) {
+      fr.model = um.rackFront;
+      um = null;
+    }
     const draw = um ? (...a) => unifiFace(...a, um) : FACES[fr.model] || FACES.plain;
     const face = S('svg', { class: 'face', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: um && um.form !== 'rack' ? 'xMidYMax meet' : 'none', 'aria-hidden': 'true' }, draw(item, info, fr, h, id));
     const node = el('div', {

@@ -126,7 +126,110 @@ const UNIFI_BY_FRONT = new Map(UNIFI_MODELS.map((m) => [m.front, m]));
 function unifiModelFor(code, name) {
   const c = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (c) for (const m of UNIFI_MODELS) if (m.codes?.some((x) => x.toUpperCase() === c)) return m;
+  // Protect reports a market name ("G5 Bullet") instead of a code
+  if (c) for (const m of UNIFI_MODELS) if (m.name.toUpperCase().replace(/[^A-Z0-9]/g, '') === c) return m;
   const n = String(name || '').toLowerCase().replace(/^(unifi|usw|uap)[\s-]*/, '').replace(/[^a-z0-9+]/g, '');
   if (!n) return null;
   return UNIFI_MODELS.find((m) => m.name.toLowerCase().replace(/[^a-z0-9+]/g, '') === n) || null;
 }
+
+// Other brands, drawn the same way. Front ids start with "m-".
+// color: the chassis (silver, black, grey, light, cisco, netgear, mikrotik); bay: 3.5 or 2.5 trays
+const OTHER_MODELS = (() => {
+  const S = 'switch';
+  const G = 'gateway';
+  const list = [
+    // Synology
+    { brand: 'Synology', id: 'ds224-plus', name: 'DS224+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 2, watts: 15, live: 'synology' },
+    { brand: 'Synology', id: 'ds418', name: 'DS418', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 4, watts: 26, live: 'synology', rackFront: 'synology-ds' },
+    { brand: 'Synology', id: 'ds423-plus', name: 'DS423+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 4, watts: 28, live: 'synology', rackFront: 'synology-ds' },
+    { brand: 'Synology', id: 'ds923-plus', name: 'DS923+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 4, watts: 35, live: 'synology', rackFront: 'synology-ds' },
+    { brand: 'Synology', id: 'ds1522-plus', name: 'DS1522+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 5, watts: 40, live: 'synology' },
+    { brand: 'Synology', id: 'ds1821-plus', name: 'DS1821+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 8, watts: 60, live: 'synology' },
+    { brand: 'Synology', id: 'rs422-plus', name: 'RS422+', type: 'nas', form: 'rack', h: 1, color: 'black', bays: 4, bay: '3.5', rj: 2, watts: 35, live: 'synology' },
+    { brand: 'Synology', id: 'rs822-plus', name: 'RS822+', type: 'nas', form: 'rack', h: 1, color: 'black', bays: 4, bay: '3.5', rj: 4, watts: 40, live: 'synology' },
+    { brand: 'Synology', id: 'rs1221-plus', name: 'RS1221+', type: 'nas', form: 'rack', h: 2, color: 'black', bays: 8, bay: '3.5', rj: 4, watts: 55, live: 'synology' },
+    { brand: 'Synology', id: 'rs2423-plus', name: 'RS2423+', type: 'nas', form: 'rack', h: 2, color: 'black', bays: 12, bay: '3.5', rj: 2, watts: 80, live: 'synology' },
+    // QNAP
+    { brand: 'QNAP', id: 'ts-264', name: 'TS-264', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 2, watts: 18, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-464', name: 'TS-464', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 4, watts: 30, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-664', name: 'TS-664', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 6, watts: 40, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-873a', name: 'TS-873A', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 8, watts: 50, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-432pxu', name: 'TS-432PXU', type: 'nas', form: 'rack', h: 1, color: 'black', bays: 4, bay: '3.5', rj: 2, sfp: 2, watts: 40, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-864eu', name: 'TS-864eU', type: 'nas', form: 'rack', h: 2, color: 'black', bays: 8, bay: '3.5', rj: 2, watts: 55, live: 'snmp' },
+    { brand: 'QNAP', id: 'ts-h1277axu', name: 'TS-h1277AXU-RP', type: 'nas', form: 'rack', h: 2, color: 'black', bays: 12, bay: '3.5', rj: 2, sfp: 2, watts: 90, live: 'snmp' },
+    // TrueNAS
+    { brand: 'TrueNAS', id: 'mini-x-plus', name: 'Mini X+', type: 'nas', form: 'desktop', shape: 'nas-desk', bays: 5, watts: 45, live: 'truenas' },
+    { brand: 'TrueNAS', id: 'mini-r', name: 'Mini R', type: 'nas', form: 'rack', h: 2, color: 'black', bays: 12, bay: '3.5', rj: 2, watts: 90, live: 'truenas' },
+    // Cisco
+    { brand: 'Cisco', id: 'c9200l-24p', name: 'Catalyst 9200L-24P-4G', type: S, form: 'rack', h: 1, color: 'cisco', screen: null, console: true, rj: 24, poe: true, sfp: 4, watts: 50, live: 'snmp' },
+    { brand: 'Cisco', id: 'c9300-48p', name: 'Catalyst 9300-48P', type: S, form: 'rack', h: 1, color: 'cisco', console: true, rj: 48, poe: true, sfp: 0, watts: 120, live: 'snmp' },
+    { brand: 'Cisco', id: 'c2960x-24ps', name: 'Catalyst 2960X-24PS-L', type: S, form: 'rack', h: 1, color: 'cisco', console: true, rj: 24, poe: true, sfp: 4, watts: 40, live: 'snmp' },
+    { brand: 'Cisco', id: 'c2960x-48fpd', name: 'Catalyst 2960X-48FPD-L', type: S, form: 'rack', h: 1, color: 'cisco', console: true, rj: 48, poe: true, sfp: 2, watts: 70, live: 'snmp' },
+    { brand: 'Cisco', id: 'cbs350-24p', name: 'CBS350-24P-4G', type: S, form: 'rack', h: 1, color: 'black', console: true, rj: 24, poe: true, sfp: 4, watts: 30, live: 'snmp' },
+    { brand: 'Cisco', id: 'cbs350-48p', name: 'CBS350-48P-4G', type: S, form: 'rack', h: 1, color: 'black', console: true, rj: 48, poe: true, sfp: 4, watts: 50, live: 'snmp' },
+    { brand: 'Cisco', id: 'c1000-8p', name: 'Catalyst 1000-8P', type: S, form: 'desktop', shape: 'switch-metal', ports: 10, color: '#2d3a48', watts: 12, live: 'snmp' },
+    { brand: 'Cisco', id: 'cbs250-8t', name: 'CBS250-8T', type: S, form: 'desktop', shape: 'switch-metal', ports: 8, color: '#1b1d21', watts: 6, live: 'snmp' },
+    { brand: 'Cisco', id: 'isr4331', name: 'ISR 4331', type: G, form: 'rack', h: 1, color: 'cisco', console: true, rj: 3, sfp: 2, watts: 60, live: 'snmp' },
+    // HPE Aruba
+    { brand: 'HPE', id: 'io-1930-24p', name: 'Aruba Instant On 1930 24G PoE', type: S, form: 'rack', h: 1, color: 'light', rj: 24, poe: true, sfp: 4, watts: 30, live: 'snmp' },
+    { brand: 'HPE', id: 'io-1960-24g', name: 'Aruba Instant On 1960 24G', type: S, form: 'rack', h: 1, color: 'light', rj: 24, sfp: 4, watts: 30, live: 'snmp' },
+    { brand: 'HPE', id: 'aruba-2930f-24g', name: 'Aruba 2930F 24G', type: S, form: 'rack', h: 1, color: 'grey', console: true, rj: 24, sfp: 4, watts: 35, live: 'snmp' },
+    // MikroTik
+    { brand: 'MikroTik', id: 'crs326-24g', name: 'CRS326-24G-2S+RM', type: S, form: 'rack', h: 1, color: 'mikrotik', console: true, rj: 24, sfp: 2, watts: 15, live: 'snmp' },
+    { brand: 'MikroTik', id: 'crs328-24p', name: 'CRS328-24P-4S+RM', type: S, form: 'rack', h: 1, color: 'mikrotik', console: true, rj: 24, poe: true, sfp: 4, watts: 25, live: 'snmp' },
+    { brand: 'MikroTik', id: 'crs317-16s', name: 'CRS317-1G-16S+RM', type: S, form: 'rack', h: 1, color: 'mikrotik', console: true, rj: 1, sfp: 16, watts: 30, live: 'snmp' },
+    { brand: 'MikroTik', id: 'ccr2004-16g', name: 'CCR2004-16G-2S+', type: G, form: 'rack', h: 1, color: 'mikrotik', console: true, rj: 16, sfp: 2, watts: 20, live: 'snmp' },
+    { brand: 'MikroTik', id: 'ccr2116-12g', name: 'CCR2116-12G-4S+', type: G, form: 'rack', h: 1, color: 'mikrotik', console: true, rj: 12, sfp: 4, watts: 40, live: 'snmp' },
+    { brand: 'MikroTik', id: 'rb5009', name: 'RB5009UG+S+IN', type: G, form: 'desktop', shape: 'switch-metal', ports: 9, color: '#c9ccd0', watts: 10, live: 'snmp' },
+    { brand: 'MikroTik', id: 'hap-ax3', name: 'hAP ax³', type: G, form: 'desktop', shape: 'router-small', watts: 10, live: 'snmp' },
+    { brand: 'MikroTik', id: 'cap-ax', name: 'cAP ax', type: 'ap', form: 'ceiling', shape: 'ap-round', watts: 8, live: 'snmp' },
+    // TP-Link Omada
+    { brand: 'TP-Link Omada', id: 'er605', name: 'ER605', type: G, form: 'desktop', shape: 'switch-metal', ports: 5, color: '#2a2d31', watts: 8, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'er7206', name: 'ER7206', type: G, form: 'desktop', shape: 'switch-metal', ports: 6, color: '#2a2d31', watts: 10, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'er8411', name: 'ER8411', type: G, form: 'rack', h: 1, color: 'grey', console: true, rj: 8, sfp: 2, watts: 25, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'sg3428', name: 'TL-SG3428', type: S, form: 'rack', h: 1, color: 'grey', console: true, rj: 24, sfp: 4, watts: 20, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'sg3428x', name: 'TL-SG3428X', type: S, form: 'rack', h: 1, color: 'grey', console: true, rj: 24, sfp: 4, watts: 25, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'sg3428xmp', name: 'TL-SG3428XMP', type: S, form: 'rack', h: 1, color: 'grey', console: true, rj: 24, poe: true, sfp: 4, watts: 35, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'sg2210mp', name: 'TL-SG2210MP', type: S, form: 'desktop', shape: 'switch-metal', ports: 10, color: '#2a2d31', watts: 10, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'oc200', name: 'OC200 controller', type: 'other', form: 'desktop', shape: 'oc-small', watts: 4, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'eap650', name: 'EAP650', type: 'ap', form: 'ceiling', shape: 'ap-round', watts: null, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'eap670', name: 'EAP670', type: 'ap', form: 'ceiling', shape: 'ap-round', size: 1.1, watts: null, live: 'omada' },
+    { brand: 'TP-Link Omada', id: 'eap772', name: 'EAP772', type: 'ap', form: 'ceiling', shape: 'ap-round', size: 1.1, watts: null, live: 'omada' },
+    // Netgear
+    { brand: 'Netgear', id: 'gs308ep', name: 'GS308EP', type: S, form: 'desktop', shape: 'switch-metal', ports: 8, color: '#38465a', watts: 6, live: null },
+    { brand: 'Netgear', id: 'gs316ep', name: 'GS316EP', type: S, form: 'desktop', shape: 'switch-metal', ports: 16, color: '#38465a', watts: 10, live: null },
+    { brand: 'Netgear', id: 'gs724t', name: 'GS724T', type: S, form: 'rack', h: 1, color: 'netgear', rj: 24, sfp: 2, watts: 20, live: 'snmp' },
+    { brand: 'Netgear', id: 'gs752tp', name: 'GS752TP', type: S, form: 'rack', h: 1, color: 'netgear', rj: 48, poe: true, sfp: 4, watts: 40, live: 'snmp' },
+    // UPS
+    { brand: 'APC', id: 'smt1500rmi2u', name: 'Smart-UPS SMT1500RMI2U', type: 'ups', form: 'rack', h: 2, color: 'black', ups: 'lcd', watts: 25, live: 'snmp' },
+    { brand: 'APC', id: 'smt3000rmi2u', name: 'Smart-UPS SMT3000RMI2U', type: 'ups', form: 'rack', h: 2, color: 'black', ups: 'lcd', watts: 40, live: 'snmp' },
+    { brand: 'APC', id: 'br1500mi', name: 'Back-UPS Pro 1500', type: 'ups', form: 'desktop', shape: 'ups-desk', watts: 10, live: 'nut' },
+    { brand: 'APC', id: 'bx700', name: 'Back-UPS 700', type: 'ups', form: 'desktop', shape: 'ups-desk', size: 0.85, watts: 6, live: 'nut' },
+    { brand: 'APC', id: 'ap7921b', name: 'Switched Rack PDU AP7921B', type: 'pdu', form: 'rack', h: 1, color: 'black', outlets: 8, watts: 5, live: 'snmp' },
+    { brand: 'Eaton', id: '5p1550r', name: '5P 1550 Rack', type: 'ups', form: 'rack', h: 1, color: 'black', ups: 'lcd', watts: 20, live: 'snmp' },
+    { brand: 'Eaton', id: '5px1500', name: '5PX 1500 Rack', type: 'ups', form: 'rack', h: 2, color: 'black', ups: 'lcd', watts: 25, live: 'snmp' },
+    { brand: 'Eaton', id: '5e1100i', name: '5E 1100i', type: 'ups', form: 'desktop', shape: 'ups-desk', size: 0.85, watts: 8, live: 'nut' },
+    { brand: 'Eaton', id: 'ellipse-pro', name: 'Ellipse PRO 1200', type: 'ups', form: 'desktop', shape: 'ups-desk', watts: 8, live: 'nut' },
+    { brand: 'CyberPower', id: 'or1500erm1u', name: 'OR1500ERM1U', type: 'ups', form: 'rack', h: 1, color: 'black', ups: 'lcd', watts: 15, live: 'nut' },
+    { brand: 'CyberPower', id: 'cp1500epfclcd', name: 'CP1500EPFCLCD', type: 'ups', form: 'desktop', shape: 'ups-desk', watts: 10, live: 'nut' },
+    // Small computers
+    { brand: 'Raspberry Pi', id: 'pi5', name: 'Raspberry Pi 5', type: 'other', form: 'desktop', shape: 'pi', watts: 6, live: null },
+    { brand: 'Raspberry Pi', id: 'pi4', name: 'Raspberry Pi 4', type: 'other', form: 'desktop', shape: 'pi', watts: 5, live: null },
+    { brand: 'Intel', id: 'nuc13', name: 'NUC 13 Pro', type: 'server', form: 'desktop', shape: 'mini-pc', watts: 20, live: 'proxmox' },
+    { brand: 'Minisforum', id: 'ms01', name: 'MS-01', type: 'server', form: 'desktop', shape: 'mini-pc', size: 1.3, watts: 30, live: 'proxmox' },
+    { brand: 'Lenovo', id: 'm920q', name: 'ThinkCentre M920q', type: 'server', form: 'desktop', shape: 'mini-pc', watts: 15, live: 'proxmox' },
+    { brand: 'Dell', id: 'optiplex-micro', name: 'OptiPlex Micro', type: 'server', form: 'desktop', shape: 'mini-pc', watts: 15, live: 'proxmox' },
+    { brand: 'HP', id: 'elitedesk-mini', name: 'EliteDesk 800 Mini', type: 'server', form: 'desktop', shape: 'mini-pc', watts: 15, live: 'proxmox' },
+    { brand: 'Beelink', id: 'eq12', name: 'EQ12', type: 'server', form: 'desktop', shape: 'mini-pc', size: 0.9, watts: 10, live: 'proxmox' },
+    // Tower servers
+    { brand: 'Dell', id: 't440', name: 'PowerEdge T440', type: 'server', form: 'desktop', shape: 'tower', watts: null, live: 'idrac' },
+    { brand: 'HPE', id: 'ml350-g10', name: 'ProLiant ML350 Gen10', type: 'server', form: 'desktop', shape: 'tower', watts: null, live: 'idrac' },
+    { brand: 'HPE', id: 'microserver-g10p', name: 'ProLiant MicroServer Gen10 Plus', type: 'server', form: 'desktop', shape: 'microserver', watts: 40, live: 'idrac' },
+  ];
+  for (const m of list) m.front = `m-${m.id}`;
+  return list;
+})();
+
+// Every drawn model by its front id
+const MODEL_BY_FRONT = new Map([...UNIFI_MODELS, ...OTHER_MODELS].map((m) => [m.front, m]));

@@ -220,7 +220,11 @@ function keyMetrics(dev, ctx, max = 4) {
     add(fmt.n(ctx.om.devices.reduce((a, x) => a + (x.clients || 0), 0)), '', 'Clients');
   }
   const ud = ctx.ud;
-  if (ud?.online && !hl) {
+  if (ud && (ud.type === 'camera' || ud.type === 'nvr')) {
+    add(ud.online ? 'Online' : ud.state, '', 'Status', null, ud.online ? '' : 'critical');
+    if (ud.type === 'camera') add(ud.online ? (ud.recording ? 'Yes' : 'No') : null, '', 'Recording', null, ud.online && !ud.recording ? 'warning' : '');
+    if (ud.lastMotion) add(sinceText(ud.lastMotion), '', 'Last motion');
+  } else if (ud?.online && !hl) {
     if (ud.ports.length) add(`${ud.ports.filter((p) => p.up).length}/${ud.ports.length}`, '', 'Ports up', ud.ports.filter((p) => p.up).length / ud.ports.length);
     if (ud.poe) add(`${fmt.n(ud.poe.usedW)}${ud.poe.budgetW ? `/${fmt.n(ud.poe.budgetW)}` : ''}`, 'W', 'PoE', ud.poe.budgetW ? ud.poe.usedW / ud.poe.budgetW : null);
     add(ud.clients != null ? fmt.n(ud.clients) : null, '', 'Clients');
@@ -467,7 +471,10 @@ function renderUnifi(hosts) {
     const card = hostCard('UniFi', h, sub, null, (d) => {
       const hl = d.health;
       if (!hl) return el('p', { class: 'small muted', text: 'The console reports no network summary.' });
+      const pr = d.protect;
       return kv([
+        ['Cameras', pr ? `${pr.online} of ${pr.cameras} online${pr.recording ? `, ${pr.recording} recording` : ''}` : null],
+        ['Recordings', pr?.storage ? `${fmt.bytes(pr.storage.used)} of ${fmt.bytes(pr.storage.total)}` : null],
         ['Internet', hl.wan ? `${hl.wan.status === 'ok' ? 'Up' : hl.wan.status}${hl.wan.ip ? ` · ${hl.wan.ip}` : ''}` : null],
         ['Latency', hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : null],
         ['Speed test ↓/↑', hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)} / ${fmt.n(hl.internet.upMbps)} Mbps` : null],
@@ -491,6 +498,8 @@ function unifiDeviceSection(ud, consoleHost) {
     statusNode: st,
     bodyFn: (x) => {
       const parts = [kv([
+        ['Recording', x.type === 'camera' && x.online ? (x.recording ? 'Yes' : 'No') : null],
+        ['Last motion', x.lastMotion ? fmt.time(x.lastMotion) : null],
         ['Uptime', x.online ? fmt.uptime(x.uptime) : null],
         ['CPU / memory', x.cpu != null ? `${fmt.pct(x.cpu)} / ${fmt.pct(x.mem)}` : null],
         ['Firmware', x.version || null],

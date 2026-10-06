@@ -70,6 +70,7 @@ const AREAS = ['NO1', 'NO2', 'NO3', 'NO4', 'NO5'];
 const THEMES = [
   'auto', 'light', 'dark', 'nord', 'dracula', 'catppuccin-mocha', 'catppuccin-latte',
   'solarized-dark', 'solarized-light', 'gruvbox-dark', 'tokyo-night',
+  'graphite', 'oled', 'ocean', 'forest', 'ember', 'rose-pine', 'synthwave', 'arctic', 'sandstone', 'high-contrast',
 ];
 const ACCENTS = ['theme', 'indigo', 'blue', 'teal', 'green', 'amber', 'pink', 'red', 'graphite'];
 const BUILTIN_BACKGROUNDS = ['aurora', 'sunset', 'ocean', 'forest', 'nebula', 'graphite'];
@@ -655,8 +656,8 @@ function validatePassive(b, selfId) {
 const cleanPassive = (list) => (Array.isArray(list) ? list : []).filter((x) => UUID.test(x?.id) && PASSIVE_KINDS[x.kind] && Number.isInteger(x.u) && Number.isInteger(x.height) && x.height >= 1 && x.height <= 4)
   .slice(0, 120).map((x) => ({ id: x.id, kind: x.kind, u: x.u, height: x.height, ...(x.kind === 'patch' ? { ports: [12, 24, 48].includes(x.ports) ? x.ports : 24 } : {}) }));
 
-// UniFi models (public/js/models.js) are "u-<id>"; anything unknown is drawn plainly by the browser
-const UNIFI_FRONT = /^u-[a-z0-9+-]{2,40}$/;
+// Drawn models (public/js/models.js) are "u-<id>" or "m-<id>"; anything unknown is drawn plainly by the browser
+const UNIFI_FRONT = /^[um]-[a-z0-9+-]{2,40}$/; // u- UniFi, m- other brands
 function validateFront(f) {
   return { model: FRONTS.includes(f?.model) || UNIFI_FRONT.test(f?.model) ? f.model : 'auto', drives: DRIVE_LAYOUTS.includes(f?.drives) ? f.drives : 'auto' };
 }
@@ -775,8 +776,8 @@ function syncUnifiDevices(h, devices) {
     }
     config.devices.push(newDevice({
       name: String(ud.name || ud.model || ud.mac).slice(0, 48),
-      kind: ud.type === 'usw' ? 'switch' : ud.type === 'uap' ? 'ap' : gateway ? 'gateway' : 'other',
-      location: ud.type === 'uap' ? 'outside' : 'none',
+      kind: ud.type === 'usw' ? 'switch' : ud.type === 'uap' ? 'ap' : ud.type === 'camera' ? 'camera' : ud.type === 'nvr' ? 'nas' : gateway ? 'gateway' : 'other',
+      location: ud.type === 'uap' || ud.type === 'camera' ? 'outside' : 'none',
       estimateW: hint,
       unifi: { hostId: h.id, mac: ud.mac },
       discovered: true,
@@ -2239,9 +2240,66 @@ async function collectUnifi(h, password) {
       };
     }
   }
-  const order = { udm: 0, ugw: 0, uxg: 0, usw: 1, uap: 2 };
-  devices.sort((a, b) => (order[a.type] ?? 3) - (order[b.type] ?? 3) || a.name.localeCompare(b.name));
-  return { health, devices: devices.slice(0, 200) };
+  const protect = await protectDevices(h, password, devices);
+  const order = { udm: 0, ugw: 0, uxg: 0, usw: 1, uap: 2, nvr: 3, camera: 4 };
+  devices.sort((a, b) => (order[a.type] ?? 5) - (order[b.type] ?? 5) || a.name.localeCompare(b.name));
+  return { health, protect, devices: devices.slice(0, 300) };
+}
+
+// UniFi Protect on the same console, read with the same account (it needs View Only access to
+// Protect too; without it, Protect is simply left out). Cameras and a separate recorder become
+// devices like switches and access points.
+async function protectDevices(h, password, devices) {
+  let b;
+  try {
+    b = await unifiGet(h, password, '/proxy/protect/api/bootstrap');
+  } catch {
+    return null;
+  }
+  if (!b || typeof b !== 'object' || !Array.isArray(b.cameras)) return null;
+  const now = Date.now();
+  const mac = (m) => String(m || '').toLowerCase().replace(/[^0-9a-f]/g, '').replace(/(..)(?!$)/g, '$1:');
+  const cams = b.cameras.slice(0, 200).map((c) => {
+    const online = c.state === 'CONNECTED';
+    return {
+      site: 'protect',
+      mac: mac(c.mac),
+      name: String(c.name || c.marketName || c.type || 'Camera').slice(0, 64),
+      model: String(c.marketName || c.type || '').replace(/^UVC\s+/i, '').slice(0, 40) || null,
+      type: 'camera',
+      online,
+      state: online ? 'Online' : c.state === 'DISCONNECTED' ? 'Offline' : String(c.state || 'Unknown').charAt(0) + String(c.state || 'unknown').slice(1).toLowerCase(),
+      version: c.firmwareVersion ? String(c.firmwareVersion).slice(0, 40) : null,
+      upgradable: false,
+      upgradeTo: null,
+      ip: c.host || c.connectionHost || null,
+      uptime: online && num0(c.upSince) ? Math.round((now - c.upSince) / 1000) : null,
+      cpu: null,
+      mem: null,
+      temps: [],
+      fanLevel: null,
+      clients: null,
+      ports: [],
+      poe: null,
+      radios: [],
+      recording: c.isRecording === true,
+      lastMotion: num0(c.lastMotion),
+    };
+  }).filter((c) => /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(c.mac));
+  devices.push(...cams);
+  const n = b.nvr || {};
+  const st = n.storageInfo || {};
+  // a separate recorder (UNVR); on a UDM the console itself records
+  const nvrMac = mac(n.mac);
+  if (/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(nvrMac) && !devices.some((d) => d.mac === nvrMac)) {
+    devices.push({ site: 'protect', mac: nvrMac, name: String(n.name || n.marketName || 'NVR').slice(0, 64), model: String(n.marketName || n.type || 'NVR').slice(0, 40), type: 'nvr', online: true, state: 'Online', version: n.version ? String(n.version).slice(0, 40) : null, upgradable: false, upgradeTo: null, ip: n.host || null, uptime: num0(n.uptime) !== null ? Math.round(num0(n.uptime) / 1000) : null, cpu: null, mem: null, temps: [], fanLevel: null, clients: null, ports: [], poe: null, radios: [] });
+  }
+  return {
+    cameras: cams.length,
+    online: cams.filter((c) => c.online).length,
+    recording: cams.filter((c) => c.recording).length,
+    storage: num0(st.totalSize) ? { used: num0(st.totalSpaceUsed) ?? null, total: num0(st.totalSize) } : null,
+  };
 }
 
 const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada };
@@ -4340,6 +4398,7 @@ function htmlAttrs(session) {
 const THEME_COLORS = {
   light: '#fbfbfc', dark: '#08090a', nord: '#3b4252', dracula: '#282a36', 'catppuccin-mocha': '#1e1e2e', 'catppuccin-latte': '#eff1f5',
   'solarized-dark': '#073642', 'solarized-light': '#fdf6e3', 'gruvbox-dark': '#282828', 'tokyo-night': '#1a1b26',
+  graphite: '#0e0e0f', oled: '#000000', ocean: '#06121f', forest: '#0a110f', ember: '#0d0b08', 'rose-pine': '#191724', synthwave: '#120820', arctic: '#f3f7fb', sandstone: '#f5f1ea', 'high-contrast': '#000000',
 };
 
 function appHead() {

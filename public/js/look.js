@@ -7,6 +7,7 @@ const HD_LOOK = (() => {
   const THEMES = {
     auto: 'Auto', dark: 'Dark', light: 'Light', nord: 'Nord', dracula: 'Dracula', 'catppuccin-mocha': 'Catppuccin Mocha', 'catppuccin-latte': 'Catppuccin Latte',
     'solarized-dark': 'Solarized Dark', 'solarized-light': 'Solarized Light', 'gruvbox-dark': 'Gruvbox Dark', 'tokyo-night': 'Tokyo Night',
+    graphite: 'Graphite', oled: 'OLED Black', ocean: 'Deep Ocean', forest: 'Forest', ember: 'Ember', 'rose-pine': 'Rosé Pine', synthwave: 'Synthwave', arctic: 'Arctic', sandstone: 'Sandstone', 'high-contrast': 'High Contrast',
   };
   // name -> [colour on light grounds, colour on dark grounds]; "theme" keeps the theme's own
   const ACCENTS = {

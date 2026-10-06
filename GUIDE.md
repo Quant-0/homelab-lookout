@@ -154,7 +154,9 @@ Use ↑ ↓ to choose, **Enter** to open and **Esc** to close.
 
 **Add device** opens the **catalog** in three steps: choose the **brand** (UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs, generic), then the **type** (gateway, switch, access point, NAS or recorder, camera, UPS, power…), then the **model**. A brand with only one type skips step two, and **Search** finds a model from any step. Every model is drawn as it looks: its front in the rack, or its shape for access points, desktop gateways, cameras and the like. Choosing one shows its size, its ports and bays, how it's read live and what you need to set up on it. **Add this device** fills in the type, brand and model, height, front, drive bays, a typical power draw and the right connection; then give it a name and fill in the connection. **Any other device** starts with an empty form.
 
-The whole **UniFi** range is there (about 90 models): every gateway, switch, access point, Protect recorder and camera, UPS and power device. Network devices appear by themselves once their console is added, and are then drawn as their model. Cameras and Protect recorders are drawn and counted with their estimated power; their live data (from UniFi Protect) isn't read yet.
+The whole **UniFi** range is there (about 90 models): every gateway, switch, access point, Protect recorder and camera, UPS and power device. Network devices appear by themselves once their console is added, and are then drawn as their model. **UniFi Protect** is read through the same console account (give it View Only access to Protect too): cameras appear by themselves, with online/offline, recording and last motion, and a camera that goes offline shows up under *Needs you*.
+
+The other brands are drawn the same way, model by model: Synology and QNAP (desktop and rack), TrueNAS, Cisco (Catalyst and CBS), HPE Aruba, MikroTik, TP-Link Omada, Netgear, APC, Eaton and CyberPower UPSes, mini PCs, Raspberry Pi and tower servers, each in its own colours and with its real ports, bays and displays.
 
 The device form: name, type, **brand and model**, and where it sits:
 - **In the rack**, with height and lowest U
@@ -236,7 +238,7 @@ To arrange the page, press **Customize** on the Services page:
 
 - **Title** and **Refresh interval**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
-- **Theme** (11, including Auto) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
+- **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
 - **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.
 

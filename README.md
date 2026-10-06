@@ -13,13 +13,14 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
 - **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
+- **UniFi Protect** (same console and account, with View Only access to Protect): cameras with online state, recording and last motion, and recording storage. Cameras become devices by themselves; an offline camera raises an alert.
 - **Any SNMPv3 device** (Cisco, HPE Aruba, MikroTik, Netgear, QNAP, UPS network cards from APC and Eaton…), with standard MIBs only: ports (up, speed, traffic per port from the counters), CPU, memory and storage (HOST-RESOURCES), and UPS battery, runtime, load, output and input (UPS-MIB, RFC 1628).
 - **NUT**: a USB UPS through Network UPS Tools on the machine it's plugged into. Only `LIST VAR` is sent; no login, nothing secret.
 - **Omada** controllers (software, OC200/OC300): gateways, switches and access points with status, clients, CPU/RAM, PoE and firmware. A device can be bound to one Omada device; otherwise it shows the whole controller.
 - **UPS alerts**: on battery, low battery, battery needs replacing.
 - **Home**: a summary line (faults, power, internet, devices online, services, updates), then **Needs you**, a card per problem (the same findings the alerts use, whether or not they notify), big tiles for **Power** and the **Internet**, a tile per device (one status: OK, Warning, Fault, Offline; its worst problem; one key number), services and VMs. A tile opens the **details drawer** (a bottom sheet on phones) with the full view per connection; fixed facts such as service tag and firmware are on the device's Docs sheet. **Customize** reorders and hides tiles.
 - **Wall display** (`/wall`): one screen for a tablet or TV that never scrolls: a headline, one problem at a time in a spotlight (8 s each), power with its graph, the internet, the rack and the services, a clock, and full screen with the screen kept awake where allowed.
-- **Device catalog**: Admin → Add device starts from ~70 models (UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs, generic). A model fills in the type, brand/model, height, rack front, drive bays, typical power and the connection to add, and says what to set up on the device.
+- **Device catalog**: Admin → Add device: brand → type → model, ~180 models drawn as they look (all of UniFi, plus Synology, QNAP, Cisco, Aruba, MikroTik, Omada, Netgear, APC, Eaton, CyberPower, servers and mini PCs), from (UniFi, Cisco, Dell, HPE, Lenovo, Supermicro, Synology, QNAP, TrueNAS, MikroTik, TP-Link Omada, Netgear, APC, Eaton, Raspberry Pi, mini PCs, generic). A model fills in the type, brand/model, height, rack front, drive bays, typical power and the connection to add, and says what to set up on the device.
 - **Devices**: everything is organised around physical devices (server, NAS, switch, patch panel…).
   - A device has a name, a type, a place in the rack and its monitoring connections. E.g. "Orion" = iDRAC + Proxmox node, all added in one form, with **Test** before saving.
   - The dashboard shows one widget per device, with a section per connection.
@@ -72,7 +73,7 @@ It is built from one Node.js server file (`server.js`, Node 18+) plus static HTM
 
 - **Look**: crisp and dark-first, with a bar at the top on wide screens (icons only on tablets) and a tab bar at the bottom on phones, like an app. The Inter font and Lucide icons are served by the dashboard itself, so nothing is fetched from elsewhere (licences in `public/licenses/`).
 - **Appearance**:
-  - 11 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark and Tokyo Night, and 8 accent colours (or the theme's own).
+  - 21 themes: Auto (follows the OS), Light, Dark, Nord, Dracula, Catppuccin Mocha/Latte, Solarized Dark/Light, Gruvbox Dark, Tokyo Night, Graphite, OLED Black, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast, and 8 accent colours (or the theme's own).
   - The owner picks the default in Admin; each viewer can pick their own theme and accent on their device with the palette button (kept in that browser only).
   - Backgrounds: 6 built-in gradients, or upload your own (JPEG/PNG/WebP, max 10 MB).
   - Sliders for blur, dimming and card opacity (frosted glass).

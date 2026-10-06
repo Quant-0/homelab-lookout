@@ -70,7 +70,11 @@ const noSecrets = (t, where) => ok(!SECRETS.some((s) => t.includes(s)), `no secr
   ok(s && s.system.model === 'DS418' && s.system.temp === 41 && s.disks.length === 4, 'Synology system + disks in dashboard');
   ok(s && s.disks[2].health === 'Warning' && s.pools[0].name === 'Storage Pool 1' && s.pools[0].healthy, 'disk health + storage pool parsed');
   const u = d.unifi[0]?.data;
-  ok(u && u.devices.length === 3 && u.devices[0].type === 'udm' && u.health.clients === 37, 'UniFi devices + health');
+  ok(u && u.devices.filter((x) => x.site !== 'protect').length === 3 && u.devices[0].type === 'udm' && u.health.clients === 37, 'UniFi devices + health');
+  const cams = u.devices.filter((x) => x.type === 'camera');
+  ok(cams.length === 2 && cams.find((x) => x.name === 'Driveway').recording && cams.find((x) => x.name === 'Driveway').model === 'G5 Bullet' && !cams.find((x) => x.name === 'Back door').online, 'UniFi Protect cameras read through the same console (recording, offline)');
+  ok(u.protect && u.protect.cameras === 2 && u.protect.online === 1 && u.protect.storage.total === 8e12, 'Protect summary: cameras online, recording storage');
+  ok(!u.devices.some((x) => x.type === 'nvr'), 'a console that records itself is not listed twice');
   const sw = u.devices.find((x) => x.type === 'usw');
   ok(sw.poe && Math.abs(sw.poe.usedW - 14.05) < 0.01 && sw.poe.budgetW === 95, `switch PoE ${sw.poe && sw.poe.usedW} W of ${sw.poe && sw.poe.budgetW}`);
   ok(u.devices[0].temps.length === 3 && u.devices[0].fanLevel === 30, 'UDM Pro temperatures + fan');

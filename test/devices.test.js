@@ -115,12 +115,12 @@ const pve = { type: 'proxmox', address: '127.0.0.1:18443', username: 'root@pam!d
   r = await req('POST', `/api/admin/hosts/${c.hosts.find((h) => h.type === 'unifi').id}/test`, {});
   await sleep(300);
   c = await cfg();
-  ok(c.devices.find((d) => d.id === sw.id).name === 'Core switch' && c.devices.filter((d) => d.discovered).length === 2, 'rename survives the next UniFi update; no duplicates');
+  ok(c.devices.find((d) => d.id === sw.id).name === 'Core switch' && c.devices.filter((d) => d.discovered).length === 4, 'rename survives the next UniFi update; no duplicates (switch, AP and two cameras)');
   r = await req('DELETE', `/api/admin/devices/${ap.id}`);
   ok(r.json.hidden === true, 'deleting a discovered device hides it');
   await req('POST', `/api/admin/hosts/${c.hosts.find((h) => h.type === 'unifi').id}/test`, {});
   c = await cfg();
-  ok(c.devices.filter((d) => d.discovered).length === 2 && c.devices.find((d) => d.id === ap.id).hidden, 'hidden device is not re-created');
+  ok(c.devices.filter((d) => d.discovered).length === 4 && c.devices.find((d) => d.id === ap.id).hidden, 'hidden device is not re-created');
   r = await req('GET', '/api/dashboard');
   ok(!r.json.devices.some((d) => d.id === ap.id), 'hidden device not on the dashboard');
   r = await req('PUT', `/api/admin/devices/${ap.id}`, { name: ap.name, kind: 'ap', location: 'outside', height: 1, estimateW: null, hidden: false });

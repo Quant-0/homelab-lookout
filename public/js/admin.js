@@ -711,7 +711,7 @@ $('device-new').addEventListener('click', openCatalog);
 const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
 function presetFrom(x) {
-  const desktopNas = x.front === 'synology-ds';
+  const desktopNas = x.front === 'synology-ds' || x.unifi?.rackFront === 'synology-ds';
   const rackable = x.height > 0 || desktopNas;
   const generic = x.brand === 'Generic' || x.brand === 'Proxmox';
   return {
@@ -723,14 +723,14 @@ function presetFrom(x) {
     front: { model: x.front || 'auto', drives: x.drives || 'auto' },
     model: generic ? null : { brand: x.brand, name: x.model },
     connections: x.connection && x.connection !== 'unifi-found' ? [newConn(x.connection)] : [],
-    catalogNote: x.connection === 'unifi-found' ? CATALOG_NEEDS['unifi-found'] : x.unifi && !x.connection ? CATALOG_NEEDS.protect : null,
+    catalogNote: x.connection === 'unifi-found' ? CATALOG_NEEDS['unifi-found'] : x.brand === 'UniFi' && !x.connection ? CATALOG_NEEDS.protect : null,
   };
 }
 
 // What a UniFi model has on its front
 const buildText = (m) => (m ? [m.rj ? `${m.rj + (m.wan || 0)} ports${m.poe ? ' (PoE)' : ''}` : m.ports ? `${m.ports} ports` : null, m.sfp ? `${m.sfp} SFP` : null, m.bays ? `${m.bays} drive bay${m.bays === 1 ? '' : 's'}` : null, m.outlets ? `${m.outlets} outlets` : null].filter(Boolean).join(' · ') : '');
-const connKey = (x) => (x.unifi && !x.connection ? 'protect' : x.connection);
-const sizeText = (x) => (x.height ? `${x.height} U` : x.unifi ? { desktop: 'Desktop', ceiling: 'Ceiling', wall: 'Wall', inwall: 'In-wall', outdoor: 'Outdoor', mesh: 'Mesh', camera: 'Camera' }[x.unifi.form] || 'Desktop' : x.front === 'synology-ds' ? 'Desktop, on a shelf' : 'Not rack-mounted');
+const connKey = (x) => (x.brand === 'UniFi' && !x.connection ? 'protect' : x.connection);
+const sizeText = (x) => (x.height ? `${x.height} U` : x.unifi?.rackFront === 'synology-ds' ? 'Desktop, on a shelf or outside' : x.unifi ? { desktop: 'Desktop', ceiling: 'Ceiling', wall: 'Wall', inwall: 'In-wall', outdoor: 'Outdoor', mesh: 'Mesh', camera: 'Camera' }[x.unifi.form] || 'Desktop' : x.front === 'synology-ds' ? 'Desktop, on a shelf' : 'Not rack-mounted');
 
 // The model as it looks: its front in a rack, or its shape
 function catalogFace(x) {
@@ -1914,6 +1914,16 @@ const THEME_NAMES = {
   'solarized-light': 'Solarized Light',
   'gruvbox-dark': 'Gruvbox Dark',
   'tokyo-night': 'Tokyo Night',
+  graphite: 'Graphite',
+  oled: 'OLED Black',
+  ocean: 'Deep Ocean',
+  forest: 'Forest',
+  ember: 'Ember',
+  'rose-pine': 'Rosé Pine',
+  synthwave: 'Synthwave',
+  arctic: 'Arctic',
+  sandstone: 'Sandstone',
+  'high-contrast': 'High Contrast',
 };
 const BG_NAMES = { aurora: 'Aurora', sunset: 'Sunset', ocean: 'Ocean', forest: 'Forest', nebula: 'Nebula', graphite: 'Graphite' };
 const MAX_UPLOAD = 10 * 1024 * 1024;

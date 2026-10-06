@@ -112,7 +112,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForTimeout(800);
   const listText = await page.textContent('#device-list');
   check(/USW-24-POE Rack/.test(listText) && /U7 Pro Hallway/.test(listText), 'switch and AP appeared automatically');
-  check(/Not placed \(1\)/.test(listText) && /Outside the rack \(1\)/.test(listText), 'switch is "not placed", AP is "outside the rack"');
+  check(/Not placed \(1\)/.test(listText) && /Outside the rack \(3\)/.test(listText) && /Driveway/.test(listText), 'switch is "not placed"; AP and Protect cameras are "outside the rack"');
   await page.screenshot({ path: `${S}/ui5-devices.png`, fullPage: true });
 
   // --- Home: one tile per device; its drawer has a section per connection ---

@@ -164,6 +164,18 @@ const server = https.createServer(opts, (req, res) => {
     });
     return;
   }
+  // UniFi Protect on the same console: one camera recording, one gone
+  if (u === '/proxy/protect/api/bootstrap') {
+    if (!/TOKEN=mocktoken-SECRETJWT/.test(req.headers.cookie || '')) { res.writeHead(401); return res.end('{}'); }
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(R({
+      nvr: { mac: '74ACB9DDEEFF', name: 'UDM Pro', marketName: 'UDM Pro', version: '5.1.200', storageInfo: { totalSize: 8e12, totalSpaceUsed: 5.2e12 } },
+      cameras: [
+        { id: 'c1', mac: 'F4E2C6000101', name: 'Driveway', type: 'UVC G5 Bullet', marketName: 'G5 Bullet', state: 'CONNECTED', isRecording: true, upSince: Date.now() - 864e5, lastMotion: Date.now() - 300000, firmwareVersion: '4.69.55', host: '192.168.1.60' },
+        { id: 'c2', mac: 'F4E2C6000102', name: 'Back door', type: 'UVC G4 Doorbell Pro', marketName: 'G4 Doorbell Pro', state: 'DISCONNECTED', isRecording: false, firmwareVersion: '4.69.55' },
+      ],
+    }));
+  }
   if (u.startsWith('/proxy/network/')) {
     if (!/TOKEN=mocktoken-SECRETJWT/.test(req.headers.cookie || '')) { res.writeHead(401); return res.end(R({ meta: { rc: 'error', msg: 'api.err.LoginRequired' } })); }
     if (u === '/proxy/network/api/self/sites') return res.end(R({ meta: { rc: 'ok' }, data: [{ name: 'default', desc: 'Default' }] }));
