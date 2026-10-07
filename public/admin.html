@@ -153,7 +153,7 @@
           <h4>Status check and integration</h4>
           <p class="hint">The server uses the connection URL to check that the service is up and, with an integration, to read numbers from it. Leave it empty for a plain link.</p>
           <div class="form-grid two">
-            <label class="wide"><span>Connection URL</span><input name="url" placeholder="http://192.168.1.30:8096" spellcheck="false"></label>
+            <label class="wide"><span id="svc-url-label">Connection URL</span><input name="url" placeholder="http://192.168.1.30:8096" spellcheck="false"></label>
             <label class="https-only"><span>TLS certificate check</span>
               <select name="tlsMode">
                 <option value="verify">Verify with trusted CAs</option>

@@ -367,6 +367,9 @@ const HD = (() => {
       case '%': return `${fmt.n(v, 1)} %`;
       case 'ms': return `${fmt.n(v, v < 10 ? 1 : 0)} ms`;
       case 'Mbps': return `${fmt.n(v, v < 10 ? 1 : 0)} Mbit/s`;
+      case 's': return fmt.uptime(v);
+      case 'min': return `${fmt.n(v)} min`;
+      case 'W': return `${fmt.n(v)} W`;
       default: return Number.isInteger(v) ? fmt.n(v) : fmt.n(v, 2);
     }
   }

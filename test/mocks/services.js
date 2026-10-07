@@ -97,6 +97,42 @@ const routes = {
     if (q.get('apikey') !== KEY) return send(res, 200, { status: false, error: 'API Key Incorrect' });
     return send(res, 200, { queue: { kbpersec: '1024.5', noofslots: 3, timeleft: '0:12:30' } });
   },
+  // Synology DSM's Web API: login for a session ID, then three reads (the storage one for administrators)
+  synology(req, res, p) {
+    if (p !== '/webapi/entry.cgi' || req.method !== 'POST') return;
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      const f = new URLSearchParams(b);
+      const fail = (code) => send(res, 200, { success: false, error: { code } });
+      if (f.get('api') === 'SYNO.API.Auth') return f.get('account') === 'dsmview' && f.get('passwd') === KEY ? send(res, 200, { success: true, data: { sid: 'DSMSID' } }) : fail(400);
+      if (f.get('_sid') !== 'DSMSID') return fail(119);
+      if (f.get('api') === 'SYNO.Core.System.Utilization') return send(res, 200, { success: true, data: { cpu: { user_load: 7, system_load: 3, other_load: 1 }, memory: { real_usage: 42, total_real: 8000000 } } });
+      if (f.get('api') === 'SYNO.Core.System') return send(res, 200, { success: true, data: { up_time: '100:30:15', sys_temp: 41, model: 'DS418' } });
+      if (f.get('api') === 'SYNO.Storage.CGI.Storage') return send(res, 200, { success: true, data: { volumes: [{ vol_path: '/volume1', size: { total: '4000000000000', used: '1000000000000' } }], disks: [{ overview_status: 'normal' }, { overview_status: 'warning' }] } });
+      fail(103);
+    });
+    return true;
+  },
+  // PeaNUT: the NUT variables of one UPS as JSON
+  peanut(req, res, p) {
+    if (p === '/api/v1/devices/rackups') return send(res, 200, { 'ups.status': 'OB DISCHRG', 'battery.charge': 55, 'battery.runtime': 1200, 'ups.load': 31, 'device.model': 'Back-UPS' });
+    if (p.startsWith('/api/v1/devices/')) return send(res, 404, { error: 'not found' });
+  },
+  // Tailscale's API (TAILSCALE_API_URL points here in the tests)
+  tailscale(req, res, p) {
+    if (req.headers.authorization !== `Bearer ${KEY}`) return send(res, 401, { message: 'API token invalid' });
+    if (p === '/api/v2/tailnet/-/devices?fields=all') {
+      const day = 86400000;
+      const iso = (ms) => new Date(Date.now() + ms).toISOString();
+      return send(res, 200, { devices: [
+        { hostname: 'lookout', connectedToControl: true, expires: iso(100 * day), updateAvailable: false },
+        { hostname: 'laptop', connectedToControl: true, expires: iso(5 * day), updateAvailable: true },
+        { hostname: 'phone', connectedToControl: false, expires: iso(-day) },
+        { hostname: 'nas', connectedToControl: true, keyExpiryDisabled: true, expires: '0001-01-01T00:00:00Z' },
+      ] });
+    }
+  },
   pihole(req, res, p) {
     if (p === '/api/auth' && req.method === 'POST') {
       let b = '';

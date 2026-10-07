@@ -2030,7 +2030,11 @@ function nutList(h) {
 }
 
 async function collectNut(h) {
-  const v = await nutList(h);
+  return nutFromVars(await nutList(h));
+}
+
+// NUT variables (from upsd, or PeaNUT's API) -> what the dashboard shows
+function nutFromVars(v) {
   const n = (k) => (v[k] !== undefined && v[k] !== '' && Number.isFinite(Number(v[k])) ? Number(v[k]) : null);
   const flags = String(v['ups.status'] || '').split(/\s+/).filter(Boolean);
   const load = n('ups.load');
@@ -2450,6 +2454,153 @@ const stat = (label, value, unit) => ({ label, value: value ?? null, ...(unit ? 
 const count = (r) => (Array.isArray(r) ? r.length : 0);
 const total = (r) => r?.totalRecords ?? r?.total ?? null;
 
+// --- Infrastructure cards: the numbers come from a device the dashboard already reads, or from
+// the card's own login (the same code as the device, run on the card's URL and secret) ---
+
+// A device-like record for the collectors, built from the service's URL; it never lands in config.hosts
+function ownHost(x, type) {
+  const u = parseServiceUrl(x.svc.connection.url);
+  if (!u.https) throw new UserError(`${INTEGRATIONS[type].label} needs an https:// URL`);
+  return { id: `svc-${x.svc.id}`, type, address: net.isIPv6(u.host) ? `[${u.host}]:${u.port}` : `${u.host}:${u.port}`, username: x.username, tlsMode: x.svc.connection.tlsMode, fingerprint: x.svc.connection.fingerprint, options: {} };
+}
+
+const pctOf = (used, size) => (size ? (100 * used) / size : null);
+const sum = (list, f) => list.reduce((a, v) => a + (Number(f(v)) || 0), 0);
+
+function truenasStats(d) {
+  const pools = d.pools || [];
+  const sized = pools.filter((p) => p.size);
+  const alerts = (d.alerts || []).filter((a) => !['INFO', 'NOTICE'].includes(a.level));
+  return [
+    stat('Alerts', alerts.length),
+    stat('Unhealthy pools', pools.filter((p) => !p.healthy).length),
+    stat('Used', sized.length ? pctOf(sum(sized, (p) => p.allocated), sum(sized, (p) => p.size)) : null, '%'),
+    stat('Free', sized.length ? sum(sized, (p) => p.free) : null, 'B'),
+    stat('Pools', pools.length),
+    stat('Uptime', d.system?.uptime, 's'),
+    stat('Load', d.system?.loadavg?.[0] ?? null),
+  ];
+}
+
+// Synology from SNMP (a device) or from DSM's own API (a card's login): the same numbers
+function synologyStats(d) {
+  const vols = (d.volumes || []).filter((v) => v.size);
+  const sys = d.system || {};
+  const mem = sys.memPct ?? pctOf(sys.memUsed, sys.memTotal);
+  return [
+    stat('Volume used', vols.length ? pctOf(sum(vols, (v) => v.used), sum(vols, (v) => v.size)) : null, '%'),
+    stat('Free', vols.length ? sum(vols, (v) => v.size - v.used) : null, 'B'),
+    stat('CPU', sys.cpu != null ? sys.cpu * 100 : null, '%'),
+    stat('Memory', mem, '%'),
+    stat('Uptime', sys.uptime, 's'),
+    stat('Temperature', sys.temp != null ? `${sys.temp} °C` : null),
+    stat('Disk warnings', d.disks ? d.disks.filter((x) => x.health && !['Normal', 'normal'].includes(x.health)).length : null),
+  ];
+}
+
+const DSM_ERRORS = { 400: 'Wrong user name or password', 401: 'The account is disabled', 402: 'Permission denied', 403: 'This account uses 2-step verification: use an account without it', 404: 'This account uses 2-step verification: use an account without it', 407: 'Blocked after too many failed logins', 105: 'The account lacks permission' };
+async function dsmCall(x, sid, api, version, method, extra = {}) {
+  const r = await x.req('POST', '/webapi/entry.cgi', { form: { api, version: String(version), method, ...extra, ...(sid ? { _sid: sid } : {}) } });
+  if (!r.json) throw new UserError("Invalid JSON response (is this DSM's address, e.g. :5001?)");
+  if (!r.json.success) {
+    const code = r.json.error?.code;
+    // 106/107/119: the session expired or was not found, so log in again
+    throw Object.assign(new UserError(DSM_ERRORS[code] || `DSM error ${code}`), { status: [106, 107, 119].includes(code) ? 401 : 400 });
+  }
+  return r.json.data || {};
+}
+async function dsmCollect(x) {
+  const login = async () => (await dsmCall(x, null, 'SYNO.API.Auth', 6, 'login', { account: x.username, passwd: x.secret, session: 'HomelabDashboard', format: 'sid' })).sid;
+  return withSession(x, login, async (sid) => {
+    const [util, info, storage] = await Promise.all([
+      dsmCall(x, sid, 'SYNO.Core.System.Utilization', 1, 'get'),
+      dsmCall(x, sid, 'SYNO.Core.System', 1, 'info').catch(() => ({})),
+      dsmCall(x, sid, 'SYNO.Storage.CGI.Storage', 1, 'load_info').catch(() => null), // administrators only
+    ]);
+    const up = /^(\d+):(\d+):(\d+)$/.exec(String(info.up_time || ''));
+    const cpu = util.cpu ? (Number(util.cpu.user_load) || 0) + (Number(util.cpu.system_load) || 0) + (Number(util.cpu.other_load) || 0) : null;
+    return {
+      system: {
+        cpu: cpu != null ? cpu / 100 : null,
+        memPct: util.memory?.real_usage ?? null,
+        uptime: up ? Number(up[1]) * 3600 + Number(up[2]) * 60 + Number(up[3]) : null,
+        temp: typeof info.sys_temp === 'number' ? info.sys_temp : null,
+      },
+      volumes: storage ? (storage.volumes || []).map((v) => ({ name: v.vol_path || v.id, size: Number(v.size?.total) || 0, used: Number(v.size?.used) || 0 })) : [],
+      disks: storage ? (storage.disks || []).map((d) => ({ health: d.overview_status || d.smart_status || null })) : null,
+    };
+  });
+}
+
+function unifiStats(d) {
+  const h = d.health || {};
+  const devs = d.devices || [];
+  const cams = d.protect?.cameras;
+  return [
+    stat('Clients', h.clients ?? null),
+    stat('WAN', h.wan ? (h.wan.status === 'ok' ? 'Up' : 'Down') : null),
+    stat('Devices offline', devs.length ? devs.filter((x) => !x.online).length : null),
+    stat('Wi-Fi clients', h.wifiClients ?? null),
+    stat('Wired clients', h.wiredClients ?? null),
+    stat('Latency', h.internet?.latencyMs ?? null, 'ms'),
+    stat('Download', h.internet?.downMbps ?? null, 'Mbps'),
+    stat('Upload', h.internet?.upMbps ?? null, 'Mbps'),
+    ...(d.protect ? [stat('Cameras online', `${d.protect.online}/${cams}`)] : []),
+  ];
+}
+
+function upsStats(u, name) {
+  if (!u) throw new UserError('No UPS data from this device');
+  const alerts = [];
+  if (u.lowBattery) alerts.push({ key: 'low', severity: 'critical', title: `${name}: UPS battery low`, detail: u.runtimeMin != null ? `${u.runtimeMin} min left` : '' });
+  else if (u.onBattery) alerts.push({ key: 'battery', severity: 'warning', title: `${name}: UPS on battery`, detail: u.charge != null ? `${u.charge} % charged` : '' });
+  if (u.replaceBattery) alerts.push({ key: 'replace', severity: 'warning', title: `${name}: replace the UPS battery`, detail: '' });
+  return {
+    stats: [
+      stat('Charge', u.charge, '%'),
+      stat('Runtime', u.runtimeMin, 'min'),
+      stat('Load', u.loadPct, '%'),
+      stat('Power from', u.source),
+      stat('Output', u.outputW, 'W'),
+      stat('Input', u.inputV != null ? `${u.inputV} V` : null),
+    ],
+    alerts,
+  };
+}
+
+// Tailscale's API (on the internet): the whole tailnet, read with a read-only API access token
+const TAILSCALE_API = process.env.TAILSCALE_API_URL || 'https://api.tailscale.com'; // overridable for the tests
+async function tailscaleStats(x) {
+  const tailnet = String(x.options.tailnet || '-').trim() || '-';
+  if (!/^[A-Za-z0-9._@-]{1,100}$/.test(tailnet)) throw new UserError('Invalid tailnet name');
+  const r = await connRequest({ url: TAILSCALE_API, tlsMode: 'verify' }, `/api/v2/tailnet/${encodeURIComponent(tailnet)}/devices?fields=all`, { headers: { Authorization: `Bearer ${x.secret}`, Accept: 'application/json' }, full: true });
+  if (r.status === 401 || r.status === 403) throw Object.assign(new UserError(`HTTP ${r.status} (the API access token is wrong or expired)`), { status: r.status });
+  if (r.status < 200 || r.status >= 300 || !r.json) throw new UserError(`HTTP ${r.status}`);
+  const now = Date.now();
+  const devices = Array.isArray(r.json.devices) ? r.json.devices : [];
+  const online = (d) => d.connectedToControl === true || (d.connectedToControl === undefined && Date.parse(d.lastSeen) > now - 5 * 60000);
+  const expiry = (d) => (d.keyExpiryDisabled || !d.expires || d.expires.startsWith('0001') ? null : Date.parse(d.expires));
+  const soon = devices.filter((d) => expiry(d) !== null && expiry(d) - now < 14 * 86400000);
+  const name = (d) => String(d.hostname || d.name || '?').split('.')[0];
+  const expired = soon.filter((d) => expiry(d) <= now);
+  const alerts = [];
+  if (expired.length) alerts.push({ key: 'expired', severity: 'critical', title: `Tailscale: ${expired.length} device key${expired.length === 1 ? ' has' : 's have'} expired`, detail: expired.map(name).slice(0, 8).join(', ') });
+  if (soon.length > expired.length) {
+    const s2 = soon.filter((d) => !expired.includes(d));
+    alerts.push({ key: 'expiring', severity: 'warning', title: `Tailscale: ${s2.length} device key${s2.length === 1 ? '' : 's'} expire within 14 days`, detail: s2.map(name).slice(0, 8).join(', ') });
+  }
+  return {
+    stats: [
+      stat('Online', devices.filter(online).length),
+      stat('Devices', devices.length),
+      stat('Expiring keys', soon.length),
+      stat('Updates', devices.filter((d) => d.updateAvailable).length),
+      stat('Offline', devices.filter((d) => !online(d)).length),
+    ],
+    alerts,
+  };
+}
+
 async function mediaStats(x, headers) {
   const H = { headers };
   const [c, sessions] = await Promise.all([x.get('/Items/Counts', H), x.get('/Sessions', H)]);
@@ -2740,6 +2891,59 @@ const INTEGRATIONS = {
     },
   },
 
+  // --- Infrastructure: from a device the dashboard reads, or the card's own login ---
+  truenas: {
+    label: 'TrueNAS', group: 'Infrastructure', user: 'Username (TrueNAS 25.04 and newer)', secret: 'API key', icon: 'truenas', fromDevice: ['truenas'],
+    stats: truenasStats,
+    async fetch(x) {
+      return truenasStats(await collectTruenas(ownHost(x, 'truenas'), x.secret));
+    },
+  },
+  synology: {
+    label: 'Synology DSM', group: 'Infrastructure', user: 'Username', secret: 'Password', icon: 'synology', fromDevice: ['synology'],
+    stats: synologyStats,
+    async fetch(x) {
+      return synologyStats(await dsmCollect(x));
+    },
+  },
+  unifi: {
+    label: 'UniFi Network', group: 'Infrastructure', user: 'Username (a local View Only account)', secret: 'Password', icon: 'unifi', fromDevice: ['unifi'],
+    stats: unifiStats,
+    async fetch(x) {
+      return unifiStats(await collectUnifi(ownHost(x, 'unifi'), x.secret));
+    },
+  },
+  ups: {
+    label: 'UPS (NUT)', group: 'Infrastructure', secret: null, icon: 'nut', fromDevice: ['nut', 'snmp'], noUrl: true,
+    options: [
+      { key: 'address', label: 'NUT server (host or IP, :port optional)', placeholder: '10.0.0.5:3493', own: true, required: true },
+      { key: 'ups', label: 'UPS name (from ups.conf)', placeholder: 'ups', own: true, required: true },
+    ],
+    stats: (d, name) => upsStats(d.ups, name),
+    async fetch(x) {
+      const ups = String(x.options.ups || '').trim();
+      if (!NUT_NAME.test(ups)) throw new UserError('Enter the UPS name from ups.conf (letters, digits, . _ -)');
+      const d = await collectNut({ address: normalizeAddress(x.options.address, 'nut'), username: ups });
+      return upsStats(d.ups, x.svc.name);
+    },
+  },
+  peanut: {
+    label: 'PeaNUT', group: 'Infrastructure', user: 'Username (empty if PeaNUT has no login)', secret: 'Password', optionalSecret: true, icon: 'peanut',
+    options: [{ key: 'ups', label: 'UPS name', placeholder: 'ups', required: true }],
+    async fetch(x) {
+      const ups = String(x.options.ups || '').trim();
+      if (!NUT_NAME.test(ups)) throw new UserError('Enter the UPS name (letters, digits, . _ -)');
+      const vars = await x.get(`/api/v1/devices/${encodeURIComponent(ups)}`, { headers: x.username ? x.basic() : {} });
+      if (!vars || typeof vars !== 'object' || Array.isArray(vars)) throw new UserError('Unexpected answer from PeaNUT');
+      return upsStats(nutFromVars(Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, typeof v === 'object' && v !== null ? String(v.value ?? '') : String(v)]))).ups, x.svc.name);
+    },
+  },
+  tailscale: {
+    label: 'Tailscale', group: 'Infrastructure', secret: 'API access token', icon: 'tailscale', noUrl: true,
+    options: [{ key: 'tailnet', label: 'Tailnet', placeholder: 'empty = the token’s own tailnet' }],
+    fetch: tailscaleStats,
+  },
+
   // --- Anything with a JSON API ---
   customapi: {
     label: 'Custom JSON API', group: 'Other', secret: 'Header value (optional)', optionalSecret: true, icon: null,
@@ -2775,6 +2979,8 @@ const DEFAULT_FIELDS = {
   nextcloud: ['Active users (24 h)', 'Files', 'Free space'], immich: ['Photos', 'Videos', 'Storage'], paperless: ['Inbox', 'Documents'],
   uptimekuma: ['Up', 'Down', 'Uptime 24 h'], grafana: ['Dashboards', 'Alert rules'], portainer: ['Running', 'Stopped'],
   speedtest: ['Download', 'Upload', 'Ping'], prometheus: ['Targets up', 'Down'], authentik: ['Logins (24 h)', 'Failed (24 h)', 'Users'],
+  truenas: ['Alerts', 'Unhealthy pools', 'Used'], synology: ['Volume used', 'CPU', 'Memory'], unifi: ['Clients', 'WAN', 'Devices offline'],
+  ups: ['Charge', 'Runtime', 'Load'], peanut: ['Charge', 'Runtime', 'Load'], tailscale: ['Online', 'Expiring keys', 'Updates'],
 };
 const MAX_FIELDS = 4;
 
@@ -2788,6 +2994,7 @@ function shownStats(svc, stats) {
 function integrationDefs() {
   return Object.fromEntries(Object.entries(INTEGRATIONS).map(([k, v]) => [k, {
     label: v.label, group: v.group, user: v.user || null, secret: v.secret, optionalSecret: Boolean(v.optionalSecret), icon: v.icon, options: v.options || [], fields: DEFAULT_FIELDS[k] || null,
+    fromDevice: v.fromDevice || null, noUrl: Boolean(v.noUrl),
   }]));
 }
 
@@ -2804,15 +3011,35 @@ async function checkService(svc) {
   }
 }
 
+// The device connection a card reads its numbers from, if it is set to one
+function sourceHost(svc) {
+  const def = svc.integration && INTEGRATIONS[svc.integration.type];
+  const id = svc.integration?.options?.device;
+  return def?.fromDevice && id ? config.hosts.find((h) => h.id === id && def.fromDevice.includes(h.type)) || null : null;
+}
+
+// fetch() returns the stats, or { stats, alerts } where alerts are shown under "Needs you"
 async function runIntegration(svc, plainSecret = null) {
   const def = svc.integration && INTEGRATIONS[svc.integration.type];
   if (!def) return { stats: null, error: null };
   let secret = plainSecret;
   try {
-    if (!secret && svc.secret) secret = decryptSecret(serviceSecretHost(svc));
-    if (def.secret && !def.optionalSecret && !secret) throw new UserError('No credentials set; enter them in Admin → Services');
-    const stats = await withTimeout(def.fetch(integrationCtx(svc, secret || '')), 20000, 'Integration');
-    return { stats: stats.slice(0, 4), error: null };
+    let out;
+    if (def.fromDevice && svc.integration.options?.device) {
+      // the numbers the device already collected: no login of its own
+      const h = sourceHost(svc);
+      if (!h) throw new UserError('The device this card reads from was removed; pick another in Admin → Services');
+      const r = results.get(h.id);
+      if (!r?.data) throw new UserError(r && !r.ok ? r.error : 'Waiting for the device’s first reading');
+      out = def.stats(r.data, svc.name);
+      if (!r.ok) return { ...(Array.isArray(out) ? { stats: out } : out), error: `${r.error} (showing the last known numbers)` };
+    } else {
+      if (!secret && svc.secret) secret = decryptSecret(serviceSecretHost(svc));
+      if (def.secret && !def.optionalSecret && !secret) throw new UserError('No credentials set; enter them in Admin → Services');
+      out = await withTimeout(def.fetch(integrationCtx(svc, secret || '')), 20000, 'Integration');
+    }
+    const { stats, alerts = [] } = Array.isArray(out) ? { stats: out } : out;
+    return { stats: stats.slice(0, 12), alerts: alerts.slice(0, 5), error: null };
   } catch (e) {
     return { stats: null, error: safeErrorMessage(e, secret) };
   }
@@ -2834,6 +3061,7 @@ async function pollService(svc) {
   serviceResults.set(svc.id, {
     check,
     stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
+    alerts: integ.alerts ?? (integ.error ? prev?.alerts ?? [] : []),
     error: integ.error,
     updatedAt: Date.now(),
   });
@@ -2842,6 +3070,7 @@ async function pollService(svc) {
 
 function forgetService(id) {
   serviceResults.delete(id);
+  for (const k of unifiSessions.keys()) if (k.startsWith(`svc-${id}|`)) unifiSessions.delete(k);
   for (const k of svcSessions.keys()) if (k.startsWith(id + '|')) svcSessions.delete(k);
 }
 
@@ -2906,13 +3135,18 @@ function validateServiceInput(b) {
   if (type) {
     const def = INTEGRATIONS[type];
     if (!def) throw new UserError('Unknown integration');
-    if (!out.connection) throw new UserError(`${def.label} needs a connection URL`);
-    const options = {};
+    // numbers from a device: no login and no URL of its own (a URL still gives an up/down check)
+    const device = def.fromDevice && validId(b.integration.options?.device) ? config.hosts.find((h) => h.id === b.integration.options.device && def.fromDevice.includes(h.type)) : null;
+    if (def.fromDevice && b.integration.options?.device && !device) throw new UserError('Pick one of the listed devices');
+    if (!out.connection && !device && !def.noUrl) throw new UserError(`${def.label} needs a connection URL`);
+    const options = device ? { device: device.id } : {};
     for (const o of def.options || []) {
+      if (device && o.own) continue;
       options[o.key] = str(b.integration.options?.[o.key], o.multiline ? 1000 : 200, o.label, { required: o.required, multiline: o.multiline });
     }
-    const username = def.user ? str(b.integration.username, 128, def.user) : '';
-    if (def.user && !/optional|empty/i.test(def.user) && !username) throw new UserError(`${def.user} is required for ${def.label}`);
+    if (type === 'ups' && !device) normalizeAddress(options.address, 'nut');
+    const username = def.user && !device ? str(b.integration.username, 128, def.user) : '';
+    if (def.user && !device && !/optional|empty|newer/i.test(def.user) && !username) throw new UserError(`${def.user} is required for ${def.label}`);
     // which numbers to show (none chosen = the defaults)
     const fields = Array.isArray(b.integration.fields) ? [...new Set(b.integration.fields.map((f) => str(f, 40, 'Number')).filter(Boolean))] : [];
     if (fields.length > MAX_FIELDS) throw new UserError(`Pick at most ${MAX_FIELDS} numbers`);
@@ -2930,7 +3164,7 @@ function buildService(old, b) {
   if (secret && (secret.length > 4096 || hasControlChars(secret))) throw new UserError('Invalid secret');
   let note = null;
   const ident = (x) => JSON.stringify(serviceIdentity(x));
-  if (!next.integration) next.secret = null;
+  if (!next.integration || next.integration.options?.device) next.secret = null; // a card on a device's numbers has no login
   else if (secret) next.secret = encryptSecret(serviceSecretHost(next), secret);
   else if (old && b.clearSecret === true) next.secret = null;
   else if (old?.secret && ident(old) !== ident(next)) {
@@ -5008,6 +5242,8 @@ async function handleApi(req, res, url, session, viewer = null) {
       }),
       integrations: integrationDefs(),
       devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+      // device connections a card can take its numbers from
+      sources: config.hosts.map((h) => ({ id: h.id, type: h.type, name: config.devices.find((d) => d.id === h.deviceId)?.name || h.name, ups: h.type !== 'snmp' || Boolean(results.get(h.id)?.data?.ups) })),
       icons: config.icons.map((i) => ({ id: i.id, source: i.source })),
     });
   }
@@ -5618,7 +5854,7 @@ const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'ptb.discord.com', 'cana
 const CHANNEL_TYPES = { ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)' };
 const ALERT_TYPES = {
   offline: { label: 'Device offline', hint: 'A connection stops answering, a Proxmox node goes offline or a UniFi device disconnects.', delay: 5 },
-  service: { label: 'Service down', hint: 'A service status check fails.', delay: 5 },
+  service: { label: 'Service down', hint: 'A service status check fails, or a service card reports a problem (a UPS on battery, Tailscale keys about to expire).', delay: 5 },
   hardware: { label: 'Hardware fault', hint: 'Power supplies, fans and system health (iDRAC, Synology).', delay: 0 },
   storage: { label: 'Storage problem', hint: 'Degraded or crashed pools and failing disks.', delay: 0 },
   temperature: {
@@ -6078,6 +6314,8 @@ function alertConditions(all = false) {
   for (const svc of config.services) {
     const c = serviceResults.get(svc.id)?.check;
     if (c && !c.up) add('service', svc.id, 'critical', `${svc.name} is down`, c.error || (c.code ? `HTTP ${c.code}` : ''), svc.id, false);
+    // what an integration reports (a UPS on battery, Tailscale keys about to expire)
+    for (const a of serviceResults.get(svc.id)?.alerts || []) add('service', `${svc.id}:${a.key}`, a.severity, a.title, a.detail, svc.id, false);
   }
   const w = measuredWatts().total;
   if (over('power', 'total', w, rules.power.watts, rules.power.watts * 0.05)) add('power', 'total', 'warning', `Power draw ${Math.round(w)} W`, `Limit ${rules.power.watts} W`, null, false);

@@ -999,12 +999,32 @@ function renderIntegrationFields() {
   const integ = svcDraft.integration?.type === type ? svcDraft.integration : { type, username: '', options: {} };
   svcDraft.integration = integ;
   const fields = [];
-  if (def.user) {
+  // TrueNAS, Synology, UniFi, UPS: the numbers of a device already added, or the card's own login
+  let fromDevice = false;
+  if (def.fromDevice) {
+    const list = svcState.sources.filter((h) => def.fromDevice.includes(h.type) && h.ups);
+    integ.options ||= {};
+    if (integ.options.device === undefined) integ.options.device = svcDraft.id ? '' : list[0]?.id || '';
+    if (integ.options.device && !list.some((h) => h.id === integ.options.device)) integ.options.device = '';
+    const sel = el('select', { name: 'source' },
+      list.map((h) => el('option', { value: h.id, text: `${h.name} (a device you added)` })),
+      el('option', { value: '', text: def.noUrl ? 'A NUT server (address below)' : 'Its own login (URL and credentials below)' }));
+    sel.value = integ.options.device;
+    sel.addEventListener('change', () => {
+      integ.options.device = sel.value;
+      renderIntegrationFields();
+      syncService();
+    });
+    fields.push(el('label', { class: 'wide' }, el('span', { text: 'Numbers from' }), sel));
+    fromDevice = Boolean(integ.options.device);
+    if (fromDevice) fields.push(el('p', { class: 'hint wide', text: 'Uses what the dashboard already reads from that device: no second password is stored. A connection URL is optional and only adds an up/down check.' }));
+  }
+  if (def.user && !fromDevice) {
     const u = el('input', { value: integ.username || '', autocomplete: 'off', spellcheck: 'false' });
     u.addEventListener('input', () => (integ.username = u.value));
     fields.push(el('label', null, el('span', { text: def.user }), u));
   }
-  if (def.secret) {
+  if (def.secret && !fromDevice) {
     const stored = svcDraft.hasSecret && svcDraft.id ? 'Stored (leave blank to keep)' : def.optionalSecret ? 'Optional' : 'Not set';
     const sec = el('input', { type: 'password', autocomplete: 'new-password', value: svcDraft.secret, placeholder: stored });
     sec.addEventListener('input', () => {
@@ -1014,11 +1034,12 @@ function renderIntegrationFields() {
     fields.push(el('label', null, el('span', { text: def.secret }), sec));
   }
   for (const o of def.options) {
+    if (fromDevice && o.own) continue;
     const input = o.multiline ? el('textarea', { rows: 4, value: integ.options?.[o.key] || '', placeholder: o.placeholder || '' }) : el('input', { value: integ.options?.[o.key] || '', placeholder: o.placeholder || '' });
     input.addEventListener('input', () => ((integ.options ||= {})[o.key] = input.value));
     fields.push(el('label', { class: o.multiline ? 'wide' : null }, el('span', { text: o.label }), input));
   }
-  if (svcDraft.hasSecret && svcDraft.id) {
+  if (svcDraft.hasSecret && svcDraft.id && !fromDevice) {
     const clear = el('input', { type: 'checkbox', checked: svcDraft.clearSecret });
     clear.addEventListener('change', () => (svcDraft.clearSecret = clear.checked));
     fields.push(el('label', { class: 'check wide' }, clear, ' Delete the stored secret'));
@@ -1062,6 +1083,8 @@ function syncService() {
   for (const n of document.querySelectorAll('#svc-form .https-only')) n.classList.toggle('hidden', !https);
   for (const n of document.querySelectorAll('#svc-form .pin-only')) n.classList.toggle('hidden', !https || f.tlsMode.value !== 'pin');
   const def = svcState.integrations[f.integration.value];
+  const urlOptional = def && (def.noUrl || (def.fromDevice && svcDraft.integration?.options?.device));
+  $('svc-url-label').textContent = urlOptional ? 'Connection URL (optional: an up/down check)' : 'Connection URL';
   const warn = $('svc-http-warning');
   const sendsSecret = def?.secret && (svcDraft.secret || svcDraft.hasSecret);
   warn.textContent = /^http:\/\//i.test(url) && sendsSecret

@@ -67,6 +67,27 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForSelector('#svc-editor[hidden]', { state: 'attached' });
   check((await page.textContent('#svc-list')).includes('Jellyfin'), 'Jellyfin saved');
 
+  // --- a UniFi card on the numbers of the UDM Pro already added: no second password ---
+  await page.click('#svc-new');
+  await page.selectOption('#svc-integration', 'unifi');
+  await page.waitForSelector('#svc-int-fields select[name=source]');
+  check(/UDM Pro/.test(await page.$eval('#svc-int-fields select[name=source]', (x) => x.selectedOptions[0].textContent)) && await page.locator('#svc-int-fields input[type=password]').count() === 0 && /optional/.test(await page.textContent('#svc-url-label')), 'UniFi: numbers from the UDM Pro by default, no password field, the URL optional');
+  await page.click('#svc-test');
+  await page.waitForFunction(() => /Clients/.test(document.getElementById('svc-test-result').textContent));
+  check(/WAN: Up/.test(await page.textContent('#svc-test-result')), `Test shows the device's numbers: ${(await page.textContent('#svc-test-result')).trim()}`);
+  await page.selectOption('#svc-int-fields select[name=source]', '');
+  check(await page.locator('#svc-int-fields input[type=password]').count() === 1 && (await page.textContent('#svc-url-label')) === 'Connection URL', 'its own login: user name, password and URL');
+  await page.selectOption('#svc-int-fields select[name=source]', { index: 0 });
+  await page.screenshot({ path: `${S}/ui6-admin-service-from-device.png`, fullPage: true });
+  await page.click('#svc-save');
+  await page.waitForSelector('#svc-editor[hidden]', { state: 'attached' });
+  check((await page.textContent('#svc-list')).includes('UniFi Network'), 'UniFi card saved');
+  await page.evaluate(async (c) => {
+    const { services } = await (await fetch('/api/admin/services')).json();
+    const id = services.find((x) => x.name === 'UniFi Network').id;
+    await fetch(`/api/admin/services/${id}`, { method: 'DELETE', headers: { 'X-CSRF-Token': c } });
+  }, csrf);
+
   // --- services page ---
   await page.waitForTimeout(1500);
   await page.goto(B + '/services');

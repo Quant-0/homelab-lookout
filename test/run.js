@@ -102,7 +102,7 @@ function runSuite(file, env) {
 }
 
 async function main() {
-  for (const port of [PORT, 18022, 18443, 18444, 18445, 18446, 18447, 18448, 18449, 18450, 18451, 18452, 18090, 18025, 18026, 18465]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use (a leftover test process?)`);
+  for (const port of [PORT, 18022, 18443, 18444, 18445, 18446, 18447, 18448, 18449, 18450, 18451, 18452, 18090, 18025, 18026, 18465, 18467]) if (!(await portFree(port))) throw new Error(`Port ${port} is in use (a leftover test process?)`);
 
   // Test certificate for the HTTPS device mock (pinned by the tests)
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem'), '-days', '7', '-subj', '/CN=mock-device', '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
@@ -139,6 +139,7 @@ async function main() {
     { file: 'test/drivers.test.js', fresh: true, skip: !snmpd && 'snmpd not found (install net-snmp or set SNMPD)' },
     { file: 'test/devices.test.js', fresh: true },
     { file: 'test/services.test.js', fresh: true },
+    { file: 'test/infra.test.js', fresh: true, env: { TAILSCALE_API_URL: 'http://127.0.0.1:18090/tailscale' } },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },

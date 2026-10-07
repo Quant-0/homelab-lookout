@@ -62,7 +62,7 @@ const CASES = [
   await req('POST', '/api/admin/devices', { name: 'Orion', kind: 'server', location: 'rack', u: 10, height: 2, connections: [{ type: 'idrac', address: '127.0.0.1:18443', username: 'root', tlsMode: 'pin', fingerprint: FP, secret: 'calvin' }] });
   await req('POST', '/api/admin/devices', { name: 'UDM Pro', kind: 'gateway', location: 'rack', u: 24, height: 1, connections: [{ type: 'unifi', address: '127.0.0.1:18443', username: 'viewer', tlsMode: 'pin', fingerprint: FP, secret: 'unifipass' }] });
   const defs = (await req('GET', '/api/admin/services')).json.integrations;
-  ok(Object.keys(defs).length === 28, `28 integrations offered (${Object.keys(defs).length})`);
+  ok(Object.keys(defs).length === 34, `34 integrations offered (${Object.keys(defs).length})`);
 
   // --- every integration, tested before saving ---
   for (const [type, prefix, username, options, expect] of CASES) {

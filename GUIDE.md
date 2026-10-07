@@ -209,6 +209,19 @@ More on devices:
 
 Press **Test**, then choose the **Numbers on the card** (up to four), then **Save service**.
 
+**Infrastructure cards** (the *Infrastructure* group in the Integration list):
+
+| Integration | Numbers from | What it shows |
+|---|---|---|
+| **TrueNAS** | A TrueNAS device you added, or its own `https://` URL and API key | Alerts, unhealthy pools, space used and free, uptime |
+| **Synology DSM** | A Synology device you added (SNMP), or DSM's own login (URL like `https://nas:5001`, a user without 2-step verification; space only shows for administrators) | Volume used, CPU, memory, uptime, temperature, disk warnings |
+| **UniFi Network** | A UniFi console you added, or its own `https://` URL and a local View Only account | Clients, WAN, devices offline, latency and speed test, cameras |
+| **UPS (NUT)** | A NUT or SNMP UPS you added, or a NUT server's address and UPS name | Charge, runtime, load, mains or battery |
+| **PeaNUT** | PeaNUT's URL and the UPS name (a login only if PeaNUT has one) | The same as UPS |
+| **Tailscale** | A read-only **API access token** from the Tailscale admin console (Settings → Keys). No URL needed; it asks `api.tailscale.com` | Devices online, keys expiring within 14 days, updates available |
+
+With **Numbers from** set to a device, the card uses what the dashboard already reads from it: no second password is stored, and the connection URL is optional (it only adds an up/down check). A UPS card on its own connection or PeaNUT shows *on battery* and *battery low* under **Needs you**; Tailscale shows keys that have expired or expire within 14 days.
+
 To arrange the page, press **Customize** on the Services page:
 - drag services between groups, and move groups up and down
 - rename groups and set the columns per group
