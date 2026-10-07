@@ -2431,21 +2431,28 @@ const stat = (label, value, unit) => ({ label, value: value ?? null, ...(unit ? 
 const count = (r) => (Array.isArray(r) ? r.length : 0);
 const total = (r) => r?.totalRecords ?? r?.total ?? null;
 
+async function mediaStats(x, headers) {
+  const H = { headers };
+  const [c, sessions] = await Promise.all([x.get('/Items/Counts', H), x.get('/Sessions', H)]);
+  return [stat('Movies', c.MovieCount), stat('Series', c.SeriesCount), stat('Episodes', c.EpisodeCount), stat('Streaming', sessions.filter((s) => s.NowPlayingItem).length)];
+}
+
 // Each integration: label, what it needs, and fetch(x) -> up to 4 stats.
 const INTEGRATIONS = {
   // --- Media ---
   jellyfin: {
     label: 'Jellyfin', group: 'Media', secret: 'API key', icon: 'jellyfin',
+    // Jellyfin 10.11+ turns off the old X-Emby-Token header by default; this header works on all versions
     async fetch(x) {
-      const H = { headers: { 'X-Emby-Token': x.secret } };
-      const [c, sessions] = await Promise.all([x.get('/Items/Counts', H), x.get('/Sessions', H)]);
-      return [stat('Movies', c.MovieCount), stat('Series', c.SeriesCount), stat('Episodes', c.EpisodeCount), stat('Streaming', sessions.filter((s) => s.NowPlayingItem).length)];
+      const key = x.secret.trim();
+      if (/["\\\s]/.test(key)) throw new UserError('The API key has characters Jellyfin keys never have: copy it again from Dashboard → API keys');
+      return mediaStats(x, { Authorization: `MediaBrowser Token="${key}"` });
     },
   },
   emby: {
     label: 'Emby', group: 'Media', secret: 'API key', icon: 'emby',
     async fetch(x) {
-      return INTEGRATIONS.jellyfin.fetch(x);
+      return mediaStats(x, { 'X-Emby-Token': x.secret });
     },
   },
   plex: {

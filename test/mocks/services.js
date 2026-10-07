@@ -10,8 +10,13 @@ const basicOk = (req) => req.headers.authorization === 'Basic ' + Buffer.from(`a
 let piholeLogins = 0;
 
 const routes = {
+  // like Jellyfin 10.11+: the old X-Emby-Token header is refused
   jellyfin(req, res, p) {
-    if (req.headers['x-emby-token'] !== KEY) return send(res, 401, {});
+    if (req.headers.authorization !== `MediaBrowser Token="${KEY}"`) return send(res, 401, {});
+    return routes.emby(req, res, p, null, true);
+  },
+  emby(req, res, p, q, authed) {
+    if (!authed && req.headers['x-emby-token'] !== KEY) return send(res, 401, {});
     if (p === '/Items/Counts') return send(res, 200, { MovieCount: 812, SeriesCount: 97, EpisodeCount: 4211, SongCount: 0 });
     if (p === '/Sessions') return send(res, 200, [{ NowPlayingItem: { Name: 'x' } }, { NowPlayingItem: { Name: 'y' } }, {}]);
   },

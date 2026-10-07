@@ -24,7 +24,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // [type, path prefix, username, options, expected stats (label=value)]
 const CASES = [
   ['jellyfin', 'jellyfin', '', {}, { Movies: 812, Series: 97, Episodes: 4211, Streaming: 2 }],
-  ['emby', 'jellyfin', '', {}, { Movies: 812, Streaming: 2 }],
+  ['emby', 'emby', '', {}, { Movies: 812, Streaming: 2 }],
   ['plex', 'plex', '', {}, { Streams: 1, Movies: 640, 'TV shows': 55, Libraries: 3 }],
   ['tautulli', 'tautulli', '', {}, { Streams: 2, Transcoding: 1, Bandwidth: 24500000 }],
   ['sonarr', 'sonarr', '', {}, { Series: 42, Wanted: 17, Queued: 3 }],
