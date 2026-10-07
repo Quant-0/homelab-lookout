@@ -275,6 +275,11 @@ server.on('upgrade', (req, sock) => {
         { name: 'tank', status: 'ONLINE', healthy: true, warning: false, size: 40e12, allocated: 30e12, free: 10e12 },
         { name: 'fast', status: 'DEGRADED', healthy: false, warning: true, size: 2e12, allocated: 0.5e12, free: 1.5e12, status_detail: 'One or more devices faulted' },
       ]);
+      // a RAIDZ pool: the raw disks hold 40 TB, the usable space is 26 TB (what TrueNAS shows)
+      if (msg.method === 'pool.dataset.query') return reply([
+        { id: 'tank', used: { parsed: 20e12 }, available: { parsed: 6e12 } },
+        { id: 'fast', used: { parsed: 0.4e12 }, available: { parsed: 0.6e12 } },
+      ]);
       if (msg.method === 'update.check_available') return reply({ status: 'AVAILABLE', version: '26.04.1' });
       if (msg.method === 'app.query') return reply([
         { name: 'jellyfin', version: '1.2.3', human_version: '10.10.3_1.2.3', upgrade_available: true, latest_app_version: '10.10.6' },

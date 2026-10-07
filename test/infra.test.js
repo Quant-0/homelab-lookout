@@ -61,7 +61,7 @@ const nut = net.createServer((sock) => {
   const fromDev = (type, host) => ({ name: type, group: 'Infra', integration: { type, options: { device: host } } });
   r = await req('POST', '/api/admin/services/test', fromDev('truenas', src('truenas').id));
   let g = got(r);
-  ok(!r.json.error && g['Unhealthy pools'] === 1 && g.Pools === 2 && typeof g.Used === 'number' && g.Alerts >= 1, `TrueNAS from the device: ${r.json.error || JSON.stringify(g)}`);
+  ok(!r.json.error && g['Unhealthy pools'] === 1 && g.Pools === 2 && Math.abs(g.Used - (100 * 20.4) / 27) < 0.01 && g.Free === 6.6e12 && g.Alerts >= 1, `TrueNAS from the device: ${r.json.error || JSON.stringify(g)}`);
   r = await req('POST', '/api/admin/services/test', fromDev('unifi', src('unifi').id));
   g = got(r);
   ok(!r.json.error && g.WAN === 'Up' && g.Clients > 0 && typeof g['Devices offline'] === 'number' && /^\d+\/\d+$/.test(g['Cameras online']), `UniFi from the device: ${r.json.error || JSON.stringify(g)}`);

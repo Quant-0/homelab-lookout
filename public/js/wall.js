@@ -14,6 +14,15 @@ let history = {};
 let spotIndex = 0;
 let spotTimer = null;
 let refreshTimer = null;
+let draft = null; // the layout being customized (previewed live, saved on Save)
+
+const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices' };
+const SIZE_NAMES = { normal: 'Normal', wide: 'Wide', tall: 'Tall', big: 'Big' };
+const DEFAULT_LAYOUT = {
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
+  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, vmCount: true,
+};
+const layout = () => draft || data?.wall || DEFAULT_LAYOUT;
 
 async function getJson(url) {
   const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
@@ -66,7 +75,7 @@ function renderHead(d) {
     ? [crit ? `${crit} ${crit === 1 ? 'fault' : 'faults'}` : null, warn ? `${warn} to watch` : null].filter(Boolean).join(', ')
     : 'All systems normal';
   document.title = `${$('headline').textContent} · ${d.title}`;
-  const guests = d.vms?.home === false ? [] : (d.proxmox || []).flatMap((h) => h.data?.guests || []);
+  const guests = d.vms?.home === false || !layout().vmCount ? [] : (d.proxmox || []).flatMap((h) => h.data?.guests || []);
   const seen = new Set();
   const vms = guests.filter((g) => !seen.has(`${g.node}:${g.vmid}`) && seen.add(`${g.node}:${g.vmid}`));
   $('wall-sub').textContent = [
@@ -180,7 +189,7 @@ function renderRack() {
   const rack = data.rack;
   const box = $('wall-rack');
   const section = box.closest('.rack');
-  section.hidden = !rack?.enabled || !rack.items.length;
+  section.hidden = !rack?.enabled || !rack.items.length || layout().hidden.includes('rack');
   if (section.hidden) return;
   const inner = el('div', { class: 'rack-view' });
   const draw = () => {
@@ -207,13 +216,17 @@ function fitRack() {
 // --- services ---
 function renderServices() {
   // the same choice as Home (Admin → Dashboard); the wall keeps its own tile look
-  const mode = data?.homeServices || 'tiles';
-  const all = (services?.groups || []).flatMap((g) => g.services || []).filter((s) => s.onHome !== false);
+  // or the ones picked for the wall with Customize
+  const lay = layout();
+  const picked = lay.services;
+  const mode = picked ? 'tiles' : data?.homeServices || 'tiles';
+  const every = (services?.groups || []).flatMap((g) => g.services || []);
+  const all = picked ? picked.map((id) => every.find((s) => s.id === id)).filter(Boolean) : every.filter((s) => s.onHome !== false);
   const box = $('svc');
   const down = all.filter((s) => s.check && !s.check.up);
-  box.hidden = mode === 'off' || !all.length || (mode === 'down' && !down.length);
+  box.hidden = !lay.showServices || mode === 'off' || !all.length || (mode === 'down' && !down.length);
   if (box.hidden) return box.replaceChildren();
-  const list = (mode === 'down' ? down : [...down, ...all.filter((s) => !down.includes(s))]).slice(0, 10);
+  const list = (mode === 'down' ? down : picked ? all : [...down, ...all.filter((s) => !down.includes(s))]).slice(0, 10);
   box.replaceChildren(...list.map((s) => {
     const c = s.check;
     const st = s.stats?.find((x) => x.value !== null && x.value !== undefined && x.value !== '');
@@ -223,6 +236,136 @@ function renderServices() {
       el('span', { class: 'tile-text' }, el('span', { class: 'tile-name', text: s.name }), el('span', { class: 'tile-state', text: line })),
       el('span', { class: 'tile-top' }, c ? el('span', { class: `dot ${c.up ? 'good' : 'critical'}` }) : null));
   }));
+}
+
+// --- devices: a tile each (all of them, or the ones picked with Customize) ---
+const STATE_WORDS = { good: 'OK', warning: 'Warning', critical: 'Problem' };
+function renderDevices() {
+  const box = $('devs');
+  const picked = layout().devices;
+  const list = picked ? picked.map((id) => data.devices.find((x) => x.id === id)).filter(Boolean) : data.devices;
+  box.replaceChildren(
+    el('div', { class: 'lbl' }, HD.icon('server'), 'Devices', el('span', { class: 'r', text: String(list.length) })),
+    el('div', { class: 'dev-grid' }, list.map((dev) => {
+      const info = Rack.itemInfo(dev, data);
+      const w = info.measuredW ?? info.poeW;
+      const line = [STATE_WORDS[info.status] || (dev.connections.length || dev.unifi ? 'Waiting' : 'Not monitored'), w != null ? `${fmt.n(w)} W` : info.vms || info.sub].filter(Boolean).join(' · ');
+      return el('a', { class: `dev-tile ${info.status || ''}`, href: `/#device-${dev.id}` },
+        el('span', { class: `dot ${info.status || 'off'}` }), el('b', { text: dev.name }), el('span', { text: line }));
+    })));
+}
+
+// Order, size and visibility of the panels
+function applyLayout() {
+  const lay = layout();
+  const hidden = new Set(lay.hidden);
+  lay.panels.forEach((p, i) => {
+    const node = document.querySelector(`[data-panel="${p.id}"]`);
+    if (!node) return;
+    node.style.order = String(i);
+    node.classList.remove('size-normal', 'size-wide', 'size-tall', 'size-big');
+    node.classList.add(`size-${p.size}`);
+    node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length));
+  });
+  document.querySelector('.clock').hidden = !lay.clock;
+}
+
+// --- Customize: the admin picks panels, their order and size, and what the wall lists ---
+function openCustomize() {
+  draft = structuredClone(layout());
+  const body = el('div', { class: 'wall-edit' });
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const preview = () => {
+    render();
+    draw();
+  };
+  const pickList = (items, chosen, onChange) => el('div', { class: 'wall-picks' }, items.map((x) => {
+    const cb = el('input', { type: 'checkbox', checked: chosen.includes(x.id) });
+    cb.addEventListener('change', () => onChange(x.id, cb.checked));
+    return el('label', { class: 'check' }, cb, ` ${x.name}`);
+  }));
+  const draw = () => {
+    const hidden = new Set(draft.hidden);
+    const rows = draft.panels.map((p, i) => {
+      const on = el('input', { type: 'checkbox', checked: !hidden.has(p.id), 'aria-label': `Show ${PANEL_NAMES[p.id]}` });
+      on.addEventListener('change', () => {
+        draft.hidden = on.checked ? draft.hidden.filter((x) => x !== p.id) : [...draft.hidden, p.id];
+        preview();
+      });
+      const size = el('select', { 'aria-label': `Size of ${PANEL_NAMES[p.id]}` }, Object.entries(SIZE_NAMES).map(([k, t]) => el('option', { value: k, text: t })));
+      size.value = p.size;
+      size.addEventListener('change', () => {
+        p.size = size.value;
+        preview();
+      });
+      const move = (d) => {
+        const j = i + d;
+        if (j < 0 || j >= draft.panels.length) return;
+        [draft.panels[i], draft.panels[j]] = [draft.panels[j], draft.panels[i]];
+        preview();
+      };
+      return el('li', { class: hidden.has(p.id) ? 'off' : null, 'data-id': p.id },
+        el('label', { class: 'check' }, on, ` ${PANEL_NAMES[p.id]}`),
+        size,
+        el('button', { type: 'button', class: 'icon-button', title: 'Move up', 'aria-label': `Move ${PANEL_NAMES[p.id]} up`, disabled: i === 0, onclick: () => move(-1) }, HD.icon('chevron-up')),
+        el('button', { type: 'button', class: 'icon-button', title: 'Move down', 'aria-label': `Move ${PANEL_NAMES[p.id]} down`, disabled: i === draft.panels.length - 1, onclick: () => move(1) }, HD.icon('chevron-down')));
+    });
+    const toggle = (key, text) => {
+      const cb = el('input', { type: 'checkbox', name: key, checked: draft[key] });
+      cb.addEventListener('change', () => {
+        draft[key] = cb.checked;
+        preview();
+      });
+      return el('label', { class: 'check' }, cb, ` ${text}`);
+    };
+    // "every one" or a list you pick
+    const chooser = (key, allText, pickText, items) => {
+      const mode = el('select', { name: `${key}-mode` }, el('option', { value: 'all', text: allText }), el('option', { value: 'pick', text: pickText }));
+      mode.value = draft[key] ? 'pick' : 'all';
+      mode.addEventListener('change', () => {
+        draft[key] = mode.value === 'pick' ? items.map((x) => x.id) : null;
+        preview();
+      });
+      return [mode, draft[key] ? pickList(items, draft[key], (id, on) => {
+        draft[key] = on ? [...draft[key], id] : draft[key].filter((x) => x !== id);
+        preview();
+      }) : null];
+    };
+    const svcItems = (services?.groups || []).flatMap((g) => g.services || []).map((x) => ({ id: x.id, name: x.name }));
+    body.replaceChildren(
+      el('h4', { text: 'Panels' }),
+      el('p', { class: 'hint', text: 'Tick the ones to show; the order fills the screen left to right, top to bottom. Wide takes two columns, Tall two rows, Big both.' }),
+      el('ol', { class: 'wall-panels' }, rows),
+      el('h4', { text: 'Top bar' }),
+      el('div', { class: 'wall-picks' }, toggle('clock', 'Clock'), toggle('vmCount', 'VMs running')),
+      el('h4', { text: 'Services along the bottom' }),
+      toggle('showServices', 'Show services'),
+      ...(draft.showServices ? chooser('services', 'The same as Home', 'The ones I pick (up to 10 show)', svcItems) : []),
+      el('h4', { text: 'Devices panel' }),
+      ...chooser('devices', 'Every device', 'The ones I pick', data.devices.map((x) => ({ id: x.id, name: x.name }))),
+      el('div', { class: 'form-actions' },
+        el('button', { type: 'button', class: 'primary', text: 'Save', onclick: async () => {
+          try {
+            const r = await HD.api('PUT', '/api/admin/wall', draft);
+            data.wall = r.wall;
+            dlg.close();
+          } catch (e) {
+            msg.textContent = e.message;
+          }
+        } }),
+        el('button', { type: 'button', text: 'Default layout', onclick: () => {
+          draft = structuredClone(DEFAULT_LAYOUT);
+          preview();
+        } }),
+        msg));
+  };
+  draw();
+  // closing without Save throws the draft away; after Save the saved layout shows
+  const dlg = HD.drawer('Customize the wall', body, { onClose: () => {
+    draft = null;
+    render();
+  } });
+  render();
 }
 
 function renderTools() {
@@ -239,6 +382,7 @@ function renderTools() {
     el('a', { class: 'button icon-button', href: '/', title: 'Home', 'aria-label': 'Home' }, HD.icon('house')),
     el('button', { type: 'button', class: 'icon-button', title: 'Search', 'aria-label': 'Search', onclick: HD.openSearch }, HD.icon('search')),
     el('button', { type: 'button', class: 'icon-button', title: 'Look on this device', 'aria-label': 'Look on this device', onclick: (e) => HD.openLook(e.currentTarget) }, HD.icon('palette')),
+    data?.loggedIn ? el('button', { type: 'button', class: 'icon-button', id: 'wall-customize', title: 'Customize the wall', 'aria-label': 'Customize the wall', onclick: openCustomize }, HD.icon('sliders-horizontal')) : null,
     full);
 }
 
@@ -256,6 +400,7 @@ async function keepAwake() {
 }
 
 function render() {
+  applyLayout();
   renderHead(data);
   renderList();
   renderSpot();
@@ -263,6 +408,7 @@ function render() {
   renderNet();
   renderRack();
   renderServices();
+  renderDevices();
 }
 
 async function refresh() {
@@ -280,6 +426,7 @@ async function refresh() {
       /* the charts wait for the next round */
     }
     $('global-error').classList.add('hidden');
+    if (!$('wall-customize') && d.loggedIn) renderTools();
     render();
   } catch (e) {
     $('global-error').textContent = `Could not load the dashboard: ${e.message}. Trying again…`;

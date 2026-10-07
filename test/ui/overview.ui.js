@@ -131,6 +131,46 @@ const WORDS = ['OK', 'Warning', 'Fault', 'Offline', 'Waiting', 'Not monitored'];
   check(fig.y + fig.height <= rk.y + rk.height + 2, 'wall: the rack fits its column');
   await wall.screenshot({ path: `${S}/wall.png` });
 
+  // customize the wall: hide the problem list, put the rack first and big, show picked devices
+  await wall.click('#wall-customize');
+  await wall.waitForSelector('dialog.drawer[open] .wall-panels');
+  const row = (id) => wall.locator(`.wall-panels li[data-id="${id}"]`);
+  await row('list').locator('input[type=checkbox]').uncheck();
+  check(await wall.locator('#list').isHidden(), 'customize: unticking a panel hides it right away (preview)');
+  for (let i = 0; i < 2; i++) await row('rack').getByRole('button', { name: /up$/ }).click();
+  await row('rack').locator('select').selectOption('big');
+  await row('devices').locator('input[type=checkbox]').check();
+  await row('devices').locator('select').selectOption('normal');
+  await wall.selectOption('dialog.drawer select[name=devices-mode]', 'pick');
+  for (const name of ['UDM Pro', 'truenas']) await wall.locator('dialog.drawer .wall-picks label', { hasText: name }).locator('input').uncheck();
+  await wall.uncheck('dialog.drawer input[name=clock]');
+  check(await wall.locator('dialog.drawer select[name=services-mode]').count() === 1 && !/object HTML/.test(await wall.textContent('dialog.drawer')), 'the services choice is a list (same as Home, or pick)');
+  await wall.screenshot({ path: `${S}/wall-customize.png` });
+  await wall.click('dialog.drawer button:has-text("Save")');
+  await wall.waitForSelector('dialog.drawer', { state: 'detached' });
+  const saved = await wall.evaluate(async () => (await (await fetch('/api/dashboard')).json()).wall);
+  check(saved.panels[0].id === 'rack' && saved.panels[0].size === 'big' && saved.hidden.includes('list') && !saved.hidden.includes('devices') && saved.devices.length === 6 && !saved.clock, `customize: saved on the server (${saved.panels.map((p) => `${p.id}:${p.size}`).join(' ')})`);
+  await wall.reload();
+  await wall.waitForSelector('#devs .dev-tile');
+  const rackBox = await wall.locator('#rack').boundingBox();
+  const spotBox = await wall.locator('#spot').boundingBox();
+  check(rackBox.x < spotBox.x && rackBox.width > spotBox.width * 1.8 && await wall.locator('#list').isHidden() && await wall.locator('.clock').isHidden(), 'after a reload: the rack first and big, no problem list, no clock');
+  const tiles = await wall.locator('#devs .dev-tile b').allTextContents();
+  check(tiles.length === 6 && !tiles.includes('UDM Pro') && tiles.includes('titan'), `the devices panel shows the picked devices (${tiles.join(', ')})`);
+  check(await wall.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1), 'still one screen');
+  await wall.screenshot({ path: `${S}/wall-custom.png` });
+  // a viewer without login sees no Customize; Default layout brings the first look back
+  await wall.click('#wall-customize');
+  await wall.click('dialog.drawer button:has-text("Default layout")');
+  await wall.click('dialog.drawer button:has-text("Save")');
+  await wall.waitForSelector('dialog.drawer', { state: 'detached' });
+  check(!(await wall.locator('#list').isHidden()) && await wall.locator('#devs').isHidden(), 'Default layout restores the original wall');
+  const bad = await wall.evaluate(async () => {
+    const { csrf } = await (await fetch('/api/session')).json();
+    return (await fetch('/api/admin/wall', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ panels: [{ id: 'evil', size: 'big' }] }) })).status;
+  });
+  check(bad === 400, 'an unknown panel is refused');
+
   // phone
   await page.goto(B + '/');
   await page.setViewportSize({ width: 390, height: 844 });

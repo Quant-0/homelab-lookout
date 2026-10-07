@@ -1503,15 +1503,17 @@ textarea.md-input, .md-editor textarea {
 /* ---------- Wall display: one screen that never scrolls, read from across the room ---------- */
 
 html:has(.wall-body), .wall-body { height: 100%; }
-.wall { max-width: none; height: 100%; display: grid; gap: clamp(10px, 1.4vh, 18px); padding: calc(clamp(12px, 2vh, 26px) + env(safe-area-inset-top, 0px)) clamp(16px, 1.8vw, 32px) clamp(12px, 2vh, 26px);
-  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr) minmax(0, 0.8fr);
-  grid-template-rows: auto minmax(0, 1.25fr) minmax(0, 1fr) auto;
-  grid-template-areas: "head head head" "spot power rack" "list net rack" "svc svc rack"; }
+.wall { max-width: none; height: 100%; display: flex; flex-direction: column; gap: clamp(10px, 1.4vh, 18px); padding: calc(clamp(12px, 2vh, 26px) + env(safe-area-inset-top, 0px)) clamp(16px, 1.8vw, 32px) clamp(12px, 2vh, 26px); }
+/* panels in the order and sizes chosen with Customize; rows share the height */
+.wall-grid { flex: 1; min-height: 0; display: grid; gap: inherit; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); grid-auto-flow: row dense; }
+.wall-grid > .size-wide { grid-column: span 2; }
+.wall-grid > .size-tall { grid-row: span 2; }
+.wall-grid > .size-big { grid-column: span 2; grid-row: span 2; }
 .wall .w { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: clamp(14px, 2vh, 24px); border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden; }
 .wall .lbl { display: flex; align-items: center; gap: 8px; font-size: clamp(12px, 1.35vh, 15px); font-weight: 500; color: var(--muted); }
 .wall .lbl .icon { width: 1.1em; height: 1.1em; }
 .wall .lbl .r { margin-left: auto; font-variant-numeric: tabular-nums; }
-.wall-head { grid-area: head; display: flex; align-items: center; gap: clamp(12px, 1.4vw, 24px); min-width: 0; }
+.wall-head { flex: none; display: flex; align-items: center; gap: clamp(12px, 1.4vw, 24px); min-width: 0; }
 .orb { width: clamp(14px, 1.8vh, 20px); height: clamp(14px, 1.8vh, 20px); flex: none; border-radius: 50%; background: var(--c, var(--good)); box-shadow: 0 0 0 6px color-mix(in srgb, var(--c, var(--good)) 15%, transparent), 0 0 calc(28px * var(--glow)) var(--c, var(--good)); }
 .orb.critical { --c: var(--critical); animation: breathe 2.4s ease-in-out infinite; }
 .orb.warning { --c: var(--warning); }
@@ -1526,7 +1528,7 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .clock b { display: block; font-size: clamp(28px, 4.6vh, 54px); font-weight: 600; letter-spacing: -0.05em; font-variant-numeric: tabular-nums; }
 .clock span { font-size: clamp(12px, 1.5vh, 16px); color: var(--muted); }
 
-.wall .spot { grid-area: spot; cursor: pointer; --c: var(--good); background: radial-gradient(90% 80% at 0% 0%, color-mix(in srgb, var(--c) calc(18% * var(--glow) + 4%), transparent), transparent 70%), var(--surface); border-color: color-mix(in srgb, var(--c) 32%, transparent); }
+.wall .spot { cursor: pointer; --c: var(--good); background: radial-gradient(90% 80% at 0% 0%, color-mix(in srgb, var(--c) calc(18% * var(--glow) + 4%), transparent), transparent 70%), var(--surface); border-color: color-mix(in srgb, var(--c) 32%, transparent); }
 .wall .spot.critical { --c: var(--critical); box-shadow: 0 0 calc(60px * var(--glow)) -30px var(--critical); }
 .wall .spot.warning, .wall .spot.serious { --c: var(--warning); }
 .spot-who { margin-top: auto; display: flex; align-items: center; gap: 10px; font-size: clamp(14px, 2vh, 22px); font-weight: 500; color: var(--text-2); }
@@ -1542,7 +1544,6 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .spot .fade { margin-top: auto; animation: fadein 0.5s ease; }
 @keyframes fadein { from { opacity: 0; transform: translateY(6px); } }
 
-.wall .list { grid-area: list; }
 .probs { flex: 1; display: flex; flex-direction: column; justify-content: space-around; margin: clamp(6px, 1vh, 12px) 0 0; padding: 0; list-style: none; min-height: 0; overflow: hidden; }
 .probs li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: clamp(4px, 0.8vh, 10px) 0; border-top: 1px solid var(--border); cursor: pointer; font-size: clamp(13px, 1.75vh, 19px); }
 .probs li:first-child { border-top: 0; }
@@ -1551,7 +1552,7 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .probs b span { font-weight: 400; color: var(--muted); }
 .probs time { font-size: 0.85em; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-.wall .power { grid-area: power; cursor: pointer; }
+.wall .power { cursor: pointer; }
 .wall .huge { margin-top: clamp(4px, 1vh, 12px); font-size: clamp(44px, 9vh, 112px); font-weight: 600; line-height: 0.95; letter-spacing: -0.06em; font-variant-numeric: tabular-nums; }
 .wall .huge small { margin-left: 0.15em; font-size: clamp(16px, 2.4vh, 28px); font-weight: 500; letter-spacing: 0; color: var(--muted); }
 .wall .huge.down { color: var(--critical-ink); }
@@ -1566,12 +1567,11 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .trio span { display: block; font-size: clamp(11px, 1.3vh, 14px); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trio b { display: block; font-size: clamp(15px, 2.3vh, 26px); font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .trio b small { margin-left: 2px; font-size: 0.6em; font-weight: 500; letter-spacing: 0; color: var(--muted); }
-.wall .net { grid-area: net; cursor: pointer; }
-.wall .rack { grid-area: rack; }
+.wall .net { cursor: pointer; }
 .wall-rack { flex: 1; min-height: 0; display: flex; justify-content: center; margin-top: clamp(6px, 1vh, 12px); overflow: hidden; }
 .wall-rack > div { width: 100%; }
 .wall .rack .range-tabs { margin-left: auto; }
-.wall .svc { grid-area: svc; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: clamp(8px, 1vh, 12px); }
+.wall .svc { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: clamp(8px, 1vh, 12px); }
 .wall .svc .dtile { min-height: 0; flex-direction: row; align-items: center; gap: 10px; padding: clamp(8px, 1.2vh, 14px) 12px; }
 .wall .svc .tile-top { margin: 0; padding: 0; order: 3; }
 .wall .svc .tile-icon { width: clamp(24px, 3vh, 32px); height: clamp(24px, 3vh, 32px); order: -1; }
@@ -1579,18 +1579,39 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .wall .svc .tile-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .wall .svc .tile-state { font-size: clamp(11px, 1.3vh, 14px); }
 .wall-error { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 40; }
+.dev-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr)); align-content: start; gap: clamp(6px, 1vh, 10px); margin-top: clamp(6px, 1vh, 12px); overflow: hidden; }
+.dev-tile { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; align-items: center; padding: clamp(8px, 1.1vh, 12px) 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); color: var(--text); text-decoration: none; }
+.dev-tile:hover { text-decoration: none; border-color: var(--border-strong); }
+.dev-tile .dot { grid-row: span 2; }
+.dev-tile b { font-size: clamp(13px, 1.6vh, 17px); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-tile span:last-child { font-size: clamp(11px, 1.3vh, 14px); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-tile.critical { border-color: color-mix(in srgb, var(--critical) 40%, transparent); }
+.dev-tile.warning { border-color: color-mix(in srgb, var(--warning) 34%, transparent); }
+
+/* Customize the wall */
+.wall-edit h4 { margin: 18px 0 8px; }
+.wall-edit h4:first-child { margin-top: 0; }
+.wall-panels { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.wall-panels li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.wall-panels li.off { opacity: 0.6; }
+.wall-panels select { height: 32px; }
+.wall-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 14px; margin-top: 8px; }
+.wall-edit .form-actions { position: sticky; bottom: 0; margin-top: 18px; padding: 10px 0; background: var(--surface); }
 
 /* too small to be a wall: stack and scroll */
 @media (max-width: 1100px), (max-height: 600px) {
   html:has(.wall-body), .wall-body { height: auto; }
-  .wall { height: auto; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "head head" "spot spot" "power net" "list rack" "svc svc"; }
+  .wall { height: auto; }
+  .wall-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(260px, auto); }
+  .wall-grid > .size-tall, .wall-grid > .size-big { grid-row: span 1; }
   .wall .spot { min-height: 260px; }
   .wall .power .wall-chart, .wall .net .wall-chart { flex: none; height: 140px; }
   .wall .svc { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
   .wall-rack { flex: none; }
 }
 @media (max-width: 680px) {
-  .wall { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "spot" "power" "list" "net" "rack" "svc"; }
+  .wall-grid { grid-template-columns: minmax(0, 1fr); }
+  .wall-grid > [class*="size-"] { grid-column: auto; }
   .wall-head { flex-wrap: wrap; }
   .wall-head .spacer { display: none; }
   .clock { order: -1; width: 100%; text-align: left; display: flex; align-items: baseline; gap: 10px; }

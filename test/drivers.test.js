@@ -92,6 +92,7 @@ const nut = net.createServer((sock) => {
   r = await req('POST', '/api/admin/hosts', { ...om, secret: 'omadapass' });
   ok(r.status === 201, 'Omada controller added');
   const omId = r.json.host.id;
+  await sleep(1500); // the first poll logs in; measure after it, not alongside it
   const l0 = (await stats()).omadaLogins;
   for (let i = 0; i < 3; i++) await req('POST', `/api/admin/hosts/${omId}/test`, {});
   ok((await stats()).omadaLogins - l0 <= 1, 'Omada session reused across polls');

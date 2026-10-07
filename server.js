@@ -334,6 +334,7 @@ function loadConfig() {
     hosts: Array.isArray(raw.hosts) ? raw.hosts : [],
     backgrounds: Array.isArray(raw.backgrounds) ? raw.backgrounds : [], // [{ id, mime, bytes, name, uploadedAt }]
     layout: raw.layout && Array.isArray(raw.layout.items) ? raw.layout : null,
+    wall: raw.wall && typeof raw.wall === 'object' ? raw.wall : null,
     rack: {
       enabled: raw.rack?.enabled !== false,
       units: Number.isInteger(raw.rack?.units) ? raw.rack.units : DEFAULT_RACK.units,
@@ -806,6 +807,51 @@ function syncUnifiDevices(h, devices) {
   if (added) {
     saveConfig();
     log(`UniFi: ${added} device(s) found through ${h.name}`);
+  }
+}
+
+// The wall display: which panels, in what order and size, and which devices and services it shows
+const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices'];
+const WALL_SIZES = ['normal', 'wide', 'tall', 'big'];
+const DEFAULT_WALL = {
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
+  hidden: ['devices'],
+  showServices: true,
+  services: null, // null = the same as Home
+  devices: null, // null = every device
+  clock: true,
+  vmCount: true,
+};
+
+function validateWall(b) {
+  if (!b || typeof b !== 'object') throw new UserError('Invalid wall layout');
+  const seen = new Set();
+  const panels = [];
+  for (const x of Array.isArray(b.panels) ? b.panels : []) {
+    if (!WALL_PANELS.includes(x?.id) || seen.has(x.id)) throw new UserError('Invalid wall panel');
+    if (!WALL_SIZES.includes(x.size)) throw new UserError('Invalid panel size');
+    seen.add(x.id);
+    panels.push({ id: x.id, size: x.size });
+  }
+  for (const d of DEFAULT_WALL.panels) if (!seen.has(d.id)) panels.push({ ...d }); // panels added in later versions
+  const ids = (v, list, max) => (v === null || v === undefined ? null : Array.isArray(v) ? [...new Set(v.filter((id) => typeof id === 'string' && list.some((x) => x.id === id)))].slice(0, max) : null);
+  return {
+    panels,
+    hidden: [...new Set((Array.isArray(b.hidden) ? b.hidden : []).filter((id) => WALL_PANELS.includes(id)))],
+    showServices: b.showServices !== false,
+    services: ids(b.services, config.services, 60),
+    devices: ids(b.devices, config.devices, 100),
+    clock: b.clock !== false,
+    vmCount: b.vmCount !== false,
+  };
+}
+
+function wallLayout() {
+  if (!config.wall) return structuredClone(DEFAULT_WALL);
+  try {
+    return validateWall(config.wall); // drops devices and services that were removed since
+  } catch {
+    return structuredClone(DEFAULT_WALL);
   }
 }
 
@@ -1747,17 +1793,20 @@ function collectTruenas(h, secret) {
       allocated: p.allocated ?? null,
       free: p.free ?? null,
     }));
-    if (outPools.some((p) => p.size == null)) {
-      const ds = await rpc
-        .call('pool.dataset.query', [[['id', 'in', outPools.map((p) => p.name)]], { extra: { retrieve_children: false } }])
-        .catch(() => []);
-      for (const p of outPools) {
-        const d = ds.find((x) => x.id === p.name);
-        if (p.size == null && d) {
-          p.allocated = d.used?.parsed ?? null;
-          p.free = d.available?.parsed ?? null;
-          if (p.allocated != null && p.free != null) p.size = p.allocated + p.free;
-        }
+    // pool.query counts the raw disks, parity and mirrors included; the pool's root dataset says
+    // what is usable (used + available), which is what TrueNAS itself shows as the pool's size
+    const ds = await rpc
+      .call('pool.dataset.query', [[['id', 'in', outPools.map((p) => p.name)]], { extra: { retrieve_children: false } }])
+      .catch(() => []);
+    for (const p of outPools) {
+      const d = (Array.isArray(ds) ? ds : []).find((x) => x.id === p.name);
+      const used = d?.used?.parsed;
+      const avail = d?.available?.parsed;
+      if (typeof used === 'number' && typeof avail === 'number') {
+        p.rawSize = p.size;
+        p.allocated = used;
+        p.free = avail;
+        p.size = used + avail;
       }
     }
 
@@ -2256,7 +2305,8 @@ async function collectUnifi(h, password) {
       const sub = Object.fromEntries(hl.map((x) => [x.subsystem, x]));
       health = {
         wan: sub.wan ? { status: sub.wan.status, ip: sub.wan.wan_ip || null } : null,
-        internet: sub.www ? { status: sub.www.status, latencyMs: num0(sub.www.latency), downMbps: num0(sub.www.xput_down), upMbps: num0(sub.www.xput_up) } : null,
+        // 0/0 means no speed test has run on the console: show nothing rather than "0 Mbps"
+        internet: sub.www ? { status: sub.www.status, latencyMs: num0(sub.www.latency), downMbps: num0(sub.www.xput_down) || null, upMbps: num0(sub.www.xput_down) ? num0(sub.www.xput_up) : null } : null,
         clients: (num0(sub.wlan?.num_user) || 0) + (num0(sub.lan?.num_user) || 0),
         wifiClients: num0(sub.wlan?.num_user),
         wiredClients: num0(sub.lan?.num_user),
@@ -4785,6 +4835,7 @@ function dashboardPayload() {
     homeServices: s.homeServices,
     vms: s.vms,
     layout: config.layout,
+    wall: wallLayout(),
     generatedAt: Date.now(),
     idrac: group('idrac'),
     proxmox: group('proxmox'),
@@ -5199,6 +5250,14 @@ async function handleApi(req, res, url, session, viewer = null) {
     saveConfig();
     log(config.layout ? 'Dashboard layout saved' : 'Dashboard layout reset');
     return sendJson(res, 200, { layout: config.layout });
+  }
+
+  if (p === '/api/admin/wall' && m === 'PUT') {
+    const body = await readBody(req);
+    config.wall = body === null || body.reset === true ? null : validateWall(body);
+    saveConfig();
+    log(config.wall ? 'Wall display layout saved' : 'Wall display layout reset');
+    return sendJson(res, 200, { wall: wallLayout() });
   }
 
   if (p === '/api/admin/backgrounds' && m === 'POST') {
@@ -6828,6 +6887,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     hosts,
     backgrounds: restoredImages.backgrounds.map((x) => x.rec),
     layout: c.layout?.items ? c.layout : null,
+    wall: c.wall && typeof c.wall === 'object' ? c.wall : null,
     rack: { ...DEFAULT_RACK, ...(c.rack || {}), passive: cleanPassive(c.rack?.passive) },
     devices: arr(c.devices).map((d) => {
       // brand/model and front are re-checked like in Admin

@@ -84,6 +84,14 @@ The rack is drawn to scale, like the real hardware, with live lights: the drives
 - **Needs you:** one problem at a time, eight seconds each (point at it to pause), with the full list beside it
 - power now with its graph, the internet, the rack, and the services
 
+**Customize** (the sliders button at the top, only when you're signed in) changes the wall for every screen that shows it, with a live preview:
+- tick the panels to show (Needs you, All problems, Power, Internet, Rack, and a **Devices** panel), move them up and down, and make each **Normal**, **Wide** (two columns), **Tall** (two rows) or **Big** (both)
+- the clock and the VM count in the top bar
+- the services along the bottom: the same as Home, ones you pick, or none
+- the Devices panel: every device, or the ones you pick
+
+**Default layout** brings back the original wall.
+
 Tap anything to open it on Home. The full-screen button keeps the screen awake where the browser allows it. For a wall tablet, sign in once with **Remember this device for viewing**: it then shows the wall without a password and can't change anything.
 
 ### The look on this device
