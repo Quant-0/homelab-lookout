@@ -417,6 +417,7 @@ async function refresh() {
   try {
     const [d, s] = await Promise.all([getJson('/api/dashboard'), getJson('/api/services').catch(() => null)]);
     data = d;
+    data.rack.items = d.devices; // the server sends the devices once
     services = s;
     delay = d.refreshSeconds;
     const keys = ['power:total', gateway(d)?.key].filter(Boolean);

@@ -50,7 +50,7 @@ async function run() {
   r = await req('GET', '/api/docs');
   ok(!r.json.auto.devices.some((d) => d.id === BLANK || d.id === PATCH), 'passive items are not in the docs');
   r = await req('GET', '/api/dashboard');
-  ok(r.json.rack.passive.length === 2 && !r.json.rack.items.some((d) => d.id === BLANK) && !JSON.stringify(r.json.rack.passive).includes('Blank 1'), 'dashboard: passive items without names');
+  ok(r.json.rack.passive.length === 2 && !r.json.devices.some((d) => d.id === BLANK) && !JSON.stringify(r.json.rack.passive).includes('Blank 1'), 'dashboard: passive items without names');
 
   // --- add, move, validate ---
   r = await req('POST', '/api/admin/rack/passive', { kind: 'vented', u: 3, height: 2 });

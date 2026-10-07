@@ -24,6 +24,7 @@ const tls = require('node:tls');
 const net = require('node:net');
 const dgram = require('node:dgram');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
@@ -855,30 +856,18 @@ function wallLayout() {
   }
 }
 
+// Home's tiles in an order (v3). Older grid layouts are still read from the config, but not saved.
 function validateLayout(b) {
   if (b === null || b.items === null) return null;
-  const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
-  if (!Array.isArray(b.items) || b.items.length > 300) throw new UserError('Invalid layout');
+  if (b.v !== 3 || !Array.isArray(b.items) || b.items.length > 300) throw new UserError('Invalid layout');
   const seen = new Set();
   const hidden = Array.isArray(b.hidden) ? b.hidden.filter((id) => typeof id === 'string' && WIDGET_ID.test(id)).slice(0, 300) : [];
-  if (b.v === 3) {
-    // v3: the tiles on Home in an order
-    const items = b.items.map((i) => {
-      if (!i || typeof i.id !== 'string' || !WIDGET_ID.test(i.id) || seen.has(i.id)) throw new UserError('Invalid layout item');
-      seen.add(i.id);
-      return { id: i.id };
-    });
-    return { v: 3, items, hidden: [...new Set(hidden)] };
-  }
   const items = b.items.map((i) => {
     if (!i || typeof i.id !== 'string' || !WIDGET_ID.test(i.id) || seen.has(i.id)) throw new UserError('Invalid layout item');
     seen.add(i.id);
-    if (!int(i.x, 0, 11) || !int(i.w, 1, 12) || i.x + i.w > 12 || !int(i.y, 0, 2000) || !int(i.h, 1, 300))
-      throw new UserError('Invalid layout position');
-    return { id: i.id, x: i.x, y: i.y, w: i.w, h: i.h };
+    return { id: i.id };
   });
-  // v2: sizes made for the compact cards; older layouts keep their places but re-measure heights
-  return { v: b.v === 2 ? 2 : 1, items, hidden: [...new Set(hidden)] };
+  return { v: 3, items, hidden: [...new Set(hidden)] };
 }
 
 // ---------------------------------------------------------------------------
@@ -3115,7 +3104,7 @@ async function pollService(svc) {
     error: integ.error,
     updatedAt: Date.now(),
   });
-  evaluateAlerts().catch((e) => log('Alert check failed:', e.message));
+  alertsSoon();
 }
 
 function forgetService(id) {
@@ -3740,7 +3729,17 @@ function recordHistory(h, data, t) {
 
 const results = new Map(); // host id -> { ok, error, data, updatedAt, lastOkAt }
 let pollTimer = null;
-let polling = false;
+const inFlight = new Map(); // host or service id -> its running poll (one at a time each)
+
+// After a poll, the alerts are checked once for everything that finished at about the same time
+let alertsSoonTimer = null;
+function alertsSoon() {
+  if (alertsSoonTimer) return;
+  alertsSoonTimer = setTimeout(() => {
+    alertsSoonTimer = null;
+    evaluateAlerts().catch((e) => log('Alert check failed:', e.message));
+  }, 200);
+}
 
 // `plainSecret` is only used to test a connection before it is saved.
 async function runCollector(h, plainSecret = null) {
@@ -3775,26 +3774,37 @@ async function pollHost(h) {
   } else {
     results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null });
   }
-  evaluateAlerts().catch((e) => log('Alert check failed:', e.message));
+  alertsSoon();
+}
+
+// Runs `fn` unless the previous poll of `id` is still running (a slow or hanging device then
+// misses a round on its own; the others carry on)
+function pollOnce(id, fn) {
+  if (inFlight.has(id)) return inFlight.get(id);
+  const run = fn().finally(() => inFlight.delete(id));
+  inFlight.set(id, run);
+  return run;
 }
 
 async function pollAll() {
-  if (polling) return;
-  polling = true;
-  try {
-    await ensurePrices().catch(() => {});
-    await Promise.all([...config.hosts.map(pollHost), ...config.services.map(pollService)]);
-    const now = Date.now();
-    for (const d of estimatedDevices()) recordPower(`est:${d.id}`, d.estimateW, now, true, d.id);
-  } finally {
-    polling = false;
-  }
+  await ensurePrices().catch(() => {});
+  const hostRuns = new Map(config.hosts.map((h) => [h.id, pollOnce(h.id, () => pollHost(h))]));
+  // a service card on a device's numbers is read right after that device
+  const svcRuns = config.services.map((svc) => pollOnce(svc.id, async () => {
+    const src = sourceHost(svc);
+    if (src) await hostRuns.get(src.id);
+    await pollService(svc);
+  }));
+  const now = Date.now();
+  for (const d of estimatedDevices()) recordPower(`est:${d.id}`, d.estimateW, now, true, d.id);
+  await Promise.all([...hostRuns.values(), ...svcRuns]);
 }
 
 function schedulePolling() {
   clearInterval(pollTimer);
-  pollTimer = setInterval(pollAll, config.settings.dashboard.refreshSeconds * 1000);
-  pollAll();
+  const round = () => pollAll().catch((e) => log('Poll failed:', e.message));
+  pollTimer = setInterval(round, config.settings.dashboard.refreshSeconds * 1000);
+  round();
 }
 
 // ---------------------------------------------------------------------------
@@ -4390,10 +4400,16 @@ function securityHeaders(req, res) {
   if (req.socket.encrypted) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
 }
 
+// Larger data responses are gzipped. Only these read-only GETs: they hold no secrets or tokens
+// (so compression can't leak one, as in BREACH), and they are the ones fetched every refresh.
+const GZIP_JSON = new Set(['/api/dashboard', '/api/services', '/api/history', '/api/updates', '/api/docs', '/api/energy/report']);
 function sendJson(res, status, obj) {
-  const body = JSON.stringify(obj);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
-  res.end(body);
+  const body = Buffer.from(JSON.stringify(obj));
+  const req = res.req;
+  const zip = body.length > 2048 && req?.method === 'GET' && GZIP_JSON.has(req.url.split('?')[0]) && acceptsGzip(req);
+  const out = zip ? zlib.gzipSync(body) : body;
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': out.length, ...(zip ? { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' } : {}) });
+  res.end(out);
 }
 
 function sendError(res, status, message) {
@@ -4521,16 +4537,30 @@ function loadStatic() {
     '/static/licenses/Lucide-LICENSE.txt': 'licenses/Lucide-LICENSE.txt',
   };
   for (const [key, rel] of Object.entries(files)) {
-    STATIC[key] = { body: fs.readFileSync(path.join(PUBLIC_DIR, rel)), type: types[path.extname(rel)] };
+    const body = fs.readFileSync(path.join(PUBLIC_DIR, rel));
+    const type = types[path.extname(rel)];
+    // compressed once here; the ETag lets a browser keep its copy until the file changes (a deploy)
+    const gz = /^(text\/|image\/svg)/.test(type) ? zlib.gzipSync(body, { level: 9 }) : null;
+    STATIC[key] = { body, type, gz: gz && gz.length < body.length ? gz : null, etag: `"${crypto.createHash('sha256').update(body).digest('base64url').slice(0, 22)}"` };
   }
 }
 
+const acceptsGzip = (req) => /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''));
+
 function sendStatic(res, key) {
   const f = STATIC[key];
-  // The font's name carries its version, so it can be cached for good; everything else is fetched fresh
-  const cache = key.startsWith('/static/fonts/') ? { 'Cache-Control': 'public, max-age=31536000, immutable' } : {};
-  res.writeHead(200, { 'Content-Type': f.type, 'Content-Length': f.body.length, ...cache });
-  res.end(f.body);
+  const req = res.req;
+  // The font's name carries its version, so it can be cached for good; everything else is checked
+  // with the server on each use (a 304 without a body when it hasn't changed)
+  const cache = key.startsWith('/static/fonts/') ? 'public, max-age=31536000, immutable' : 'private, no-cache';
+  const headers = { 'Content-Type': f.type, 'Cache-Control': cache, ETag: f.etag, Vary: 'Accept-Encoding' };
+  if (req?.headers['if-none-match'] === f.etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  const body = f.gz && acceptsGzip(req) ? f.gz : f.body;
+  res.writeHead(200, { ...headers, 'Content-Length': body.length, ...(body === f.gz ? { 'Content-Encoding': 'gzip' } : {}) });
+  res.end(req?.method === 'HEAD' ? undefined : body);
 }
 
 // ---------------------------------------------------------------------------
@@ -4846,7 +4876,7 @@ function dashboardPayload() {
     nut: group('nut'),
     omada: group('omada'),
     devices,
-    rack: { ...config.rack, items: devices },
+    rack: { ...config.rack }, // its items are `devices` (the page puts them back; not sent twice)
     power: powerSummary(),
     // with service alerts off, Home and the wall leave services out of "Needs you" and the top pill
     attention: attentionList().filter((a) => s.serviceAlerts || !a.serviceId),
@@ -6746,7 +6776,6 @@ function updatesPayload() {
 // Automatic backups keep the last N copies locally and send them to the chosen destinations:
 // a mounted folder, S3-compatible storage, or rsync over SSH (pinned host key, encrypted SSH key).
 
-const zlib = require('node:zlib');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 

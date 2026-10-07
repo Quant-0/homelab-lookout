@@ -271,7 +271,7 @@ function freeU(height, exceptId, from = 1) {
 
 function renderDevicesTab() {
   fillRackSettings();
-  const rack = rackData?.rack || { ...state.rack, items: [] };
+  const rack = rackData?.rack ? { ...rackData.rack, items: rackData.devices } : { ...state.rack, items: [] };
   Rack.render($('rack-preview'), rack, rackData, {
     editable: true,
     selectedId: draft?.id || passiveDraft?.id,

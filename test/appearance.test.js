@@ -133,13 +133,13 @@ function orientationOf(jpeg) {
 
   // Layout
   r = await req('PUT', '/api/admin/layout', { items: [{ id: 'power-summary', x: 6, y: 0, w: 7, h: 4 }] });
-  ok(r.status === 400, 'layout wider than grid rejected');
-  r = await req('PUT', '/api/admin/layout', { items: [{ id: '../../etc', x: 0, y: 0, w: 2, h: 2 }] });
+  ok(r.status === 400, 'the old grid layout is no longer accepted');
+  r = await req('PUT', '/api/admin/layout', { v: 3, items: [{ id: '../../etc' }] });
   ok(r.status === 400, 'invalid widget id rejected');
-  r = await req('PUT', '/api/admin/layout', { items: [{ id: 'power-summary', x: 0, y: 0, w: 6, h: 8 }, { id: 'power-chart', x: 6, y: 0, w: 6, h: 9 }], hidden: [] });
+  r = await req('PUT', '/api/admin/layout', { v: 3, items: [{ id: 'power-summary' }, { id: 'power-chart' }], hidden: [] });
   ok(r.status === 200 && r.json.layout.items.length === 2, 'layout saved');
   r = await req('GET', '/api/dashboard');
-  ok(r.json.layout && r.json.layout.items[1].x === 6, 'layout returned with dashboard data');
+  ok(r.json.layout && r.json.layout.items[1].id === 'power-chart', 'layout returned with dashboard data');
 
   // Logged out: no background image exposed
   const loggedInCookie = cookie;

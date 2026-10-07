@@ -305,8 +305,12 @@ function keyMoveGroup(e, grip) {
   announce(`Group moved to position ${sections().indexOf(sec) + 1}`);
 }
 
+let loadedOnce = false;
 async function refresh() {
   clearTimeout(timer);
+  // a tab in the background waits; it refreshes as soon as it is shown again
+  if (document.hidden && loadedOnce) return;
+  loadedOnce = true;
   let delay = 30;
   try {
     const r = await fetch('/api/services', { credentials: 'same-origin', cache: 'no-store' });

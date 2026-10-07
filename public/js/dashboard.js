@@ -1334,6 +1334,8 @@ function tickUpdated() {
 let layoutLoaded = false;
 async function refresh() {
   clearTimeout(refreshTimer);
+  // a tab in the background waits; it refreshes as soon as it is shown again
+  if (document.hidden && lastData) return;
   let delay = 30;
   try {
     const [r] = await Promise.all([fetch('/api/dashboard', { credentials: 'same-origin', cache: 'no-store' }), loadServices()]);
@@ -1343,6 +1345,7 @@ async function refresh() {
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     lastData = await r.json();
+    lastData.rack.items = lastData.devices; // the server sends the devices once
     delay = lastData.refreshSeconds;
     if (!layoutLoaded) {
       loadLayout(lastData.layout);

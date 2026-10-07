@@ -140,6 +140,23 @@ const noSecrets = (text, where) => ok(!SECRETS.some((s) => text.includes(s)), `n
   s.dashboard.refreshSeconds = 1;
   r = await req('PUT', '/api/admin/settings', s); ok(r.status === 400, 'refresh < 10 s rejected');
 
+  // Files are sent compressed and revalidated (304 until a deploy changes them)
+  const raw = (p, headers = {}) => new Promise((res) => require('node:http').get({ host: base.hostname, port: base.port, path: p, headers: { Cookie: cookie, ...headers } }, (x) => {
+    const chunks = [];
+    x.on('data', (c) => chunks.push(c));
+    x.on('end', () => res({ status: x.statusCode, headers: x.headers, body: Buffer.concat(chunks) }));
+  }));
+  let g = await raw('/static/js/dashboard.js', { 'Accept-Encoding': 'gzip, br' });
+  const plain = await raw('/static/js/dashboard.js');
+  ok(g.status === 200 && g.headers['content-encoding'] === 'gzip' && g.body.length < plain.body.length / 2 && require('node:zlib').gunzipSync(g.body).equals(plain.body), `static files gzipped (${plain.body.length} → ${g.body.length} B)`);
+  ok(!plain.headers['content-encoding'] && plain.headers.etag && /no-cache/.test(plain.headers['cache-control']), 'without gzip: the plain file, an ETag, and no-cache (checked on each use)');
+  g = await raw('/static/js/dashboard.js', { 'If-None-Match': plain.headers.etag });
+  ok(g.status === 304 && g.body.length === 0, 'unchanged file: 304 without a body');
+  g = await raw('/api/dashboard', { 'Accept-Encoding': 'gzip' });
+  ok(g.status === 200 && g.headers['content-encoding'] === 'gzip' && JSON.parse(require('node:zlib').gunzipSync(g.body)).devices, 'dashboard data gzipped');
+  g = await raw('/api/session', { 'Accept-Encoding': 'gzip' });
+  ok(!g.headers['content-encoding'] && JSON.parse(g.body).csrf, 'responses with a token are never compressed');
+
   // Logout invalidates session
   r = await req('POST', '/api/logout', {}); ok(r.status === 200, 'logout');
   r = await req('GET', '/api/admin/config'); ok(r.status === 401, 'session gone after logout');
