@@ -35,9 +35,9 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const sections = await page.$$eval('.upd-section h3', (h) => h.map((x) => x.textContent));
   check(/Can be updated \(\d+\)/.test(sections[0]) && sections.some((s) => /Up to date/.test(s)), `sections: ${sections.join(' | ')}`);
   const first = await page.$$eval('.upd-section:first-child .upd-row', (rows) => rows.map((r) => r.textContent));
-  check(first.some((t) => /titan.*Proxmox node pve1.*Proxmox VE 8\.2\.4 → Proxmox VE 8\.2\.7.*3 packages/.test(t)) && first.some((t) => /Sonarr.*4\.0\.10\.2544 → 4\.0\.11\.2680/.test(t)) && first.some((t) => /UniFi firmware.*4\.1\.13 → 4\.1\.22/.test(t)), 'Proxmox, Sonarr and UniFi with current → new versions');
+  check(first.some((t) => /titan.*Proxmox node pve1.*Proxmox VE 8\.2\.4 → Proxmox VE 8\.2\.7.*2 Proxmox packages/.test(t)) && first.some((t) => /Sonarr.*4\.0\.10\.2544 → 4\.0\.11\.2680/.test(t)) && first.some((t) => /UniFi firmware.*4\.1\.13 → 4\.1\.22/.test(t)), 'Proxmox, Sonarr and UniFi with current → new versions');
   await page.locator('.upd-row', { hasText: 'Proxmox node pve1' }).locator('summary').click();
-  check(await page.locator('.upd-row', { hasText: 'Proxmox node pve1' }).locator('tbody tr').count() === 3, 'the package list opens');
+  check(await page.locator('.upd-row', { hasText: 'Proxmox node pve1' }).locator('tbody tr').count() === 2, 'the package list opens');
   const notes = page.locator('.upd-row', { hasText: 'Sonarr' }).locator('a.upd-notes');
   check(await notes.getAttribute('rel') === 'noopener noreferrer' && /github\.com\/Sonarr/.test(await notes.getAttribute('href')), 'release notes open safely in a new tab');
   check(/can be updated · checked .* · next check (tonight|tomorrow) at 04:00/.test(await page.textContent('#upd-summary')), `summary: ${await page.textContent('#upd-summary')}`);

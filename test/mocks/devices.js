@@ -221,10 +221,14 @@ const server = https.createServer(opts, (req, res) => {
       { vmid: 102, name: 'win11', type: 'qemu', status: 'stopped', node: 'pve1', maxmem: 8e9 },
       { vmid: 9000, name: 'tmpl', type: 'qemu', status: 'stopped', node: 'pve1', template: 1 },
     ] }));
-    if (u === '/api2/json/nodes/pve1/apt/update') return res.end(R({ data: [
-      { Package: 'pve-manager', OldVersion: '8.2.4', Version: '8.2.7', Title: 'Proxmox Virtual Environment management tools' },
-      { Package: 'proxmox-kernel-6.8', OldVersion: '6.8.8-2', Version: '6.8.12-1', Title: 'Latest Proxmox kernel' },
-      { Package: 'openssl', OldVersion: '3.0.13-1', Version: '3.0.14-1', Title: 'Secure Sockets Layer toolkit' },
+    // like a read-only token: listing apt updates needs Sys.Modify, the versions only Sys.Audit
+    if (u === '/api2/json/nodes/pve1/apt/update') return res.writeHead(403).end('{"data":null}');
+    if (u === '/api2/json/nodes/pve1/apt/versions') return res.end(R({ data: [
+      { Package: 'proxmox-ve', CurrentState: 'Installed', OldVersion: '8.2.0', Version: '8.2.0', RunningKernel: '6.8.8-2-pve' },
+      { Package: 'pve-manager', CurrentState: 'Installed', OldVersion: '8.2.4', Version: '8.2.7', ManagerVersion: '8.2.4/faa83925c9641325' },
+      { Package: 'proxmox-kernel-6.8', CurrentState: 'Installed', OldVersion: '6.8.8-2', Version: '6.8.12-1' },
+      { Package: 'qemu-server', CurrentState: 'Installed', OldVersion: '8.2.1', Version: '8.2.1' },
+      { Package: 'ceph', CurrentState: 'NotInstalled', Version: '18.2.2-pve1' },
     ] }));
     if (u === '/api2/json/nodes/pve1/version') return res.end(R({ data: { version: '8.2.4', release: '8.2' } }));
   }

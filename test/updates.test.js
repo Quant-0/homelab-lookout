@@ -52,7 +52,7 @@ const noSecrets = (t, where) => ok(!SECRETS.some((s) => t.includes(s)), `no secr
   const rows = r.json.rows;
   const row = (name, part) => rows.find((x) => x.name === name && (!part || x.part === part));
   const pve = row('titan', 'Proxmox node pve1');
-  ok(pve?.available && pve.count === 3 && pve.current === 'Proxmox VE 8.2.4' && pve.latest === 'Proxmox VE 8.2.7' && pve.list.some((p) => p.name === 'proxmox-kernel-6.8' && p.latest === '6.8.12-1'), `Proxmox: 3 packages, ${pve?.current} → ${pve?.latest}`);
+  ok(pve?.available && pve.count === 2 && pve.detail === '2 Proxmox packages' && pve.current === 'Proxmox VE 8.2.4' && pve.latest === 'Proxmox VE 8.2.7' && pve.list.some((p) => p.name === 'proxmox-kernel-6.8' && p.latest === '6.8.12-1'), `Proxmox, read-only: 2 packages, ${pve?.current} → ${pve?.latest}`);
   const tn = row('truenas', 'TrueNAS');
   ok(tn?.available && tn.latest === '26.04.1' && tn.current === 'TrueNAS-26.04.0', `TrueNAS: ${tn?.current} → ${tn?.latest}`);
   const apps = row('truenas', 'TrueNAS apps');

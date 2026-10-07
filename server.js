@@ -6522,21 +6522,35 @@ function nodeDevice(h, node) {
   return h.deviceId;
 }
 
+// Read-only: apt/versions (Sys.Audit) lists the Proxmox packages with the installed version and the
+// newest one the node's own package lists know (Proxmox refreshes them daily). apt/update would list
+// Debian's packages too, but it needs Sys.Modify, which can change the node, so it is never used.
 async function proxmoxUpdates(h, node) {
   const headers = { Authorization: `PVEAPIToken=${h.username}=${decryptSecret(h)}` };
   const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers }).then((r) => r.data);
   const n = encodeURIComponent(node);
   let list;
   try {
-    list = await get(`/api2/json/nodes/${n}/apt/update`);
+    list = await get(`/api2/json/nodes/${n}/apt/versions`);
   } catch (e) {
-    if (/403/.test(e.message)) throw new UserError('Proxmox did not let this read-only token list updates (newer Proxmox VE versions allow it with Sys.Audit)');
+    if (/403/.test(e.message)) throw new UserError(`The token can't read package versions: give it Sys.Audit on /nodes/${node} (with privilege separation, the token itself needs it too, not only its user)`);
     throw e;
   }
-  const ver = await get(`/api2/json/nodes/${n}/version`).catch(() => null);
-  const pkgs = (Array.isArray(list) ? list : []).map((p) => ({ name: String(p.Package || '').slice(0, 80), current: cleanVersion(p.OldVersion), latest: cleanVersion(p.Version) }));
-  const mgr = pkgs.find((p) => p.name === 'pve-manager');
-  return { current: ver?.version ? `Proxmox VE ${ver.version}` : null, latest: mgr ? `Proxmox VE ${mgr.latest}` : null, available: pkgs.length > 0, count: pkgs.length, detail: pkgs.length ? `${pkgs.length} package${pkgs.length === 1 ? '' : 's'}` : '', list: pkgs.slice(0, 300) };
+  const all = (Array.isArray(list) ? list : []).filter((p) => p.CurrentState === 'Installed' && p.OldVersion);
+  const pkgs = all.filter((p) => p.Version && p.Version !== p.OldVersion)
+    .map((p) => ({ name: String(p.Package || '').slice(0, 80), current: cleanVersion(p.OldVersion), latest: cleanVersion(p.Version) }));
+  const mgr = all.find((p) => p.Package === 'pve-manager');
+  const ver = mgr ? null : await get(`/api2/json/nodes/${n}/version`).catch(() => null);
+  const current = mgr ? cleanVersion(mgr.OldVersion) : ver?.version || null;
+  const latest = mgr ? cleanVersion(mgr.Version) : null;
+  return {
+    current: current ? `Proxmox VE ${current}` : null,
+    latest: latest ? `Proxmox VE ${latest}` : null,
+    available: pkgs.length > 0,
+    count: pkgs.length,
+    detail: pkgs.length ? `${pkgs.length} Proxmox package${pkgs.length === 1 ? '' : 's'}` : '',
+    list: pkgs.slice(0, 300),
+  };
 }
 
 function truenasUpdates(h) {

@@ -130,7 +130,7 @@ One list of what can be updated: Proxmox packages, TrueNAS and its apps, UniFi f
 
 - It's checked every night at 04:00. **Check now** checks right away (once a minute at most).
 - **Nothing is ever installed from the dashboard.** Update on the device itself, then press **Check now**.
-- *Not allowed* on a Proxmox row means the read-only token isn't allowed to list packages on that Proxmox version.
+- A Proxmox row counts the **Proxmox packages** (pve-manager, kernel, QEMU…) that have a newer version. Plain Debian updates aren't included: Proxmox only shows those to tokens that may change the node, and the dashboard's token is read-only on purpose.
 
 ### Search
 
