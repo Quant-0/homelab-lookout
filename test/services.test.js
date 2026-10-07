@@ -186,6 +186,10 @@ const CASES = [
   r = await req('POST', '/api/docs/pages', { title: '', body: 'x' });
   ok(r.status === 400, 'page without title rejected');
 
+  // the older "show stopped VMs" setting still counts; unknown keys are dropped
+  r = await req('PUT', '/api/admin/settings', { dashboard: { title: 'Homelab', refreshSeconds: 30, showStoppedGuests: false, vms: { cpu: false, bogus: 1 } } });
+  ok(r.status === 200 && r.json.settings.dashboard.vms.stopped === false && r.json.settings.dashboard.vms.cpu === false && !('bogus' in r.json.settings.dashboard.vms) && r.json.settings.dashboard.homeServices === 'tiles', 'older settings: stopped VMs off carried over, defaults for the rest');
+
   // docs stay private even with a public dashboard
   const settings = (await req('GET', '/api/admin/config')).json.settings;
   await req('PUT', '/api/admin/settings', { dashboard: { ...settings.dashboard, public: true } });

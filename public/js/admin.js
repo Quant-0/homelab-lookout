@@ -182,8 +182,10 @@ function fillDashboard(d) {
   const f = $('dash-form').elements;
   f.title.value = d.title;
   f.refreshSeconds.value = d.refreshSeconds;
-  f.showStoppedGuests.checked = d.showStoppedGuests;
   f.public.checked = d.public;
+  f.homeServices.value = d.homeServices;
+  f.serviceAlerts.checked = d.serviceAlerts;
+  for (const [k, v] of Object.entries(d.vms)) if (f[`vms.${k}`]) f[`vms.${k}`].checked = v;
 }
 
 async function saveSettings(msgId) {
@@ -192,8 +194,10 @@ async function saveSettings(msgId) {
     dashboard: {
       title: d.title.value,
       refreshSeconds: Number(d.refreshSeconds.value),
-      showStoppedGuests: d.showStoppedGuests.checked,
       public: d.public.checked,
+      homeServices: d.homeServices.value,
+      serviceAlerts: d.serviceAlerts.checked,
+      vms: Object.fromEntries(Object.keys(state.settings.dashboard.vms).map((k) => [k, d[`vms.${k}`].checked])),
     },
     power: powerBody(),
   };
@@ -948,6 +952,7 @@ function openService(svc) {
   f.group.value = svcDraft.group;
   f.description.value = svcDraft.description;
   f.href.value = svcDraft.href;
+  f.onHome.checked = svcDraft.onHome !== false;
   $('svc-device').replaceChildren(el('option', { value: '', text: '–' }), ...svcState.devices.map((d) => el('option', { value: d.id, text: d.name })));
   f.deviceId.value = svcDraft.deviceId || '';
   f.url.value = svcDraft.connection?.url || '';
@@ -1075,6 +1080,7 @@ function serviceBody() {
     description: f.description.value,
     href: f.href.value,
     deviceId: f.deviceId.value || null,
+    onHome: f.onHome.checked,
     icon: svcDraft.icon,
     connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
     integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {}, fields: svcDraft.integration?.type === type ? svcDraft.integration.fields || [] : [] } : null,

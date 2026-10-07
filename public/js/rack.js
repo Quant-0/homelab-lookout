@@ -99,7 +99,15 @@ const Rack = (() => {
     // what the alerts say about the device counts too (a failed power supply, a full volume…)
     const alerts = (data?.attention || []).filter((a) => a.deviceId === item.id);
     const alerted = alerts.some((a) => a.severity === 'critical') ? 'critical' : alerts.length ? 'warning' : '';
-    return { links, status: worst([...links.map(linkStatus), alerted]), measuredW, poeW, idrac, syno, ud, sub };
+    // a count of its VMs and containers, when chosen in Admin → Dashboard
+    let vms = '';
+    if (data?.vms?.rack !== false) {
+      const seen = new Set();
+      const guests = links.flatMap((l) => (l.type === 'proxmox' ? l.host?.data?.guests || [] : l.type === 'pve-node' && l.node ? (l.host?.data?.guests || []).filter((g) => g.node === l.node.name) : []))
+        .filter((g) => !seen.has(`${g.node}:${g.vmid}`) && seen.add(`${g.node}:${g.vmid}`));
+      if (guests.length) vms = `${guests.filter((g) => g.status === 'running').length} of ${guests.length} VMs running`;
+    }
+    return { links, status: worst([...links.map(linkStatus), alerted]), measuredW, poeW, idrac, syno, ud, sub, vms };
   }
 
   // --- Which front: what the device reports decides, unless chosen in Admin ---
@@ -892,7 +900,7 @@ const Rack = (() => {
       tabindex: '0',
       'data-id': item.id,
       'aria-label': `${item.name}, ${item.height} U${info.status ? `, status ${info.status}` : ''}`,
-      title: [item.name, info.sub, wattsText(info, item)].filter(Boolean).join(' · '),
+      title: [item.name, info.sub, wattsText(info, item), info.vms].filter(Boolean).join(' · '),
     }, face);
     activate(node, () => opts.onSelect && opts.onSelect(item, info));
     return node;
@@ -909,10 +917,10 @@ const Rack = (() => {
       tabindex: '0',
       'data-id': item.id,
       'aria-label': `${item.name}, ${item.height} U, ${state}`,
-      title: [item.name, info.sub, w].filter(Boolean).join(' · '),
+      title: [item.name, info.sub, w, info.vms].filter(Boolean).join(' · '),
     },
     el('span', { class: 'sch-icon' }, HD.icon(KIND_ICONS[item.kind] || 'box')),
-    el('span', { class: 'sch-text' }, el('strong', { text: item.name }), item.height > 1 && info.sub ? el('small', { text: info.sub }) : null),
+    el('span', { class: 'sch-text' }, el('strong', { text: item.name }), item.height > 1 && (info.sub || info.vms) ? el('small', { text: [info.sub, info.vms].filter(Boolean).join(' · ') }) : null),
     metric ? el('span', { class: 'sch-metric num', text: metric }) : null,
     el('span', { class: `sch-dot ${info.status || ''}`, title: state }));
     activate(node, () => opts.onSelect && opts.onSelect(item, info));
@@ -936,9 +944,11 @@ const Rack = (() => {
   // Names beside the rack, level with their device
   function labelNode(item, info, centerPct, opts) {
     const w = wattsText(info, item);
-    const node = el('button', { type: 'button', class: `rack-label h${item.height}${opts.selectedId === item.id ? ' selected' : ''}`, tabindex: '-1', 'data-id': item.id, title: [item.name, info.sub, w].filter(Boolean).join(' · ') },
+    const node = el('button', { type: 'button', class: `rack-label h${item.height}${opts.selectedId === item.id ? ' selected' : ''}`, tabindex: '-1', 'data-id': item.id, title: [item.name, info.sub, w, info.vms].filter(Boolean).join(' · ') },
       el('span', { class: `dot ${info.status || ''}`, 'aria-hidden': 'true' }),
-      el('span', { class: 'rl-text' }, el('strong', { text: item.name }), item.height > 1 ? el('small', { text: [info.sub, w].filter(Boolean).join(' · ') }) : null));
+      el('span', { class: 'rl-text' }, el('strong', { text: item.name }),
+        item.height > 1 ? el('small', { text: [info.sub, w].filter(Boolean).join(' · ') }) : null,
+        info.vms ? el('small', { class: 'rl-vms', text: info.vms }) : null));
     node.style.top = pct(centerPct);
     node.addEventListener('click', () => opts.onSelect && opts.onSelect(item, info));
     return node;

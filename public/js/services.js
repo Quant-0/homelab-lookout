@@ -107,7 +107,7 @@ function render(d) {
 
 // --- Proxmox VMs and containers ---
 
-function vmCard(g) {
+function vmCard(g, show = { cpu: true, ram: true, uptime: true }) {
   const running = g.status === 'running';
   const memF = g.maxmem ? g.mem / g.maxmem : null;
   return el('div', { class: `svc-card card vm-card${running ? '' : ' stopped'}` },
@@ -117,16 +117,16 @@ function vmCard(g) {
         el('strong', { text: g.name }),
         el('span', { class: 'small muted num', text: `${g.vmid} · ${g.node}` })),
       el('span', { class: 'svc-status', title: g.status }, el('span', { class: `led ${running ? 'good' : 'off'}` }), running ? null : el('span', { class: 'small muted', text: g.status }))),
-    running ? el('div', { class: 'vm-stats small muted num' },
-      el('span', { text: `CPU ${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` }),
-      el('span', { text: `RAM ${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` }),
-      el('span', { text: `Up ${fmt.uptime(g.uptime)}` })) : null);
+    running && (show.cpu || show.ram || show.uptime) ? el('div', { class: 'vm-stats small muted num' },
+      show.cpu ? el('span', { text: `CPU ${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` }) : null,
+      show.ram ? el('span', { text: `RAM ${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` }) : null,
+      show.uptime ? el('span', { text: `Up ${fmt.uptime(g.uptime)}` }) : null) : null);
 }
 
 function vmsGrid(vms) {
   const shown = vms.items.filter((g) => vms.showStopped || g.status === 'running');
   return shown.length
-    ? el('div', { class: 'svc-grid vm-grid' }, shown.map(vmCard))
+    ? el('div', { class: 'svc-grid vm-grid' }, shown.map((g) => vmCard(g, vms.show)))
     : el('div', { class: 'svc-grid vm-grid' }, el('p', { class: 'empty', text: vms.items.length ? 'No running guests' : 'No VMs or containers' }));
 }
 

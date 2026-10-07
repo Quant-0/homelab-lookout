@@ -125,6 +125,7 @@ function deviceContext(dev, d) {
     snmpH, snmp: snmpH?.data, nutH, ups: snmpH?.data?.ups || nutH?.data?.ups || null, upsH: snmpH?.data?.ups ? snmpH : nutH?.data?.ups ? nutH : null,
     omadaH, om, omd: omadaMac && om ? om.devices.find((x) => x.mac === omadaMac) || null : null, omadaMac,
     hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH].filter(Boolean),
+    showVms: d.vms?.host !== false,
   };
 }
 
@@ -178,7 +179,7 @@ function keyMetrics(dev, ctx, max = 4) {
     add(pctOf(ctx.node.cpu), '%', 'CPU', ctx.node.cpu, load(ctx.node.cpu));
     const mem = share(ctx.node.mem, ctx.node.maxmem);
     add(pctOf(mem), '%', 'Memory', mem, load(mem));
-    if (!ctx.idrac) add(`${ctx.guests.filter((g) => g.status === 'running').length}/${ctx.guests.length}`, '', 'VMs running');
+    if (!ctx.idrac && ctx.showVms) add(`${ctx.guests.filter((g) => g.status === 'running').length}/${ctx.guests.length}`, '', 'VMs running');
   }
   if (ctx.tn) {
     for (const p of ctx.tn.pools.slice(0, 3)) {
@@ -329,7 +330,37 @@ function renderIdrac(hosts) {
 // ---------------------------------------------------------------------------
 // Proxmox
 
-function renderProxmox(hosts, nodeFor = () => null) {
+// What the owner chose to show about VMs and containers (Admin → Dashboard)
+const VM_DEFAULTS = { home: true, services: true, host: true, rack: true, stopped: true, cpu: true, ram: true, uptime: true, homeNumbers: false };
+
+function guestNumbers(g, vs) {
+  if (g.status !== 'running') return [];
+  return [
+    vs.cpu && g.cpu != null ? `CPU ${fmt.pct(g.cpu, 1)}` : null,
+    vs.ram && g.mem != null ? `${fmt.bytes(g.mem)} RAM` : null,
+    vs.uptime && g.uptime ? `up ${fmt.uptime(g.uptime)}` : null,
+  ].filter(Boolean);
+}
+
+function guestTable(guests, vs) {
+  const shown = guests.filter((g) => vs.stopped || g.status === 'running');
+  if (!shown.length) return el('p', { class: 'small muted', text: guests.length ? 'No running VMs or containers' : 'No VMs or containers' });
+  const cols = [['cpu', 'CPU'], ['ram', 'Memory'], ['uptime', 'Uptime']].filter(([k]) => vs[k]);
+  return el('div', { class: 'table-wrap' }, el('table', { class: 'guest-table' },
+    el('thead', null, el('tr', null, ['Name', 'Type', 'Status'].map((t) => el('th', { text: t })), cols.map(([, t]) => el('th', { class: 'r', text: t })))),
+    el('tbody', null, [...shown].sort((a, b) => (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || String(a.name).localeCompare(String(b.name))).map((g) => {
+      const on = g.status === 'running';
+      const memF = g.maxmem ? g.mem / g.maxmem : null;
+      const val = { cpu: on ? `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` : '–', ram: on ? `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` : '–', uptime: on ? fmt.uptime(g.uptime) : '–' };
+      return el('tr', { class: on ? null : 'muted' },
+        el('td', null, el('strong', { text: g.name || String(g.vmid) }), el('span', { class: 'small muted num', text: ` ${g.vmid}` })),
+        el('td', { text: g.type === 'lxc' ? 'Container' : 'VM' }),
+        el('td', null, el('span', { class: `dot ${on ? 'good' : 'off'}` }), ` ${g.status}`),
+        cols.map(([k]) => el('td', { class: 'r num', text: val[k] })));
+    }))));
+}
+
+function renderProxmox(hosts, nodeFor = () => null, vs = VM_DEFAULTS) {
   return hosts.map((h0) => {
     const node = nodeFor(h0.id);
     const h = h0.data && node
@@ -361,7 +392,8 @@ function renderProxmox(hosts, nodeFor = () => null) {
           [`pve:${h0.id}:${n.name}:cpu`, d.nodes.length > 1 ? `${n.name} CPU` : 'CPU', ' %'],
           [`pve:${h0.id}:${n.name}:mem`, d.nodes.length > 1 ? `${n.name} memory` : 'Memory', ' %'],
         ])),
-        el('p', { class: 'small muted' }, `${d.guests.length} VMs & containers, ${up} running · `, el('a', { href: '/services#vms', text: 'see Services' })),
+        vs.host ? [el('h4', { text: `VMs and containers · ${up} of ${d.guests.length} running` }), guestTable(d.guests, vs)] : null,
+        vs.host && vs.services ? el('p', { class: 'small muted' }, el('a', { href: '/services#vms', text: 'All VMs on the Services tab' })) : null,
       ];
     });
     return [h.id, { ...card, title: `Proxmox · ${node ? `node ${node}` : h.name}` }];
@@ -739,7 +771,7 @@ function deviceSections(d) {
   const macFor = new Map(d.devices.flatMap((dev) => dev.connections.filter((c) => c.mac).map((c) => [c.id, c.mac])));
   return new Map([
     ...renderIdrac(d.idrac),
-    ...renderProxmox(d.proxmox, (id) => nodeFor.get(id)),
+    ...renderProxmox(d.proxmox, (id) => nodeFor.get(id), d.vms),
     ...renderTruenas(d.truenas),
     ...renderSynology(d.synology || []),
     ...renderUnifi(d.unifi || []),
@@ -1061,6 +1093,17 @@ function renderDevices() {
   $('devices-sec').hidden = !infos.length;
 }
 
+function serviceRow(s) {
+  const c = s.check;
+  const down = c && !c.up;
+  const iconBox = s.icon ? el('span', { class: 'svc-row-icon' }, el('img', { src: s.icon, alt: '' })) : HD.letterIcon(s.name, 'svc-row-icon letter');
+  return el(s.href ? 'a' : 'div', { class: `svc-line${down ? ' critical' : ''}`, href: s.href || null, target: s.href ? '_blank' : null, rel: s.href ? 'noopener noreferrer' : null },
+    iconBox,
+    el('span', { class: 'svc-line-name', text: s.name }),
+    down ? el('span', { class: 'svc-line-why', text: c.error || (c.code ? `HTTP ${c.code}` : 'Down') }) : null,
+    c ? el('span', { class: `dot ${c.up ? 'good' : 'critical'}`, title: c.up ? 'Up' : 'Down' }) : null);
+}
+
 function serviceTile(s) {
   const c = s.check;
   const down = c && !c.up;
@@ -1074,25 +1117,33 @@ function serviceTile(s) {
   return t;
 }
 
-function renderServicesSec(svc) {
-  const all = (svc?.groups || []).flatMap((g) => g.services || []);
-  const sec = $('services-sec');
-  sec.hidden = !all.length;
-  if (!all.length) return;
+// Admin → Dashboard: tiles, a compact list, only the ones that are down, or off
+function renderServicesSec(svc, mode = 'tiles') {
+  const all = (svc?.groups || []).flatMap((g) => g.services || []).filter((s) => s.onHome !== false);
   const down = all.filter((s) => s.check && !s.check.up);
-  const list = [...down, ...all.filter((s) => !down.includes(s))].slice(0, 12);
+  const sec = $('services-sec');
+  sec.hidden = mode === 'off' || !all.length || (mode === 'down' && !down.length);
+  if (sec.hidden) return;
   const checked = all.filter((s) => s.check);
-  $('services-count').textContent = checked.length ? `${checked.length - down.length} of ${checked.length} up` : String(all.length);
-  $('services').replaceChildren(...list.map(serviceTile));
+  $('services-count').textContent = mode === 'down' ? `${down.length} down` : checked.length ? `${checked.length - down.length} of ${checked.length} up` : String(all.length);
+  const box = $('services');
+  if (mode === 'compact' || mode === 'down') {
+    box.className = 'svc-lines';
+    box.replaceChildren(...(mode === 'down' ? down : [...down, ...all.filter((s) => !down.includes(s))]).map(serviceRow));
+    return;
+  }
+  box.className = 'dtiles small';
+  box.replaceChildren(...[...down, ...all.filter((s) => !down.includes(s))].slice(0, 12).map(serviceTile));
 }
 
 function renderVms(d) {
+  const vs = d.vms || VM_DEFAULTS;
   const sec = $('vms-sec');
   const groups = [];
-  for (const h of d.proxmox || []) {
+  for (const h of vs.home ? d.proxmox || [] : []) {
     for (const node of [...new Set((h.data?.guests || []).map((g) => g.node))]) {
       if (groups.some((g) => g.node === node)) continue;
-      const guests = h.data.guests.filter((g) => g.node === node && (d.showStoppedGuests || g.status === 'running'));
+      const guests = h.data.guests.filter((g) => g.node === node && (vs.stopped || g.status === 'running'));
       if (guests.length) groups.push({ node, guests });
     }
   }
@@ -1100,10 +1151,17 @@ function renderVms(d) {
   if (!groups.length) return;
   const all = groups.flatMap((g) => g.guests);
   $('vms-count').textContent = `${all.filter((g) => g.status === 'running').length} of ${all.length} running`;
-  $('vms').replaceChildren(...groups.map((g) => el('a', { class: 'dtile wide', href: '/services#vms' },
+  $('vms-more').hidden = !vs.services;
+  const chip = (x) => {
+    const on = x.status === 'running';
+    const nums = vs.homeNumbers ? guestNumbers(x, vs) : [];
+    return el('span', { class: `chip${on ? '' : ' off'}${nums.length ? ' with-nums' : ''}`, title: [x.name, x.status, ...guestNumbers(x, vs)].filter(Boolean).join(' · ') },
+      el('span', { class: `dot ${on ? 'good' : 'off'}` }), x.name || String(x.vmid), nums.length ? el('span', { class: 'chip-nums num', text: nums.join(' · ') }) : null);
+  };
+  $('vms').replaceChildren(...groups.map((g) => el(vs.services ? 'a' : 'div', { class: 'dtile wide', href: vs.services ? '/services#vms' : null },
     el('span', { class: 'tile-top' }, el('span', { class: 'tile-icon' }, HD.icon('monitor')), el('span', { class: 'small muted', text: `${g.guests.filter((x) => x.status === 'running').length} of ${g.guests.length} running` })),
     el('span', { class: 'tile-name', text: `On ${g.node}` }),
-    el('span', { class: 'chips' }, g.guests.slice(0, 40).map((x) => el('span', { class: `chip${x.status === 'running' ? '' : ' off'}` }, el('span', { class: `dot ${x.status === 'running' ? 'good' : 'off'}` }), x.name || String(x.vmid)))))));
+    el('span', { class: 'chips' }, g.guests.slice(0, 40).map(chip)))));
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,7 +1292,7 @@ function render(d) {
   renderNeeds(d);
   $('hero').replaceChildren(...[powerTile(d.power), internetTile(d)].filter(Boolean));
   renderDevices();
-  renderServicesSec(servicesData);
+  renderServicesSec(servicesData, d.homeServices);
   renderVms(d);
   if (view === 'rack') renderRackView(d);
   refreshDrawer();

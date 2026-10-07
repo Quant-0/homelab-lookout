@@ -92,7 +92,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NORGESPRIS_ORE_EX_VAT = 40; // 50 øre/kWh incl. 25 % VAT
 
 const DEFAULT_SETTINGS = {
-  dashboard: { title: 'Homelab', refreshSeconds: 30, public: false, showStoppedGuests: true },
+  dashboard: {
+    title: 'Homelab',
+    refreshSeconds: 30,
+    public: false,
+    homeServices: 'tiles', // tiles | compact | down (only the ones that are down) | off
+    serviceAlerts: true, // a down service shows under "Needs you" and in the top pill
+    // VMs and containers: where they show, and what
+    vms: { home: true, services: true, host: true, rack: true, stopped: true, cpu: true, ram: true, uptime: true, homeNumbers: false },
+  },
   power: {
     plan: 'spot',
     area: 'NO1',
@@ -340,6 +348,7 @@ function loadConfig() {
     alerts: normalizeAlerts(raw.alerts),
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
+  if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
   // Blank panels, patch panels and shelves used to be devices; they are passive rack items now
   const PASSIVE_FROM = { blank: 'blank', 'patch-panel': 'patch', shelf: 'shelf' };
   config.devices = config.devices.filter((d) => {
@@ -525,14 +534,24 @@ function num(v, min, max, name, { int = false } = {}) {
   return n;
 }
 
+const HOME_SERVICES = ['tiles', 'compact', 'down', 'off'];
+
 function validateDashboard(d) {
   const title = String(d.title ?? '').trim() || 'Homelab';
   if (title.length > 60 || hasControlChars(title)) throw new UserError('Title is too long');
+  const homeServices = d.homeServices ?? 'tiles';
+  if (!HOME_SERVICES.includes(homeServices)) throw new UserError('Invalid choice for services on Home');
+  const v = d.vms && typeof d.vms === 'object' ? d.vms : {};
+  const vms = {};
+  for (const [k, def] of Object.entries(DEFAULT_SETTINGS.dashboard.vms)) vms[k] = typeof v[k] === 'boolean' ? v[k] : def;
+  if (typeof v.stopped !== 'boolean' && d.showStoppedGuests === false) vms.stopped = false; // the older setting
   return {
     title,
     refreshSeconds: num(d.refreshSeconds, 10, 3600, 'Refresh interval', { int: true }),
     public: d.public === true,
-    showStoppedGuests: d.showStoppedGuests !== false,
+    homeServices,
+    serviceAlerts: d.serviceAlerts !== false,
+    vms,
   };
 }
 
@@ -2872,6 +2891,7 @@ function validateServiceInput(b) {
     description: str(b.description, 120, 'Description'),
     href: validateLink(b.href),
     deviceId: b.deviceId && config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : null,
+    onHome: b.onHome !== false,
     icon: b.icon?.kind === 'file' && config.icons.some((i) => i.id === b.icon.id) ? { kind: 'file', id: b.icon.id } : { kind: 'letter' },
     connection: null,
     integration: null,
@@ -2945,6 +2965,7 @@ function servicesPayload(admin = false) {
       href: safeLink(svc.href),
       icon: iconUrl(svc.icon),
       device: config.devices.find((d) => d.id === svc.deviceId)?.name || null,
+      onHome: svc.onHome !== false,
       integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
       check: svc.connection ? r?.check ?? null : undefined,
       stats: shownStats(svc, r?.stats ?? null),
@@ -2958,7 +2979,7 @@ function servicesPayload(admin = false) {
     if (!byGroup.has(svc.group)) byGroup.set(svc.group, []);
     byGroup.get(svc.group).push(card);
   }
-  const vms = vmsPayload();
+  const vms = config.settings.dashboard.vms.services ? vmsPayload() : null;
   const keys = layout.groups.filter((k) => byGroup.has(k) || (k === VMS_GROUP && vms));
   for (const k of byGroup.keys()) if (!keys.includes(k)) keys.push(k);
   if (vms && !keys.includes(VMS_GROUP)) keys.push(VMS_GROUP);
@@ -3022,7 +3043,8 @@ function vmsPayload() {
       items.push({ key: `${h.id}:${g.vmid}`, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime });
     }
   }
-  return { items, notes, showStopped: config.settings.dashboard.showStoppedGuests };
+  const v = config.settings.dashboard.vms;
+  return { items, notes, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
@@ -4526,7 +4548,8 @@ function dashboardPayload() {
   return {
     title: s.title,
     refreshSeconds: s.refreshSeconds,
-    showStoppedGuests: s.showStoppedGuests,
+    homeServices: s.homeServices,
+    vms: s.vms,
     layout: config.layout,
     generatedAt: Date.now(),
     idrac: group('idrac'),
@@ -4540,8 +4563,9 @@ function dashboardPayload() {
     devices,
     rack: { ...config.rack, items: devices },
     power: powerSummary(),
-    attention: attentionList(),
-    services: servicesSummary(),
+    // with service alerts off, Home and the wall leave services out of "Needs you" and the top pill
+    attention: attentionList().filter((a) => s.serviceAlerts || !a.serviceId),
+    services: s.serviceAlerts ? servicesSummary() : null,
   };
 }
 

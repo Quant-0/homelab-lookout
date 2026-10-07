@@ -66,7 +66,7 @@ function renderHead(d) {
     ? [crit ? `${crit} ${crit === 1 ? 'fault' : 'faults'}` : null, warn ? `${warn} to watch` : null].filter(Boolean).join(', ')
     : 'All systems normal';
   document.title = `${$('headline').textContent} · ${d.title}`;
-  const guests = (d.proxmox || []).flatMap((h) => h.data?.guests || []);
+  const guests = d.vms?.home === false ? [] : (d.proxmox || []).flatMap((h) => h.data?.guests || []);
   const seen = new Set();
   const vms = guests.filter((g) => !seen.has(`${g.node}:${g.vmid}`) && seen.add(`${g.node}:${g.vmid}`));
   $('wall-sub').textContent = [
@@ -206,11 +206,14 @@ function fitRack() {
 
 // --- services ---
 function renderServices() {
-  const all = (services?.groups || []).flatMap((g) => g.services || []);
+  // the same choice as Home (Admin → Dashboard); the wall keeps its own tile look
+  const mode = data?.homeServices || 'tiles';
+  const all = (services?.groups || []).flatMap((g) => g.services || []).filter((s) => s.onHome !== false);
   const box = $('svc');
-  box.hidden = !all.length;
   const down = all.filter((s) => s.check && !s.check.up);
-  const list = [...down, ...all.filter((s) => !down.includes(s))].slice(0, 10);
+  box.hidden = mode === 'off' || !all.length || (mode === 'down' && !down.length);
+  if (box.hidden) return box.replaceChildren();
+  const list = (mode === 'down' ? down : [...down, ...all.filter((s) => !down.includes(s))]).slice(0, 10);
   box.replaceChildren(...list.map((s) => {
     const c = s.check;
     const st = s.stats?.find((x) => x.value !== null && x.value !== undefined && x.value !== '');

@@ -128,7 +128,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(/Dell PowerEdge R740xd|PowerEdge R730xd/.test(await page.textContent('dialog.drawer .d-head p')), 'the drawer names the model');
   const odinText = await page.textContent('dialog.drawer');
   await page.keyboard.press('Escape');
-  check(odinText.includes('pve1') && !odinText.includes('pve2') && /VMs & containers, \d+ running/.test(odinText) && !odinText.includes('truenas'), 'Orion shows its own node; VMs are summarised with a link to Services');
+  check(odinText.includes('pve1') && !odinText.includes('pve2') && /VMs and containers · \d+ of \d+ running/.test(odinText) && odinText.includes('All VMs on the Services tab'), 'Orion shows its own node and its guests, with a link to Services');
   const vmPage = await page.context().newPage();
   await vmPage.goto(B + '/services#vms');
   await vmPage.waitForSelector('#vms .vm-card');

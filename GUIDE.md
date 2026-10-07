@@ -238,6 +238,8 @@ To arrange the page, press **Customize** on the Services page:
 
 - **Title** and **Refresh interval**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
+- **Services on Home:** **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
+- **VMs and containers:** choose where they show (**On Home**, **On the Services tab**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). Home shows names only unless you tick **Numbers on Home too**.
 - **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
 - **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.

@@ -139,6 +139,7 @@
             <label><span>Description</span><input name="description" maxlength="120" placeholder="Optional"></label>
             <label><span>Link (opened when you click the card)</span><input name="href" placeholder="https://jellyfin.example.lan"></label>
             <label><span>Runs on</span><select name="deviceId" id="svc-device"></select></label>
+            <label class="check wide"><input type="checkbox" name="onHome"> Show on Home (and the wall display), not only on the Services tab</label>
           </div>
           <datalist id="svc-groups"></datalist>
           <h4>Icon</h4>
@@ -282,10 +283,40 @@
           <div class="form-grid">
             <label><span>Title</span><input name="title" maxlength="60"></label>
             <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
-            <label class="check wide"><input type="checkbox" name="showStoppedGuests"> Show stopped VMs/containers</label>
             <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
           </div>
           <p class="hint">A public dashboard shows host names and status data to anyone who can reach the server, but never addresses, usernames or secrets. Admin always requires login.</p>
+
+          <h4>Services on Home</h4>
+          <div class="form-grid two">
+            <label><span>Show</span>
+              <select name="homeServices">
+                <option value="tiles">Tiles</option>
+                <option value="compact">Compact list</option>
+                <option value="down">Only the ones that are down</option>
+                <option value="off">Off (only on the Services tab)</option>
+              </select>
+            </label>
+            <label class="check wide"><input type="checkbox" name="serviceAlerts"> A service that is down shows under “Needs you” and in the top summary</label>
+          </div>
+          <p class="hint">This also applies to the wall display. To leave out single services, untick “Show on Home” on the service. Alert notifications are set on the Alerts tab and are not changed by this.</p>
+
+          <h4>VMs and containers</h4>
+          <fieldset class="checks" aria-label="Where VMs and containers show">
+            <legend class="small muted">Show them</legend>
+            <label class="check"><input type="checkbox" name="vms.home"> On Home</label>
+            <label class="check"><input type="checkbox" name="vms.services"> On the Services tab</label>
+            <label class="check"><input type="checkbox" name="vms.host"> In the Proxmox server's details</label>
+            <label class="check"><input type="checkbox" name="vms.rack"> As a count on the server in the rack</label>
+          </fieldset>
+          <fieldset class="checks" aria-label="What to show about each VM or container">
+            <legend class="small muted">With</legend>
+            <label class="check"><input type="checkbox" name="vms.stopped"> Stopped ones too</label>
+            <label class="check"><input type="checkbox" name="vms.cpu"> CPU</label>
+            <label class="check"><input type="checkbox" name="vms.ram"> Memory</label>
+            <label class="check"><input type="checkbox" name="vms.uptime"> Uptime</label>
+            <label class="check"><input type="checkbox" name="vms.homeNumbers"> Numbers on Home too (otherwise names only)</label>
+          </fieldset>
           <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
         </form>
       </section>
