@@ -16,7 +16,18 @@ const fanNodes = new Map();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const BLADE = 'M32 25C27 19 28 10 36 6c7 3 7 13 0 21z';
 
-function fanNode(key, fan) {
+// The words every name in a list starts with ("System Board Fan1A", "System Board Fan2A" -> "Fan1A", "Fan2A")
+function shortNames(names) {
+  if (names.length < 2) return names;
+  const words = names.map((n) => String(n).split(/\s+/));
+  let k = 0;
+  while (words.every((w) => w.length > k + 1 && w[k] === words[0][k])) k++;
+  return words.map((w) => w.slice(k).join(' '));
+}
+// Sensor names without what the heading already says ("System Board Inlet Temp" -> "Inlet")
+const sensorName = (name) => String(name).replace(/^System Board\s+/i, '').replace(/\s+Temp(erature)?$/i, '') || name;
+
+function fanNode(key, fan, label = fan.name) {
   let n = fanNodes.get(key);
   if (!n) {
     const rotor = svg('g', { class: 'rotor' }, [0, 72, 144, 216, 288].map((a) => svg('path', { d: BLADE, transform: `rotate(${a} 32 32)` })));
@@ -37,7 +48,7 @@ function fanNode(key, fan) {
   n.root.className = bad ? 'fan bad' : 'fan';
   n.root.title = `${fan.name}: ${fan.rpm != null ? fmt.n(fan.rpm) + ' rpm' : fan.percent != null ? fmt.n(fan.percent) + ' %' : 'no reading'}`;
   n.rpm.textContent = fan.rpm != null ? `${fmt.n(fan.rpm)} rpm` : fan.percent != null ? `${fmt.n(fan.percent)} %` : '–';
-  n.name.textContent = fan.name;
+  n.name.textContent = label;
   n.state.replaceChildren(bad ? status(fan.health) : '');
 
   const rpm = fan.rpm != null ? fan.rpm : fan.percent != null ? fan.percent * 150 : 0;
@@ -311,15 +322,16 @@ function renderIdrac(hosts) {
         parts.push(el('div', null, d.temps.map((t) => {
           const scale = t.crit || t.warn * 1.15 || 100;
           const cls = t.crit && t.celsius >= t.crit ? 'critical' : t.warn && t.celsius >= t.warn ? 'warning' : '';
-          return el('div', { class: 'meter-row', title: [t.warn && `Warning at ${t.warn} °C`, t.crit && `Critical at ${t.crit} °C`].filter(Boolean).join(', ') || null },
-            el('span', { class: 'label', text: t.name }),
+          return el('div', { class: 'meter-row', title: [t.name, t.warn && `Warning at ${t.warn} °C`, t.crit && `Critical at ${t.crit} °C`].filter(Boolean).join(' · ') },
+            el('span', { class: 'label', text: sensorName(t.name) }),
             meter(t.celsius / scale, cls),
             el('span', { class: 'value', text: `${fmt.n(t.celsius)} °C${cls ? ' ⚠' : ''}` }));
         })));
       }
       if (d.fans.length) {
         parts.push(el('h4', { text: 'Fans' }));
-        parts.push(el('div', { class: 'fans' }, d.fans.map((f, i) => fanNode(`${h.id}|${f.name}|${i}`, f))));
+        const labels = shortNames(d.fans.map((f) => f.name));
+        parts.push(el('div', { class: 'fans' }, d.fans.map((f, i) => fanNode(`${h.id}|${f.name}|${i}`, f, labels[i]))));
       }
       return parts;
     });

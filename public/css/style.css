@@ -192,6 +192,22 @@
 }
 [data-theme="high-contrast"] .card, [data-theme="high-contrast"] .dtile, [data-theme="high-contrast"] .need, [data-theme="high-contrast"] .big { border-width: 2px; }
 
+/* Tokens some themes don't set. Without these they inherit the light theme's values (a near-white
+   meter track, dark borders, light shadows) because both rules match the same element. */
+[data-theme="nord"], [data-theme="dracula"], [data-theme="catppuccin-mocha"], [data-theme="catppuccin-latte"], [data-theme="solarized-dark"],
+[data-theme="solarized-light"], [data-theme="gruvbox-dark"], [data-theme="tokyo-night"] {
+  --surface-3: color-mix(in srgb, var(--surface-2) 86%, var(--text));
+  --border-strong: color-mix(in srgb, var(--border) 70%, var(--text));
+}
+[data-theme="nord"], [data-theme="dracula"], [data-theme="catppuccin-mocha"], [data-theme="solarized-dark"], [data-theme="gruvbox-dark"], [data-theme="tokyo-night"] {
+  --shadow-sm: none; --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.1), 0 24px 64px -12px rgb(0 0 0 / 0.75);
+  --good: #4cb782; --warning: #f0bf3c; --serious: #f08a4b; --critical: #f0625f; --glow: 1;
+}
+[data-theme="graphite"], [data-theme="oled"], [data-theme="ocean"], [data-theme="forest"], [data-theme="ember"], [data-theme="rose-pine"], [data-theme="synthwave"], [data-theme="high-contrast"] {
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.1), 0 24px 64px -12px rgb(0 0 0 / 0.75);
+  --serious: #f08a4b;
+}
+
 /* Accents: the owner's choice (data-accent on <html>) or this device's; the colour follows light or dark */
 html[data-accent="indigo"] { --accent: light-dark(#5e6ad2, #7b7bff); --on-accent: #ffffff; }
 html[data-accent="blue"] { --accent: light-dark(#2563eb, #4f8dff); --on-accent: #ffffff; }
@@ -956,7 +972,7 @@ dialog.drawer::backdrop { background: rgb(0 0 0 / 0.45); -webkit-backdrop-filter
 .rack-mode .icon { width: 14px; height: 14px; }
 
 
-.rack2 { display: grid; grid-template-columns: minmax(0, 1fr) 7rem; gap: 0 10px; }
+.rack2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, 12rem); gap: 0 10px; } /* labels take up to 12rem when there is room */
 .rack2.schematic { grid-template-columns: minmax(0, 1fr); }
 .rack-figure { position: relative; width: 100%; }
 .rack-frame { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -1178,7 +1194,7 @@ table.rules td:first-child { min-width: 220px; }
 
 /* ---------- Energy report ---------- */
 
-.energy-main { max-width: 1100px; margin: 0; display: flex; flex-direction: column; gap: 16px; }
+.energy-main { display: flex; flex-direction: column; gap: 16px; } /* width and edges like every other page */
 .energy-main .card { margin: 0; }
 .energy-head { display: flex; flex-direction: column; gap: 12px; }
 .energy-title { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
@@ -1315,9 +1331,11 @@ a.svc-card:hover { border-color: var(--accent); }
 .svc-status { display: flex; align-items: center; gap: 6px; flex: none; }
 .svc-stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
 .svc-stat { display: flex; flex-direction: column; align-items: center; padding: 6px 4px; border-radius: 8px; background: var(--surface-2); min-width: 0; }
-.svc-stat .v { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.svc-stat .v small { font-size: 10.5px; font-weight: 500; color: var(--text-2); }
-.svc-stat .l { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.svc-stat { justify-content: center; text-align: center; }
+/* a narrow box puts the unit under the number and the label on two lines, instead of cutting them off */
+.svc-stat .v { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; column-gap: 3px; font-weight: 600; font-size: 14px; line-height: 1.2; max-width: 100%; }
+.svc-stat .v small { font-size: 10.5px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+.svc-stat .l { font-size: 11px; line-height: 1.25; color: var(--muted); max-width: 100%; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .svc-error { color: var(--critical); margin: 0; overflow-wrap: anywhere; }
 .numbers-choice { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 10px; margin: 0; }
 .numbers-choice legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
@@ -1520,7 +1538,7 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .spot .fade { margin-top: auto; animation: fadein 0.5s ease; }
 @keyframes fadein { from { opacity: 0; transform: translateY(6px); } }
 
-.probs { flex: 1; display: flex; flex-direction: column; justify-content: space-around; margin: clamp(6px, 1vh, 12px) 0 0; padding: 0; list-style: none; min-height: 0; overflow: hidden; }
+.probs { flex: 1; display: flex; flex-direction: column; justify-content: flex-start; margin: clamp(6px, 1vh, 12px) 0 0; padding: 0; list-style: none; min-height: 0; overflow: hidden; }
 .probs li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: clamp(4px, 0.8vh, 10px) 0; border-top: 1px solid var(--border); cursor: pointer; font-size: clamp(13px, 1.75vh, 19px); }
 .probs li:first-child { border-top: 0; }
 .probs b { font-weight: 500; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

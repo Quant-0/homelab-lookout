@@ -33,7 +33,7 @@ function cardBody(svc) {
       const text = HD.statValue(st);
       const m = /^(.*\d)\s+(\D+)$/.exec(text);
       return el('div', { class: 'svc-stat', title: `${st.label}: ${text}` },
-        el('span', { class: 'v num' }, m ? m[1] : text, m ? el('small', { text: ` ${m[2]}` }) : null),
+        el('span', { class: 'v num' }, m ? m[1] : text, m ? el('small', { text: m[2] }) : null),
         el('span', { class: 'l', text: st.label }));
     })));
   }

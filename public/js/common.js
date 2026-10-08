@@ -421,9 +421,12 @@ const HD = (() => {
     const vs = points.map((p) => p[1]);
     let lo = Math.min(...vs);
     let hi = Math.max(...vs);
-    if (hi - lo < 1e-9) {
-      lo -= 1;
-      hi += 1;
+    // a steady value (an inlet at 21.8–22.1 °C) is drawn as a steady line, not zoomed into a wall
+    const minSpan = Math.max(Math.abs(hi), Math.abs(lo)) * 0.1 || 1;
+    if (hi - lo < minSpan) {
+      const mid = (hi + lo) / 2;
+      lo = mid - minSpan / 2;
+      hi = mid + minSpan / 2;
     }
     const x = (t) => ((t - t0) / (t1 - t0 || 1)) * W;
     const y = (v) => H - 3 - ((v - lo) / (hi - lo)) * (H - 6);

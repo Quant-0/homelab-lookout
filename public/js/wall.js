@@ -378,12 +378,12 @@ function renderTools() {
     }
     keepAwake();
   } }, HD.icon('maximize'));
-  $('wall-tools').replaceChildren(
+  $('wall-tools').replaceChildren(...[ // replaceChildren would turn null into the text "null"
     el('a', { class: 'button icon-button', href: '/', title: 'Home', 'aria-label': 'Home' }, HD.icon('house')),
     el('button', { type: 'button', class: 'icon-button', title: 'Search', 'aria-label': 'Search', onclick: HD.openSearch }, HD.icon('search')),
     el('button', { type: 'button', class: 'icon-button', title: 'Look on this device', 'aria-label': 'Look on this device', onclick: (e) => HD.openLook(e.currentTarget) }, HD.icon('palette')),
     data?.loggedIn ? el('button', { type: 'button', class: 'icon-button', id: 'wall-customize', title: 'Customize the wall', 'aria-label': 'Customize the wall', onclick: openCustomize }, HD.icon('sliders-horizontal')) : null,
-    full);
+    full].filter(Boolean));
 }
 
 // A wall screen shouldn't go dark; asked for when someone taps, if the browser allows it
