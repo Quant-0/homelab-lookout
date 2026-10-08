@@ -103,7 +103,27 @@ function render(d) {
     return;
   }
   $('groups').replaceChildren(...d.groups.map(groupSection));
+  fitLabels();
 }
+
+// A word too long for its box ("Processing" in a narrow card) is set a little smaller, down to
+// 9 px, instead of being cut off
+function fitLabels() {
+  for (const l of document.querySelectorAll('.svc-stat .l')) {
+    l.style.fontSize = '';
+    let size = parseFloat(getComputedStyle(l).fontSize);
+    while (l.scrollWidth > l.clientWidth + 0.5 && size > 9) {
+      size -= 0.5;
+      l.style.fontSize = `${size}px`;
+    }
+  }
+}
+document.fonts?.ready.then(fitLabels); // measured again once the font has loaded
+let fitTimer = null;
+addEventListener('resize', () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fitLabels, 150);
+});
 
 // --- Proxmox VMs and containers ---
 
