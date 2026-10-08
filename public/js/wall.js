@@ -115,7 +115,7 @@ function renderSpot() {
       el('div', { class: 'spot-who' }, HD.icon(ISSUE_ICONS[a.severity] || 'info'), [a.subject, a.since ? `since ${new Date(a.since).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : null].filter(Boolean).join(' · ')),
       el('h2', { text: a.text }),
       a.detail ? el('p', { text: a.detail.length > 220 ? `${a.detail.slice(0, 220)}…` : a.detail }) : null),
-    list.length > 1 ? el('div', { class: 'prog' }, list.map((_, k) => el('i', { class: k < spotIndex ? 'done' : k === spotIndex ? 'now' : null }))) : null);
+    list.length > 1 ? el('div', { class: 'prog' }, list.map((_, k) => el('i', { class: k < spotIndex ? 'done' : k === spotIndex ? 'now' : null }))) : '');
   document.querySelectorAll('#probs li').forEach((li, k) => li.classList.toggle('on', k === spotIndex));
   if (list.length > 1 && !box.matches(':hover')) spotTimer = setTimeout(() => {
     spotIndex = (spotIndex + 1) % list.length;
