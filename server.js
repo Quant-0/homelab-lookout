@@ -964,6 +964,7 @@ const DEFAULT_WALL = {
   services: null, // null = the same as Home
   devices: null, // null = every device
   clock: true,
+  logo: true, // the dashboard's logo and title beside the clock
   vmCount: true,
 };
 
@@ -986,6 +987,7 @@ function validateWall(b) {
     services: ids(b.services, config.services, 60),
     devices: ids(b.devices, config.devices, 100),
     clock: b.clock !== false,
+    logo: b.logo !== false,
     vmCount: b.vmCount !== false,
   };
 }

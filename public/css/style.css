@@ -1530,8 +1530,15 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .wall-head h1 { font-size: clamp(20px, 3vh, 34px); font-weight: 650; letter-spacing: -0.035em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wall-head .sub { font-size: clamp(13px, 1.6vh, 17px); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wall-head .spacer { flex: 1; }
-.wall-tools { display: flex; gap: 4px; opacity: 0.5; transition: opacity 0.2s; }
+.wall-tools { display: flex; gap: 4px; opacity: 0.75; transition: opacity 0.6s; }
 .wall-tools:hover, .wall-tools:focus-within { opacity: 1; }
+.wall-body.idle .wall-tools { opacity: 0; pointer-events: none; } /* fades out when nobody touches the screen */
+.wall-body.idle { cursor: none; }
+.wall-brand { flex: none; display: flex; align-items: center; gap: clamp(8px, 0.9vw, 14px); min-width: 0; max-width: 32vw; padding-right: clamp(12px, 1.4vw, 24px); border-right: 1px solid var(--border); }
+.wall-brand img { height: clamp(28px, 4.4vh, 52px); width: auto; max-width: 14vw; object-fit: contain; }
+.wall-brand span { font-size: clamp(16px, 2.4vh, 26px); font-weight: 600; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wall-brand[hidden] { display: none; }
+.wall-brand:has(+ .clock[hidden]) { border-right: 0; padding-right: 0; } /* no divider without the clock */
 .clock { text-align: right; line-height: 1.05; flex: none; }
 .clock b { display: block; font-size: clamp(28px, 4.6vh, 54px); font-weight: 600; letter-spacing: -0.05em; font-variant-numeric: tabular-nums; }
 .clock span { font-size: clamp(12px, 1.5vh, 16px); color: var(--muted); }

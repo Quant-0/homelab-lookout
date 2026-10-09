@@ -83,13 +83,14 @@ The rack is drawn to scale, like the real hardware, with live lights: the drives
 ### Wall display
 
 **Wall display** (top right on Home, or **More** on a phone) is one screen for a tablet or TV on the wall, at `/wall`. It never scrolls, and is readable from across the room:
-- the headline (*2 faults, 1 to watch* or *All systems normal*) and a clock
+- the headline (*2 faults, 1 to watch* or *All systems normal*), and top right your logo and title beside the clock
+- the buttons (Home, search, look, Customize, full screen) fade out after a few seconds when nobody touches the screen, and so does the mouse pointer; touch the screen, move the mouse or press a key to bring them back
 - **Needs you:** one problem at a time, eight seconds each (point at it to pause), with the full list beside it
 - power now with its graph, the internet, the rack, and the services
 
 **Customize** (the sliders button at the top, only when you're signed in) changes the wall for every screen that shows it, with a live preview:
 - tick the panels to show (Needs you, All problems, Power, Internet, Rack, and a **Devices** panel), move them up and down, and make each **Normal**, **Wide** (two columns), **Tall** (two rows) or **Big** (both)
-- the clock and the VM count in the top bar
+- the logo and title, the clock and the VM count in the top bar
 - the services along the bottom: the same as Home, ones you pick, or none
 - the Devices panel: every device, or the ones you pick
 

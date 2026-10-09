@@ -20,7 +20,7 @@ const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', p
 const SIZE_NAMES = { normal: 'Normal', wide: 'Wide', tall: 'Tall', big: 'Big' };
 const DEFAULT_LAYOUT = {
   panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
-  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, vmCount: true,
+  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, logo: true, vmCount: true,
 };
 const layout = () => draft || data?.wall || DEFAULT_LAYOUT;
 
@@ -101,7 +101,7 @@ function renderHead(d) {
   const seen = new Set();
   const vms = guests.filter((g) => !seen.has(`${g.node}:${g.vmid}`) && seen.add(`${g.node}:${g.vmid}`));
   $('wall-sub').textContent = [
-    d.title,
+    layout().logo === false ? d.title : null, // otherwise it stands beside the clock
     `updated ${fmt.ago(d.generatedAt)}`,
     vms.length ? `${vms.filter((g) => g.status === 'running').length} of ${vms.length} VMs running` : null,
     d.updates?.available ? `${d.updates.available} update${d.updates.available === 1 ? '' : 's'}` : null,
@@ -295,6 +295,8 @@ function applyLayout() {
     node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length));
   });
   document.querySelector('.clock').hidden = !lay.clock;
+  $('wall-brand').hidden = lay.logo === false;
+  $('wall-title').textContent = data.title || '';
 }
 
 // --- Customize: the admin picks panels, their order and size, and what the wall lists ---
@@ -364,7 +366,7 @@ function openCustomize() {
       el('p', { class: 'hint', text: 'Tick the ones to show; the order fills the screen left to right, top to bottom. Wide takes two columns, Tall two rows, Big both.' }),
       el('ol', { class: 'wall-panels' }, rows),
       el('h4', { text: 'Top bar' }),
-      el('div', { class: 'wall-picks' }, toggle('clock', 'Clock'), toggle('vmCount', 'VMs running')),
+      el('div', { class: 'wall-picks' }, toggle('logo', 'Logo and title'), toggle('clock', 'Clock'), toggle('vmCount', 'VMs running')),
       el('h4', { text: 'Services along the bottom' }),
       toggle('showServices', 'Show services'),
       ...(draft.showServices ? chooser('services', 'The same as Home', 'The ones I pick (up to 10 show)', svcItems) : []),
@@ -489,3 +491,17 @@ renderTools();
 tick();
 setInterval(tick, 1000);
 refresh();
+
+// The buttons by the clock fade out when nobody is using the screen (and so does the mouse
+// pointer), and come back on a touch, a mouse move or a key; not while one of them is in use.
+let idleTimer = null;
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (document.querySelector('dialog[open]') || $('wall-tools').contains(document.activeElement)) return wake();
+    document.body.classList.add('idle');
+  }, 4000);
+}
+for (const ev of ['pointermove', 'pointerdown', 'keydown', 'focusin']) addEventListener(ev, wake, { passive: true });
+wake();
