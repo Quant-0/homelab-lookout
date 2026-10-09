@@ -455,7 +455,7 @@ const HD = (() => {
       svg('defs', null, fade),
       area,
       svg('path', { class: 'spark-glow', d: line, 'vector-effect': 'non-scaling-stroke' }),
-      svg('path', { class: `spark-line${first ? ' drawn' : ''}`, d: line, 'vector-effect': 'non-scaling-stroke', pathLength: 1 }),
+      svg('path', { class: `spark-line${first ? ' drawn' : ''}`, d: line, 'vector-effect': 'non-scaling-stroke' }),
       marker);
     const end = el('span', { class: 'spark-end' });
     end.style.left = `${(pts[pts.length - 1][0] / W) * 100}%`;
