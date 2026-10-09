@@ -924,12 +924,18 @@ const Rack = (() => {
       fr.model = um.rackFront;
       um = null;
     }
-    if (!um && (!FACES[fr.model] || fr.model === 'plain')) return null;
+    if (!um && (!FACES[fr.model] || fr.model === 'plain')) {
+      // a camera or access point of a make with no drawing of its own still looks like one
+      const generic = !inRack(item) && { camera: 'cam-dome', ap: 'ap-round' }[item.kind];
+      return generic ? productShape({ shape: generic, name: item.name }, info) : null;
+    }
     const height = Math.max(1, Math.min(4, item.height || um?.height || 1));
     const h = height * U;
     const n = ++artSeq;
     const draw = um ? (...a) => unifiFace(...a, um) : FACES[fr.model];
-    return S('svg', { class: 'device-art', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': item.name }, draw({ ...item, height }, info, fr, h, (x) => `art${n}-${x}`));
+    const id = (x) => `art${n}-${x}`;
+    // its own metal and perforation patterns: outside the rack there is no shared set to point at
+    return S('svg', { class: 'device-art', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': item.name }, defs(id), draw({ ...item, height }, info, fr, h, id));
   }
 
   function schematicItem(item, info, opts) {
@@ -1039,6 +1045,20 @@ const Rack = (() => {
         const row = Math.min(units - 1, Math.max(0, Math.floor(((e.clientY - b.top) / b.height) * units)));
         opts.onEmpty(top ? row + 1 : units - row);
       });
+    }
+    // a label shows only the lines its device has room for at this size (a small rack keeps the names)
+    const fitLabels = () => {
+      const upx = (figure.getBoundingClientRect().height * U) / VBH;
+      if (!upx) return;
+      for (const l of labels.children) {
+        const lines = Math.max(1, Math.floor((Number(/\bh(\d+)/.exec(l.className)?.[1] || 1) * upx) / 14));
+        [...l.querySelectorAll('small')].forEach((sm, i) => (sm.hidden = i + 1 >= lines));
+      }
+    };
+    container.rackFit?.disconnect();
+    if (mode !== 'schematic' && typeof ResizeObserver !== 'undefined') {
+      container.rackFit = new ResizeObserver(fitLabels);
+      container.rackFit.observe(figure);
     }
     const off = rack.items.filter(outside);
     container.replaceChildren(...[

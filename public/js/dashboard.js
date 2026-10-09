@@ -921,7 +921,7 @@ function powerTile(p) {
       el('span', null, el('strong', { text: fmt.kr(u.today.cost) }), ' today'),
       el('span', null, el('strong', { text: fmt.kr(u.month.cost, 0) }), ' this month'),
       pn ? el('span', null, el('strong', { text: `${fmt.n(pn.total, 1)} øre` }), ' per kWh now') : null),
-    p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish or a UniFi switch with PoE to measure power.' }));
+    p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W', range: '24h' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish or a UniFi switch with PoE to measure power.' }));
   b.addEventListener('click', openPower);
   return b;
 }
@@ -980,6 +980,9 @@ function powerDetail(p) {
     el('div', { class: 'detail-actions' }, el('a', { class: 'button primary', href: '/energy' }, HD.icon('chart-column'), 'Energy report')));
 }
 
+// The internet provider: set in Admin, else what the UniFi console reports
+const carrierOf = (d, hl) => d.carrier || hl?.wan?.isp || null;
+
 // The internet, from the UniFi gateway (or an Omada gateway)
 function internetTile(d) {
   const uh = (d.unifi || []).find((h) => h.data?.health);
@@ -989,7 +992,7 @@ function internetTile(d) {
     const gw = uh.data.devices.find((x) => ['udm', 'ugw', 'uxg'].includes(x.type));
     const owner = d.devices.find((dev) => dev.connections.some((c) => c.id === uh.id));
     const b = el('button', { type: 'button', class: `big net${gw ? '' : ' empty-spark'}`, 'aria-label': 'Internet' },
-      el('span', { class: 'big-head' }, HD.icon('globe'), 'Internet', owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
+      el('span', { class: 'big-head' }, HD.icon('globe'), 'Internet', carrierOf(d, hl) ? el('span', { class: 'carrier', text: carrierOf(d, hl) }) : null, owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
       el('span', { class: `big-num${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
       hl.internet?.downMbps != null ? el('span', { class: 'speed', title: 'The console\u2019s last speed test' },
         ...[['Download', hl.internet.downMbps], ['Upload', hl.internet.upMbps]].map(([l, v]) => {
@@ -1001,7 +1004,7 @@ function internetTile(d) {
         hl.clients != null ? el('span', null, el('strong', { text: fmt.n(hl.clients) }), ' clients') : null,
         hl.wifiClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wifiClients) }), ' on Wi-Fi') : null,
         hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null),
-      gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '' })) : null);
+      gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '', range: '24h' })) : null);
     if (owner) b.addEventListener('click', () => openDevice(owner.id));
     return b;
   }
@@ -1033,8 +1036,14 @@ function pill(cls, children, attrs) {
   return el(attrs.href ? 'a' : 'button', { class: `pill${cls ? ` ${cls}` : ''}`, ...(attrs.href ? {} : { type: 'button' }), ...attrs }, children);
 }
 
+// Snoozed warnings stay off the top of Home (the device still shows them)
+const awake = (d) => (d.attention || []).filter((a) => !a.snoozedUntil);
+const snoozedOnes = (d) => (d.attention || []).filter((a) => a.snoozedUntil);
+let showSnoozed = false;
+
 function renderSummary(d) {
-  const list = d.attention || [];
+  const list = awake(d);
+  const zz = snoozedOnes(d).length;
   const crit = list.filter((a) => a.severity === 'critical').length;
   const warn = list.length - crit;
   const online = infos.filter((x) => !['Offline', 'Waiting'].includes(x.state[0])).length;
@@ -1046,34 +1055,93 @@ function renderSummary(d) {
     crit ? pill('critical', [el('span', { class: 'dot critical' }), el('strong', { text: String(crit) }), crit === 1 ? ' fault' : ' faults'], { onclick: toNeeds }) : null,
     warn ? pill('warning', [el('span', { class: 'dot warning' }), el('strong', { text: String(warn) }), ' to watch'], { onclick: toNeeds }) : null,
     !list.length && (infos.length || d.services?.total) ? pill('good', [el('span', { class: 'dot good' }), 'All normal'], { onclick: toNeeds }) : null,
+    zz ? pill('snoozed', [HD.icon('clock'), el('strong', { text: String(zz) }), ' snoozed'], { onclick: () => { showSnoozed = true; renderNeeds(d); toNeeds(); } }) : null,
     say ? el('span', { class: 'summary-say', text: say }) : null,
   ].filter(Boolean));
 }
 
 function renderNeeds(d) {
-  const list = d.attention || [];
+  if (document.querySelector('.snooze-menu:not([hidden])')) return; // not while a snooze menu is open
+  const list = awake(d);
+  const zz = snoozedOnes(d);
   const box = $('needs');
   $('needs-count').textContent = list.length ? String(list.length) : '';
-  $('needs-sec').hidden = !list.length && !infos.length && !d.services?.total; // the empty hint says it already
+  $('needs-sec').hidden = !list.length && !zz.length && !infos.length && !d.services?.total; // the empty hint says it already
+  const snoozeLine = zz.length ? el('div', { class: 'snoozed-line' },
+    HD.icon('clock'), `${zz.length} snoozed`,
+    el('button', { type: 'button', class: 'link-button', 'aria-expanded': String(showSnoozed), text: showSnoozed ? 'Hide' : 'Show', onclick: () => { showSnoozed = !showSnoozed; renderNeeds(d); } })) : null;
+  const rows = [...list.map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
   if (!list.length) {
-    box.className = '';
-    return box.replaceChildren(infos.length || d.services?.total
-      ? el('div', { class: 'all-good' }, el('span', { class: 'need-icon' }, HD.icon('circle-check')), el('div', null, el('b', { text: 'All systems normal' }), el('span', { text: 'Nothing needs you right now.' })))
-      : el('p', { class: 'muted', text: 'Nothing is monitored yet.' }));
+    box.className = rows.length ? 'needs' : '';
+    const head = infos.length || d.services?.total
+      ? el('div', { class: 'all-good' }, el('span', { class: 'need-icon' }, HD.icon('circle-check')), el('div', null, el('b', { text: 'All systems normal' }), el('span', { text: zz.length ? 'Nothing else needs you right now.' : 'Nothing needs you right now.' })))
+      : el('p', { class: 'muted', text: 'Nothing is monitored yet.' });
+    return box.replaceChildren(...[head, ...rows, snoozeLine].filter(Boolean));
   }
   box.className = 'needs';
-  box.replaceChildren(...list.map((a) => {
-    const attrs = { class: `need ${a.severity}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
-    const inner = [
-      el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')),
-      el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
-        el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null),
-      a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
-    ];
-    if (a.deviceId && infos.some((x) => x.id === a.deviceId)) return el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
-    if (a.serviceId) return el('a', { href: '/services', ...attrs }, inner);
-    return el('div', attrs, inner);
-  }));
+  box.replaceChildren(...rows, snoozeLine || '');
+}
+
+const untilText = (t) => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+function needRow(a, d) {
+  const attrs = { class: `need ${a.severity}${a.snoozedUntil ? ' snoozed' : ''}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
+  const inner = [
+    el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')),
+    el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
+      el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null),
+    a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
+  ];
+  let row;
+  if (a.deviceId && infos.some((x) => x.id === a.deviceId)) row = el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
+  else if (a.serviceId) row = el('a', { href: '/services', ...attrs }, inner);
+  else row = el('div', attrs, inner);
+  if (!d.loggedIn || !a.key) return row;
+  return el('div', { class: 'need-wrap' }, row, snoozeControl(a, d));
+}
+
+// Snooze for 1 day or 1 week, for everyone (admin only); a snoozed one can be shown again
+function snoozeControl(a, d) {
+  let box = null;
+  const send = async (days) => {
+    for (const m of document.querySelectorAll('.snooze-menu')) m.hidden = true;
+    try {
+      await HD.api('POST', '/api/admin/snooze', { key: a.key, days });
+      a.snoozedUntil = days ? Date.now() + days * 864e5 : null;
+      renderSummary(d);
+      renderNeeds(d);
+    } catch (e) {
+      box?.append(el('span', { class: 'snooze-error', role: 'alert', text: e.message }));
+    }
+  };
+  if (a.snoozedUntil) {
+    box = el('div', { class: 'snooze-box' }, el('button', { type: 'button', class: 'snooze', title: 'Show it again', 'aria-label': `Show again: ${a.subject || ''} ${a.text}`, onclick: () => send(0) }, HD.icon('bell')));
+    return box;
+  }
+  const menu = el('div', { class: 'snooze-menu', role: 'menu', hidden: true },
+    el('button', { type: 'button', role: 'menuitem', text: 'Snooze 1 day', onclick: () => send(1) }),
+    el('button', { type: 'button', role: 'menuitem', text: 'Snooze 1 week', onclick: () => send(7) }));
+  const close = (e) => {
+    if (e && (e.target.closest?.('.snooze-box') === box)) return;
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', close);
+    document.removeEventListener('keydown', esc);
+  };
+  const esc = (e) => e.key === 'Escape' && (close(), btn.focus());
+  const btn = el('button', {
+    type: 'button', class: 'snooze', title: 'Snooze', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': `Snooze ${a.subject || ''} ${a.text}`,
+    onclick: () => {
+      if (!menu.hidden) return close();
+      menu.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      menu.querySelector('button').focus();
+      document.addEventListener('pointerdown', close);
+      document.addEventListener('keydown', esc);
+    },
+  }, HD.icon('clock'));
+  box = el('div', { class: 'snooze-box' }, btn, menu);
+  return box;
 }
 
 function orderedInfos() {

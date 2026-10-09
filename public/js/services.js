@@ -109,6 +109,10 @@ function render(d) {
 // A word too long for its box ("Processing" in a narrow card) is set a little smaller, down to
 // 9 px, instead of being cut off
 function fitLabels() {
+  for (const r of document.querySelectorAll('.svc-stats')) {
+    r.classList.remove('wrap');
+    if (r.scrollWidth > r.clientWidth + 1) r.classList.add('wrap');
+  }
   for (const l of document.querySelectorAll('.svc-stat .l')) {
     l.style.fontSize = '';
     let size = parseFloat(getComputedStyle(l).fontSize);

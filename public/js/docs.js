@@ -286,7 +286,7 @@ function show(...nodes) {
 function factsTable(rows) {
   const list = rows.filter(([, v]) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length));
   return list.length
-    ? el('table', { class: 'facts' }, el('tbody', null, list.map(([k, v]) => el('tr', null, el('th', { text: k }), el('td', null, Array.isArray(v) ? v.join(', ') : v)))))
+    ? el('table', { class: 'facts' }, el('tbody', null, list.map(([k, v]) => el('tr', null, el('th', { text: k }), el('td', null, Array.isArray(v) ? (v.length > 2 ? el('ul', { class: 'fact-list' }, v.map((x) => el('li', { text: x }))) : v.join(', ')) : v)))))
     : null;
 }
 

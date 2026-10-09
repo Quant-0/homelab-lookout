@@ -81,7 +81,7 @@ function trio(items) {
 
 // --- header ---
 function renderHead(d) {
-  const list = d.attention || [];
+  const list = (d.attention || []).filter((a) => !a.snoozedUntil); // snoozed ones stay off the wall
   const crit = list.filter((a) => a.severity === 'critical').length;
   const warn = list.length - crit;
   $('orb').className = `orb ${crit ? 'critical' : warn ? 'warning' : ''}`;
@@ -109,7 +109,7 @@ function tick() {
 
 // --- what needs you, one at a time ---
 function renderSpot() {
-  const list = data.attention || [];
+  const list = (data.attention || []).filter((a) => !a.snoozedUntil);
   const box = $('spot');
   clearTimeout(spotTimer);
   if (!list.length) {
@@ -138,7 +138,7 @@ function renderSpot() {
 }
 
 function renderList() {
-  const list = data.attention || [];
+  const list = (data.attention || []).filter((a) => !a.snoozedUntil);
   $('list-h').replaceChildren(HD.icon('list'), 'All problems', el('span', { class: 'r', text: String(list.length) }));
   $('probs').replaceChildren(...(list.length
     ? list.map((a, k) => el('li', { onclick: () => { spotIndex = k; renderSpot(); } },
@@ -177,7 +177,7 @@ function renderNet() {
     const hl = g.uh.data.health;
     const up = !hl.wan || hl.wan.status === 'ok';
     box.replaceChildren(
-      el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r', text: g.gw?.model || 'UniFi' })),
+      el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r', text: data.carrier || hl.wan?.isp || g.gw?.model || 'UniFi' })),
       el('div', { class: `huge${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
       el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key]) : null),
       trio([

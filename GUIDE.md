@@ -63,9 +63,10 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
 
 - **At the top:** how many faults and things to watch (or **All normal**), and a sentence about the rest.
 - **Needs you:** one row per problem, worst first, with how long it has been going on. Click a row to open that device. The same findings drive the alerts. When nothing is wrong it says **All systems normal**.
+  - **Snooze** (signed in as admin): the clock button at the end of a row hides it from the top of Home and from the wall display for **1 day** or **1 week**, for everyone. The device itself keeps showing the problem, alerts are still sent, and the snooze ends early if a warning turns into a fault. **N snoozed · Show** under the list shows them again; the bell button on a snoozed row ends the snooze.
 - **Power** and **Internet**, two big cards with a large number and a glowing graph of the last hours (amber for power, teal for the network):
-  - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range (**24 h / 7 d / 30 d**) is remembered per browser.
-  - **Internet** comes from the UniFi console (up or down, latency, the last speed test as bars, clients on Wi-Fi and wired) and opens the gateway.
+  - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d**) is remembered per browser; the cards on Home always show the last 24 hours.
+  - **Internet** comes from the UniFi console (up or down, latency, the last speed test as bars, clients on Wi-Fi and wired) and opens the gateway. Next to the heading is your **internet provider**: what the console reports, or the name you set in *Admin → Dashboard & look*.
 - **Devices:** a tile per device, drawn as it looks (its rack front, or its shape for access points, cameras and desktop NAS), grouped *In the rack* and *Elsewhere*. Each tile has one status (**OK**, **Warning**, **Fault** or **Offline**), its worst problem or its model, and one key number. Click a tile to open its **details** (from the right, or from the bottom on a phone):
   - its problems first, then up to eight numbers
   - every connection's full view: fans, power supplies, pools, disks, ports, UPS battery, graphs (hover for value and time)
@@ -258,11 +259,12 @@ To arrange the page, press **Customize** on the Services page:
 
 ### Dashboard & look
 
-- **Title** and **Refresh interval**.
+- **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
 - **VMs and containers:** choose where they show (**On Home**, **On the Services tab**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). On Home they are one line with the count at the bottom, unless you tick **On Home as a section with names and numbers**.
 - **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
+- **Logo:** **Default**, a **Built-in icon** in one of eight colours, or an **Image** (upload PNG, JPEG, WebP or SVG up to 1 MB, or search the icon library). It is shown in the top bar, on the sign-in page and as the browser tab icon. SVG files with scripts or links to other files are refused.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
 - **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.
 

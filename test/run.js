@@ -140,6 +140,7 @@ async function main() {
     { file: 'test/devices.test.js', fresh: true },
     { file: 'test/services.test.js', fresh: true },
     { file: 'test/infra.test.js', fresh: true, env: { TAILSCALE_API_URL: 'http://127.0.0.1:18090/tailscale' } },
+    { file: 'test/branding.test.js', fresh: true },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },

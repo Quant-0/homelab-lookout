@@ -347,7 +347,7 @@ body.app { min-height: 100vh; min-height: 100dvh; }
   border-bottom: 1px solid var(--border);
 }
 .sidebar .brand { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 220px; margin-right: 14px; color: var(--text); text-decoration: none; font-size: 14.5px; font-weight: 600; letter-spacing: -0.015em; }
-.sidebar .brand img { width: 24px; height: 24px; flex: none; }
+.sidebar .brand img { height: 24px; width: auto; min-width: 24px; max-width: 96px; object-fit: contain; flex: none; } /* a wide logo keeps its shape */
 .brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-list { display: flex; gap: 2px; min-width: 0; }
 .nav-item {
@@ -723,7 +723,7 @@ details.table-view summary { cursor: pointer; }
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .login { width: 100%; max-width: 360px; }
 .login h1 { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
-.login h1 img { width: 26px; height: 26px; }
+.login h1 img { height: 26px; width: auto; min-width: 26px; max-width: 120px; object-fit: contain; }
 .login label { margin-bottom: 12px; }
 .login button { width: 100%; justify-content: center; padding: 9px; }
 .login label.check { font-size: 13px; color: var(--text-2); margin-bottom: 14px; }
@@ -1852,7 +1852,9 @@ input, select, textarea { border-radius: 10px; }
 a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--edge-hi), var(--shadow-lg); }
 .svc-icon { border-radius: 11px; box-shadow: 0 6px 14px -8px rgb(0 0 0 / 0.6); }
 .svc-title strong { font-size: 15.5px; }
-.svc-stats { grid-auto-flow: column; grid-auto-columns: max-content; justify-content: start; gap: 6px 22px; }
+.svc-stats { display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 10px 16px; }
+.svc-stats.wrap { flex-wrap: wrap; } /* set by services.js when the numbers don't fit side by side: the last ones go to a new row instead of out of the card */
+.svc-stat { flex: 0 1 auto; min-width: min-content; max-width: 100%; justify-content: flex-start; }
 .svc-stat { align-items: flex-start; text-align: left; padding: 0; background: none; border-radius: 0; }
 .svc-stat .v { justify-content: flex-start; font-size: 19px; letter-spacing: -0.02em; }
 .svc-stat .v small { font-size: 12px; color: var(--muted); }
@@ -1873,7 +1875,7 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .upd-thumb .svc-icon, .upd-thumb .letter { width: 36px; height: 36px; border-radius: 10px; }
 .upd-thumb .tile-icon { width: 36px; height: 36px; }
 .upd-name strong { font-size: 15px; }
-.upd-row.available .upd-versions strong { padding: 2px 9px; border-radius: 8px; background: var(--accent-wash); color: var(--accent); }
+.upd-row.available .upd-versions strong { display: inline-block; max-width: 100%; padding: 2px 9px; border-radius: 8px; background: var(--accent-wash); color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; } /* the new version stays one badge */
 .upd-section h3 { font-size: 17px; letter-spacing: -0.015em; }
 .updates-head { padding: 16px 20px; }
 
@@ -1932,4 +1934,70 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 @media (max-width: 720px) {
   .card-head { flex-wrap: wrap; }
   .card-head .title { flex-basis: 100%; }
+}
+
+/* Admin: logo picker */
+.logo-pick { display: grid; gap: 12px; }
+.logo-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.logo-head .seg { margin: 0; flex: 0 1 380px; }
+.logo-preview { display: grid; place-items: center; width: 48px; height: 48px; flex: none; border-radius: 12px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
+.logo-preview img { width: 40px; height: 40px; object-fit: contain; }
+.logo-preview.icon { background: #16191e; color: var(--c); }
+.logo-preview.icon .icon { width: 26px; height: 26px; }
+.logo-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; max-width: 600px; } /* 24 icons: two rows of 12 */
+.logo-icon { height: 42px; padding: 0; justify-content: center; }
+.logo-icon[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.logo-image { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.logo-image label.button { position: relative; cursor: pointer; }
+.logo-image label.button input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.logo-image input[type="search"] { flex: 1 1 240px; min-width: 0; }
+.big-head .carrier { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.big-head .carrier::before { content: "·"; margin-right: 8px; color: var(--muted); }
+
+/* Home: snoozing a warning at the top (admin) */
+.need-wrap { position: relative; width: 100%; }
+.need-wrap > .need { padding-right: 62px; }
+.snooze-box { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); }
+.snooze { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--muted); }
+.snooze .icon { width: 17px; height: 17px; }
+.snooze:hover, .snooze[aria-expanded="true"] { border-color: var(--border); background: var(--surface-2); color: var(--text); }
+.snooze-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: grid; gap: 2px; min-width: 168px; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); }
+.snooze-menu button { justify-content: flex-start; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 13.5px; }
+.snooze-menu button:hover, .snooze-menu button:focus-visible { background: var(--surface-2); }
+.snooze-error { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; white-space: nowrap; padding: 5px 9px; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-lg); color: var(--critical); font-size: 12.5px; }
+.need.snoozed { opacity: 0.62; }
+.need.snoozed:hover { opacity: 0.85; }
+.snoozed-line { display: flex; align-items: center; gap: 8px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
+.snoozed-line .icon { width: 14px; height: 14px; }
+.pill.snoozed { color: var(--muted); }
+.pill.snoozed .icon { width: 14px; height: 14px; }
+@media (max-width: 640px) { .need-wrap > .need { padding-right: 56px; } .snooze-box { right: 8px; } }
+/* the open snooze menu lies over the cards below it */
+#needs-sec { position: relative; z-index: 4; }
+.need-wrap:has(.snooze-menu:not([hidden])) { z-index: 5; }
+.needs > .all-good { width: 100%; }
+.icon-results:empty { display: none; }
+/* phones: the names beside the rack get a bigger share, so they are not cut after a few letters */
+@media (max-width: 560px) { .rack2 { grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 44%); gap: 0 6px; } }
+/* phones: all six Admin sections visible at once (3 × 2) instead of a row cut off at the edge */
+@media (max-width: 640px) {
+  .admin main > .page-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--glass); overflow: visible; }
+  .admin .page-tabs [role="tab"] { margin: 0; padding: 9px 4px; border: 0; border-radius: 10px; justify-content: center; text-align: center; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .admin .page-tabs [role="tab"][aria-selected="true"] { border: 0; background: color-mix(in srgb, var(--text) 8%, transparent); }
+}
+/* phones: the three totals as rows (label left, number right) instead of three columns too narrow for the numbers */
+@media (max-width: 640px) {
+  .energy-tiles { grid-template-columns: 1fr; gap: 10px; }
+  .energy-tiles .tile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; padding: 14px 18px; }
+  .energy-tiles .label { grid-column: 1; }
+  .energy-tiles .detail { grid-column: 1; grid-row: 2; }
+  .energy-tiles .value { grid-column: 2; grid-row: 1 / span 2; margin: 0; font-size: 32px; overflow: visible; text-align: right; }
+  .energy-tiles .value small { display: inline; font-size: 14px; }
+}
+/* Docs: a long list (disks) one per line; on phones the label sits above the value */
+.fact-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; }
+@media (max-width: 640px) {
+  table.facts tr { display: grid; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  table.facts th, table.facts td { width: auto; padding: 0; border: 0; }
+  table.facts th { font-size: 12.5px; }
 }

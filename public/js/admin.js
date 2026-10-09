@@ -181,6 +181,7 @@ $('power-form').elements.area.addEventListener('change', (ev) => {
 function fillDashboard(d) {
   const f = $('dash-form').elements;
   f.title.value = d.title;
+  f.carrier.value = d.carrier || '';
   f.refreshSeconds.value = d.refreshSeconds;
   f.public.checked = d.public;
   f.homeServices.value = d.homeServices;
@@ -193,6 +194,7 @@ async function saveSettings(msgId) {
   const body = {
     dashboard: {
       title: d.title.value,
+      carrier: d.carrier.value,
       refreshSeconds: Number(d.refreshSeconds.value),
       public: d.public.checked,
       homeServices: d.homeServices.value,
@@ -1993,6 +1995,8 @@ function renderAppearance() {
     return b;
   }));
 
+  renderLogo();
+
   const pick = (background) => () => {
     appearance.background = { ...appearance.background, ...background };
     renderAppearance();
@@ -2012,6 +2016,102 @@ function renderAppearance() {
     $(`${id}-out`).textContent = `${appearance[key]}${unit}`;
   }
   previewAppearance();
+}
+
+// --- Logo: the shipped one, a built-in icon in a colour, or an image (upload or the icon library) ---
+const LOGO_COLOR_NAMES = { blue: 'Blue', indigo: 'Indigo', teal: 'Teal', green: 'Green', amber: 'Amber', pink: 'Pink', red: 'Red', white: 'White' };
+let logoMode = null; // which choice is open; an image choice stays open until one is uploaded or picked
+let logoSearchTimer = null;
+
+function logoPreview(logo) {
+  if (logo.kind === 'icon') {
+    const box = el('span', { class: 'logo-preview icon' }, HD.icon(logo.name));
+    box.style.setProperty('--c', state.logoColors[logo.color]);
+    return box;
+  }
+  return el('span', { class: 'logo-preview' }, el('img', { src: logo.kind === 'file' ? `/media/icon/${logo.id}` : '/static/favicon.svg', alt: '' }));
+}
+
+function renderLogo() {
+  const logo = appearance.logo || { kind: 'default' };
+  const mode = logoMode || (logo.kind === 'file' ? 'image' : logo.kind);
+  const set = (l) => {
+    appearance.logo = l;
+    renderLogo();
+  };
+  const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Logo' }, [['default', 'Default'], ['icon', 'Built-in icon'], ['image', 'Image']].map(([k, label]) => el('button', {
+    type: 'button',
+    'aria-pressed': String(mode === k),
+    text: label,
+    onclick: () => {
+      logoMode = k;
+      if (k === 'default') set({ kind: 'default' });
+      else if (k === 'icon' && logo.kind !== 'icon') set({ kind: 'icon', name: state.logoIcons[0], color: 'blue' });
+      else renderLogo();
+    },
+  })));
+  const parts = [el('div', { class: 'logo-head' }, logoPreview(mode === 'image' && logo.kind !== 'file' ? { kind: 'default' } : logo), seg)];
+  if (mode === 'icon' && logo.kind === 'icon') {
+    parts.push(el('div', { class: 'logo-icons', role: 'group', 'aria-label': 'Icon' }, state.logoIcons.map((n) => el('button', {
+      type: 'button', class: 'logo-icon', title: n, 'aria-label': n, 'aria-pressed': String(logo.name === n), onclick: () => set({ ...logo, name: n }),
+    }, HD.icon(n)))));
+    parts.push(el('div', { class: 'swatches-row', role: 'group', 'aria-label': 'Logo colour' }, Object.keys(state.logoColors).map((k) => {
+      const b = el('button', { type: 'button', class: 'swatch', title: LOGO_COLOR_NAMES[k] || k, 'aria-label': LOGO_COLOR_NAMES[k] || k, 'aria-pressed': String(logo.color === k), onclick: () => set({ ...logo, color: k }) });
+      b.style.setProperty('--c', state.logoColors[k]);
+      return b;
+    })));
+  }
+  if (mode === 'image') {
+    const upload = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/svg+xml' });
+    upload.addEventListener('change', async () => {
+      const file = upload.files[0];
+      upload.value = '';
+      if (!file) return;
+      if (file.size > 1024 * 1024) return showMsg('ap-msg', 'The logo is larger than 1 MB', false);
+      try {
+        const { icon } = await HD.upload('/api/admin/logo', file);
+        logoMode = null;
+        set({ kind: 'file', id: icon.id });
+        showMsg('ap-msg', 'Uploaded. Save appearance to use it.', true);
+      } catch (e) {
+        showMsg('ap-msg', e.message, false);
+      }
+    });
+    const results = el('div', { class: 'icon-results' });
+    const search = el('input', { type: 'search', id: 'logo-search', placeholder: 'Search the icon library (e.g. proxmox)', 'aria-label': 'Search the icon library' });
+    search.addEventListener('input', () => {
+      clearTimeout(logoSearchTimer);
+      const q = search.value.trim();
+      logoSearchTimer = setTimeout(async () => {
+        if (q.length < 2) return results.replaceChildren();
+        try {
+          const { names } = await api('GET', `/api/admin/icons/search?q=${encodeURIComponent(q)}`);
+          results.replaceChildren(...(names.length ? names.map((n) => el('button', {
+            type: 'button',
+            class: 'icon-choice',
+            title: n,
+            onclick: async () => {
+              try {
+                const { icon } = await api('POST', '/api/admin/icons/library', { name: n });
+                logoMode = null;
+                set({ kind: 'file', id: icon.id });
+              } catch (e) {
+                showMsg('ap-msg', e.message, false);
+              }
+            },
+          }, el('img', { src: `/api/admin/icons/preview/${n}`, alt: '', loading: 'lazy' }), el('span', { text: n }))) : [el('span', { class: 'small muted', text: 'No icons found' })]));
+        } catch (e) {
+          results.replaceChildren(el('span', { class: 'msg error', text: e.message }));
+        }
+      }, 250);
+    });
+    parts.push(el('div', { class: 'logo-image' },
+      el('label', { class: 'button' }, upload, HD.icon('upload'), 'Upload logo'),
+      search),
+    results,
+    el('p', { class: 'hint', text: 'PNG, JPEG, WebP or SVG, up to 1 MB. A square or wide image works best. SVG files with scripts or links to other files are refused.' }));
+  }
+  $('logo-pick').replaceChildren(...parts);
 }
 
 function previewAppearance() {
@@ -2069,7 +2169,13 @@ $('ap-save').addEventListener('click', async () => {
     const r = await api('PUT', '/api/admin/settings', { appearance });
     state.settings = r.settings;
     appearance = structuredClone(r.settings.appearance);
+    logoMode = null;
     renderAppearance();
+    // the new logo in the top bar and the browser tab right away
+    const v = `/logo?v=${Date.now()}`;
+    for (const img of document.querySelectorAll('.brand img')) img.src = v;
+    const tab = document.querySelector('link[rel="icon"]');
+    if (tab) tab.href = v;
     showMsg('ap-msg', 'Saved', true);
   } catch (e) {
     showMsg('ap-msg', e.message, false);
@@ -2078,6 +2184,7 @@ $('ap-save').addEventListener('click', async () => {
 
 $('ap-revert').addEventListener('click', () => {
   appearance = structuredClone(state.settings.appearance);
+  logoMode = null;
   renderAppearance();
 });
 

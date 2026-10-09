@@ -59,9 +59,14 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForFunction(() => /last 30 d/.test(document.querySelector('dialog.drawer .spark')?.getAttribute('aria-label') || ''));
   check(true, '30 d range fetches the 30-day series');
   await page.screenshot({ path: `${S}/history-30d.png` });
+  check(/last 24 h/.test(await page.locator('.power-tile .spark').getAttribute('aria-label')), 'the Home card stays at 24 h when the details change range');
   await page.reload();
   await page.locator('.power-tile .spark').waitFor();
-  check(/last 30 d/.test(await page.locator('.power-tile .spark').getAttribute('aria-label')), 'range choice remembered after reload');
+  check(/last 24 h/.test(await page.locator('.power-tile .spark').getAttribute('aria-label')), 'the Home card is 24 h after reload too');
+  await page.click('.power-tile');
+  await page.waitForFunction(() => /last 30 d/.test(document.querySelector('dialog.drawer .spark')?.getAttribute('aria-label') || ''));
+  check(true, 'range choice in the details remembered after reload');
+  await page.keyboard.press('Escape');
 
   // mobile: no horizontal scroll
   await page.setViewportSize({ width: 390, height: 844 });

@@ -215,7 +215,7 @@ const HD = (() => {
     if (side) {
       side.setAttribute('aria-label', 'Main');
       side.replaceChildren(
-        el('a', { class: 'brand', href: '/', title: st.title }, el('img', { src: '/static/favicon.svg', alt: '' }), el('span', { class: 'brand-name', text: st.title })),
+        el('a', { class: 'brand', href: '/', title: st.title }, el('img', { src: '/logo', alt: '' }), el('span', { class: 'brand-name', text: st.title })),
         el('div', { class: 'nav-list' }, items.map((n) => navLink(n, 'nav-item'))),
         el('div', { class: 'nav-foot' },
           el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-label': 'Search', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
@@ -394,20 +394,23 @@ const HD = (() => {
   } catch {
     /* storage unavailable */
   }
-  let cache = { range: null, at: 0, series: {} };
+  // one cache per range: Home's 24 h cards and a details panel at 7 d are on the page together
+  const caches = {};
   let sparkSeq = 0;
   const drawnKeys = new Set();
 
-  // Hidden until there is something to draw: no "collecting history" placeholders
-  function sparkSlot(key, { label = '', unit = '', decimals = 0 } = {}) {
+  // Hidden until there is something to draw: no "collecting history" placeholders.
+  // `range` pins a graph (Home's cards are always the last 24 h); without it, it follows the range buttons.
+  function sparkSlot(key, { label = '', unit = '', decimals = 0, range: fixed = null } = {}) {
     return el('div', { class: 'spark-cell', hidden: true },
       label ? el('div', { class: 'spark-label', text: label }) : null,
-      el('div', { class: 'spark-slot', 'data-key': key, 'data-unit': unit, 'data-dec': decimals, 'data-label': label }));
+      el('div', { class: 'spark-slot', 'data-key': key, 'data-unit': unit, 'data-dec': decimals, 'data-label': label, 'data-range': fixed || null }));
   }
+  const rangeOf = (slot) => (RANGES[slot.dataset.range] ? slot.dataset.range : range);
 
   const fmtVal = (v, unit, dec) => `${nf(dec).format(v)}${unit}`;
 
-  function drawSpark(slot, points) {
+  function drawSpark(slot, points, rng) {
     const unit = slot.dataset.unit;
     const dec = Number(slot.dataset.dec);
     const cell = slot.closest('.spark-cell');
@@ -419,7 +422,7 @@ const HD = (() => {
     const H = 40;
     // The x axis is the whole range, so a series that started recently fills only the right part
     const t1 = Date.now();
-    const t0 = Math.min(points[0][0], t1 - RANGE_MS[range]);
+    const t0 = Math.min(points[0][0], t1 - RANGE_MS[rng]);
     const vs = points.map((p) => p[1]);
     let lo = Math.min(...vs);
     let hi = Math.max(...vs);
@@ -464,8 +467,8 @@ const HD = (() => {
     const min = Math.min(...vs);
     const max = Math.max(...vs);
     const last = vs[vs.length - 1];
-    const span = `${RANGES[range]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
-    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[range]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, end, tip);
+    const span = `${RANGES[rng]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
+    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, end, tip);
     const show = (clientX) => {
       const r = box.getBoundingClientRect();
       const t = t0 + ((clientX - r.left) / r.width) * (t1 - t0);
@@ -475,7 +478,7 @@ const HD = (() => {
       marker.setAttribute('x1', x(bt));
       marker.setAttribute('x2', x(bt));
       marker.style.display = '';
-      tip.replaceChildren(el('strong', { text: fmtVal(bv, unit, dec) }), ` ${new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(range !== '24h' ? { day: 'numeric', month: 'short' } : {}) })}`);
+      tip.replaceChildren(el('strong', { text: fmtVal(bv, unit, dec) }), ` ${new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(rng !== '24h' ? { day: 'numeric', month: 'short' } : {}) })}`);
       tip.classList.remove('hidden');
       const px = (x(bt) / W) * r.width;
       tip.style.left = `${Math.min(Math.max(px - tip.offsetWidth / 2, 0), r.width - tip.offsetWidth)}px`;
@@ -492,23 +495,29 @@ const HD = (() => {
   async function fillSparks(force = false) {
     const slots = [...document.querySelectorAll('.spark-slot')];
     if (!slots.length) return;
-    const keys = [...new Set(slots.map((s) => s.dataset.key))];
     const draw = () => {
-      for (const s of document.querySelectorAll('.spark-slot')) if (cache.range === range && s.dataset.key in cache.series) drawSpark(s, cache.series[s.dataset.key]);
+      for (const s of document.querySelectorAll('.spark-slot')) {
+        const c = caches[rangeOf(s)];
+        if (c && s.dataset.key in c.series) drawSpark(s, c.series[s.dataset.key], rangeOf(s));
+      }
     };
     draw(); // from cache right away, so a re-render doesn't flicker
-    const stale = force || cache.range !== range || Date.now() - cache.at > 60000 || keys.some((k) => !(k in cache.series));
-    if (stale) {
+    const wanted = {};
+    for (const s of slots) (wanted[rangeOf(s)] ||= new Set()).add(s.dataset.key);
+    await Promise.all(Object.entries(wanted).map(async ([rng, set]) => {
+      const keys = [...set];
+      const c = caches[rng];
+      if (!(force || !c || Date.now() - c.at > 60000 || keys.some((k) => !(k in c.series)))) return;
       try {
-        const r = await fetch(`/api/history?range=${range}&points=120&keys=${encodeURIComponent(keys.join(','))}`, { credentials: 'same-origin', cache: 'no-store' });
+        const r = await fetch(`/api/history?range=${rng}&points=120&keys=${encodeURIComponent(keys.join(','))}`, { credentials: 'same-origin', cache: 'no-store' });
         if (r.ok) {
           const got = (await r.json()).series;
-          cache = { range, at: Date.now(), series: { ...(cache.range === range ? cache.series : {}), ...Object.fromEntries(keys.map((k) => [k, got[k] || []])) } };
+          caches[rng] = { at: Date.now(), series: { ...(caches[rng]?.series || {}), ...Object.fromEntries(keys.map((k) => [k, got[k] || []])) } };
         }
       } catch {
         /* keep what we have */
       }
-    }
+    }));
     draw();
   }
 

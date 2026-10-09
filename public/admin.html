@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Admin · Homelab</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/logo">
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet" href="/appearance.css">
   <script src="/static/js/look.js"></script>
@@ -282,6 +282,7 @@
         <form id="dash-form">
           <div class="form-grid">
             <label><span>Title</span><input name="title" maxlength="60"></label>
+            <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
             <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
             <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
           </div>
@@ -328,6 +329,8 @@
         <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
         <h4>Accent</h4>
         <div class="swatches-row" id="accent-row" role="group" aria-label="Accent"></div>
+        <h4>Logo</h4>
+        <div class="logo-pick" id="logo-pick"></div>
         <h4>Background</h4>
         <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
         <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>

@@ -192,7 +192,7 @@ const server = https.createServer(opts, (req, res) => {
     ] }));
     if (u === '/proxy/network/api/s/default/stat/health') return res.end(R({ meta: { rc: 'ok' }, data: [
       { subsystem: 'wlan', num_user: 14, num_ap: 1, status: 'ok' },
-      { subsystem: 'wan', status: 'ok', wan_ip: '203.0.113.45' },
+      { subsystem: 'wan', status: 'ok', wan_ip: '203.0.113.45', isp_name: 'Fiberlink' },
       { subsystem: 'www', status: 'ok', latency: 7, xput_down: 912.4, xput_up: 487.1 },
       { subsystem: 'lan', num_user: 23, num_sw: 1, status: 'ok' },
     ] }));

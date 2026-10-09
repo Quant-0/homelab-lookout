@@ -55,8 +55,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no sideways scrolling on a phone');
   const tops = await page.$$eval('#en-prev, #en-period, #en-next', (n) => n.map((x) => Math.round(x.getBoundingClientRect().top + x.offsetHeight / 2)));
   check(Math.max(...tops) - Math.min(...tops) <= 2, 'phone: ‹ period › stay on one row');
-  const tileTops = await page.$$eval('#en-tiles .tile', (n) => n.map((x) => Math.round(x.getBoundingClientRect().top)));
-  check(new Set(tileTops).size === 1, 'phone: the three tiles share a row');
+  const totals = await page.$$eval('#en-tiles .tile', (n) => n.map((x) => ({ top: Math.round(x.getBoundingClientRect().top), cut: x.querySelector('.value').scrollWidth > x.querySelector('.value').clientWidth + 1 })));
+  check(new Set(totals.map((t) => t.top)).size === 3 && totals.every((t) => !t.cut), 'phone: the three totals are rows, with no number cut short');
   await page.screenshot({ path: `${S}/energy-phone.png`, fullPage: true });
 
   await browser.close();

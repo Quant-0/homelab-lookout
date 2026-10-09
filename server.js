@@ -95,6 +95,7 @@ const NORGESPRIS_ORE_EX_VAT = 40; // 50 øre/kWh incl. 25 % VAT
 const DEFAULT_SETTINGS = {
   dashboard: {
     title: 'Homelab',
+    carrier: '', // the internet provider shown on Home; empty = what UniFi reports
     refreshSeconds: 30,
     public: false,
     homeServices: 'line', // line (a count at the bottom) | tiles | compact | down (only the ones that are down) | off
@@ -135,11 +136,15 @@ const DEFAULT_SETTINGS = {
     blur: 12, // px
     dim: 35, // % scrim over the background
     cardOpacity: 85, // % (below 100 gives frosted-glass cards)
+    logo: { kind: 'default' }, // default | icon (a built-in icon in a colour) | file (an uploaded or library image)
   },
 };
 
 // ---------------------------------------------------------------------------
 // Utilities
+
+// A short text from a device's API, or null (control characters removed)
+const textOrNull = (v, max) => (typeof v === 'string' && v.trim() ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : null);
 
 class UserError extends Error {} // message is safe to show to the admin
 
@@ -544,6 +549,8 @@ const HOME_SERVICES = ['line', 'tiles', 'compact', 'down', 'off'];
 function validateDashboard(d) {
   const title = String(d.title ?? '').trim() || 'Homelab';
   if (title.length > 60 || hasControlChars(title)) throw new UserError('Title is too long');
+  const carrier = String(d.carrier ?? '').trim();
+  if (carrier.length > 60 || hasControlChars(carrier)) throw new UserError('Internet provider name is too long');
   const homeServices = d.homeServices ?? 'line';
   if (!HOME_SERVICES.includes(homeServices)) throw new UserError('Invalid choice for services on Home');
   const v = d.vms && typeof d.vms === 'object' ? d.vms : {};
@@ -552,6 +559,7 @@ function validateDashboard(d) {
   if (typeof v.stopped !== 'boolean' && d.showStoppedGuests === false) vms.stopped = false; // the older setting
   return {
     title,
+    carrier, // '' = what UniFi reports
     refreshSeconds: num(d.refreshSeconds, 10, 3600, 'Refresh interval', { int: true }),
     public: d.public === true,
     homeServices,
@@ -601,6 +609,24 @@ function validatePower(p) {
   };
 }
 
+// The logo: the shipped one, a built-in icon drawn in one of these colours, or an image
+const LOGO_ICONS = ['server', 'house', 'cpu', 'hard-drive', 'database', 'router', 'network', 'wifi', 'globe', 'shield-check', 'zap', 'layers', 'box', 'container', 'monitor', 'tv', 'activity', 'gauge', 'cable', 'plug', 'memory-stick', 'fan', 'cctv', 'layout-dashboard'];
+const LOGO_COLORS = { blue: '#4f8dff', indigo: '#7b7bff', teal: '#2ec4b6', green: '#34c46a', amber: '#f5a524', pink: '#f05aa6', red: '#f06065', white: '#eef0f3' };
+
+function validateLogo(l) {
+  if (l === undefined) return structuredClone(config.settings.appearance.logo || DEFAULT_SETTINGS.appearance.logo);
+  if (l?.kind === 'default') return { kind: 'default' };
+  if (l?.kind === 'icon') {
+    if (!LOGO_ICONS.includes(l.name)) throw new UserError('Unknown logo icon');
+    return { kind: 'icon', name: l.name, color: LOGO_COLORS[l.color] ? l.color : 'blue' };
+  }
+  if (l?.kind === 'file') {
+    if (!config.icons.some((i) => i.id === l.id)) throw new UserError('Upload or pick the logo image again');
+    return { kind: 'file', id: l.id };
+  }
+  throw new UserError('Invalid logo');
+}
+
 function validateAppearance(a) {
   const bg = a.background || {};
   if (!THEMES.includes(a.theme)) throw new UserError('Unknown theme');
@@ -616,6 +642,7 @@ function validateAppearance(a) {
     blur: num(a.blur, 0, 40, 'Blur', { int: true }),
     dim: num(a.dim, 0, 90, 'Background dimming', { int: true }),
     cardOpacity: num(a.cardOpacity, 30, 100, 'Card opacity', { int: true }),
+    logo: validateLogo(a.logo), // left out (an older client): kept as it is
   };
 }
 
@@ -2297,7 +2324,8 @@ async function collectUnifi(h, password) {
     if (!health && Array.isArray(hl)) {
       const sub = Object.fromEntries(hl.map((x) => [x.subsystem, x]));
       health = {
-        wan: sub.wan ? { status: sub.wan.status, ip: sub.wan.wan_ip || null } : null,
+        // the carrier as the console knows it (from the WAN IP's owner); Admin can set it instead
+        wan: sub.wan ? { status: sub.wan.status, ip: sub.wan.wan_ip || null, isp: textOrNull(sub.wan.isp_name, 60) || textOrNull(sub.wan.isp_organization, 60) } : null,
         // 0/0 means no speed test has run on the console: show nothing rather than "0 Mbps"
         internet: sub.www ? { status: sub.www.status, latencyMs: num0(sub.www.latency), downMbps: num0(sub.www.xput_down) || null, upMbps: num0(sub.www.xput_down) ? num0(sub.www.xput_up) : null } : null,
         clients: (num0(sub.wlan?.num_user) || 0) + (num0(sub.lan?.num_user) || 0),
@@ -3325,8 +3353,8 @@ function vmsPayload() {
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
-function storeIcon(buf, source) {
-  const { mime, data } = sanitizeImage(buf);
+function storeIcon(buf, source, clean = sanitizeImage) {
+  const { mime, data } = clean(buf);
   const existing = config.icons.find((i) => i.source === source && source.startsWith('library:'));
   if (existing) return existing;
   const id = crypto.randomBytes(16).toString('hex');
@@ -3339,6 +3367,7 @@ function storeIcon(buf, source) {
 
 function pruneIcons() {
   const used = new Set(config.services.filter((s) => s.icon?.kind === 'file').map((s) => s.icon.id));
+  if (config.settings.appearance.logo?.kind === 'file') used.add(config.settings.appearance.logo.id);
   for (const icon of config.icons.filter((i) => !used.has(i.id))) {
     if (Date.now() - icon.addedAt < 3600 * 1000) continue; // just picked in an unsaved form
     fs.rmSync(path.join(ICON_DIR, icon.id), { force: true });
@@ -4693,6 +4722,70 @@ function sanitizeImage(buf) {
   return { mime, data: clean };
 }
 
+// An SVG logo is accepted only as a plain drawing: no scripts, event handlers, embedded HTML,
+// entities or references to anything outside the file. It is also only ever served as an image
+// with a sandboxing CSP (svgHeaders), so even a drawing that slipped through could not run code.
+function sanitizeSvg(buf) {
+  if (buf.length > 512 * 1024) throw new UserError('SVG too large (max 512 KB)');
+  const text = buf.toString('utf8').replace(/^\uFEFF/, '');
+  if (!/^\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text) || !/<\/svg>\s*$/i.test(text)) throw new UserError('Not an SVG image');
+  const bad = [/<script/i, /<foreignObject/i, /<!DOCTYPE/i, /<!ENTITY/i, /\son[a-z]+\s*=/i, /javascript:/i, /@import/i, /url\(\s*['"]?(?!#)/i, /<(iframe|embed|object|audio|video|image|a)\b/i, /\b(xlink:)?href\s*=\s*['"]\s*(?!#)/i];
+  if (bad.some((re) => re.test(text))) throw new UserError('This SVG contains scripts, links or embedded files; save it as a plain drawing or use PNG');
+  return { mime: 'image/svg+xml', data: Buffer.from(text) };
+}
+
+function sanitizeLogo(buf) {
+  return sniffImage(buf) ? sanitizeImage(buf) : sanitizeSvg(buf);
+}
+
+function svgHeaders(res) {
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+}
+
+// Built-in icons (the Lucide subset the pages use), read once for drawing a logo on the server
+let iconShapes = null;
+function logoIconSvg(name, color) {
+  if (!iconShapes) {
+    try {
+      iconShapes = JSON.parse(fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'icons.js'), 'utf8').match(/const HD_ICONS = (\{[\s\S]*?\});\n/)[1]);
+    } catch {
+      iconShapes = {};
+    }
+  }
+  const esc = (v) => String(v).replace(/[^a-zA-Z0-9 .,#-]/g, '');
+  const parts = (iconShapes[name] || []).map(([tag, attrs]) => `<${esc(tag)} ${Object.entries(attrs).map(([k, v]) => `${esc(k)}="${esc(v)}"`).join(' ')}/>`).join('');
+  const c = LOGO_COLORS[color] || LOGO_COLORS.blue;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#16191e"/><g transform="translate(14 14) scale(1.5)" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${parts}</g></svg>`;
+}
+
+// The current logo as one image: the top bar, the sign-in page and the browser tab all load /logo
+function sendLogo(req, res) {
+  const logo = config.settings.appearance.logo || { kind: 'default' };
+  let mime = 'image/svg+xml';
+  let data = null;
+  if (logo.kind === 'icon') data = Buffer.from(logoIconSvg(logo.name, logo.color));
+  else if (logo.kind === 'file') {
+    const rec = config.icons.find((i) => i.id === logo.id);
+    try {
+      if (rec) {
+        data = fs.readFileSync(path.join(ICON_DIR, rec.id));
+        mime = rec.mime;
+      }
+    } catch {
+      data = null;
+    }
+  }
+  if (!data) return sendStatic(res, '/static/favicon.svg');
+  const etag = `"logo-${crypto.createHash('sha256').update(data).digest('hex').slice(0, 16)}"`;
+  if (mime === 'image/svg+xml') svgHeaders(res);
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' });
+    return res.end();
+  }
+  res.writeHead(200, { 'Content-Type': imageType(mime), 'Content-Length': data.length, ETag: etag, 'Cache-Control': 'no-cache' });
+  return res.end(data);
+}
+
 function readRawBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const declared = parseInt(req.headers['content-length'] || '0', 10);
@@ -4715,7 +4808,7 @@ function readRawBody(req, maxBytes) {
 }
 
 // Stored images are only ever sent as images (whatever a config file or backup might say)
-const imageType = (mime) => (['image/jpeg', 'image/png', 'image/webp'].includes(mime) ? mime : 'application/octet-stream');
+const imageType = (mime) => (['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml'].includes(mime) ? mime : 'application/octet-stream');
 
 function backgroundVisible(session) {
   return Boolean(session) || config.settings.dashboard.public;
@@ -4820,9 +4913,24 @@ function attentionList() {
     const text = subject && c.title.startsWith(`${subject}: `) ? c.title.slice(subject.length + 2) : c.title;
     // a TrueNAS alert's own text says more than "TrueNAS critical"
     const own = c.type === 'nas' && c.detail;
-    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null };
+    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity) };
   }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
     .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
+}
+
+// Snoozed warnings: left out of the top of Home and the wall display for everyone until the time
+// is up, or sooner if the problem gets worse (a warning that turns critical). The device itself
+// still shows the problem, and notifications are sent as before.
+const SNOOZE_DAYS = [1, 7];
+function snoozedUntil(key, severity) {
+  const z = alertState.snoozed[key];
+  if (!z) return null;
+  if (!(z.until > Date.now()) || (severity === 'critical' && z.severity !== 'critical')) {
+    delete alertState.snoozed[key];
+    alertsDirty = true;
+    return null;
+  }
+  return z.until;
 }
 
 function servicesSummary() {
@@ -4865,6 +4973,7 @@ function dashboardPayload() {
     }));
   return {
     title: s.title,
+    carrier: s.carrier || null,
     refreshSeconds: s.refreshSeconds,
     homeServices: s.homeServices,
     vms: s.vms,
@@ -5054,6 +5163,8 @@ async function handleApi(req, res, url, session, viewer = null) {
       types: HOST_TYPES,
       themes: THEMES,
       builtinBackgrounds: BUILTIN_BACKGROUNDS,
+      logoIcons: LOGO_ICONS,
+      logoColors: LOGO_COLORS,
       backgrounds: config.backgrounds,
       rack: config.rack,
       rackKinds: RACK_KINDS,
@@ -5403,6 +5514,21 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
 
   // --- Icons ---
+  if (p === '/api/admin/snooze' && m === 'POST') {
+    const { key, days } = await readBody(req);
+    const a = attentionList().find((x) => x.key === key);
+    if (!a) throw new UserError('This warning is no longer active');
+    if (days === 0) delete alertState.snoozed[key];
+    else if (SNOOZE_DAYS.includes(days)) {
+      alertState.snoozed[key] = { until: Date.now() + days * 864e5, severity: a.severity, by: session.user };
+      for (const k of Object.keys(alertState.snoozed).slice(0, -500)) delete alertState.snoozed[k]; // a bound, not a feature
+      log(`Snoozed for ${days === 1 ? '1 day' : `${days} days`}: ${a.subject ? `${a.subject}: ` : ''}${a.text}`);
+    } else throw new UserError('Snooze for 1 or 7 days');
+    alertsDirty = true;
+    saveAlertState();
+    return sendJson(res, 200, { ok: true, snoozedUntil: alertState.snoozed[key]?.until || null });
+  }
+
   if (p === '/api/admin/icons/search' && m === 'GET') {
     const q = String(url.searchParams.get('q') || '').toLowerCase().replace(/[^a-z0-9.-]/g, '');
     if (q.length < 2) return sendJson(res, 200, { names: [] });
@@ -5429,6 +5555,11 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/admin/icons/library' && m === 'POST') {
     const { name } = await readBody(req);
     const icon = await fetchLibraryIcon(String(name || ''));
+    saveConfig();
+    return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
+  }
+  if (p === '/api/admin/logo' && m === 'POST') {
+    const icon = storeIcon(await readRawBody(req, 1 << 20), 'logo', sanitizeLogo);
     saveConfig();
     return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
   }
@@ -5894,6 +6025,7 @@ async function handle(req, res) {
       if (!rec) return sendError(res, 404, 'Not found');
       if (!backgroundVisible(seer)) return sendError(res, 401, 'Login required');
       const data = fs.readFileSync(path.join(ICON_DIR, rec.id));
+      if (rec.mime === 'image/svg+xml') svgHeaders(res);
       res.writeHead(200, { 'Content-Type': imageType(rec.mime), 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
       return res.end(data);
     }
@@ -5916,7 +6048,7 @@ async function handle(req, res) {
       const allowed = PUBLIC_ASSETS.has(p) || session || (viewer && p !== '/static/js/admin.js') || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
       return allowed ? sendStatic(res, p) : sendError(res, 401, 'Login required');
     }
-    if (p === '/favicon.ico') return sendStatic(res, '/static/favicon.svg');
+    if (p === '/favicon.ico' || p === '/logo') return sendLogo(req, res);
     if (p === '/ca.crt') {
       // The local CA certificate (public), for importing on phones and PCs
       if (!tlsInfo?.ca) return sendError(res, 404, 'No local CA');
@@ -6285,7 +6417,7 @@ const testMessage = () => ({ site: config.settings.dashboard.title, severity: 't
 
 // --- State and evaluation ---
 
-let alertState = { active: {}, log: [], channels: {} };
+let alertState = { active: {}, log: [], channels: {}, snoozed: {} };
 let alertsDirty = false;
 let alertsRunning = false;
 let alertsAgain = false; // a check was asked for while one was running
@@ -6293,7 +6425,7 @@ let alertsAgain = false; // a check was asked for while one was running
 function loadAlertState() {
   const s = readJson(ALERTS_FILE, null);
   const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels) };
+  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels), snoozed: obj(s?.snoozed) };
 }
 
 function saveAlertState() {
@@ -6902,7 +7034,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   // WebP only), never from the file, and metadata is stripped. Anything else is left out.
   const images = (list, key, fields) => arr(list).filter((rec) => /^[0-9a-f]{32}$/.test(rec?.id) && typeof bundle.files?.[key]?.[rec.id] === 'string').flatMap((rec) => {
     try {
-      const img = sanitizeImage(Buffer.from(bundle.files[key][rec.id], 'base64'));
+      const img = (key === 'icons' ? sanitizeLogo : sanitizeImage)(Buffer.from(bundle.files[key][rec.id], 'base64'));
       return [{ rec: { id: rec.id, mime: img.mime, bytes: img.data.length, ...fields(rec) }, data: img.data }];
     } catch {
       return [];

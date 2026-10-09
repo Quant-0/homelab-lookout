@@ -101,9 +101,10 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(jf && jf.img && jf.stats === 3 && jf.up, 'Jellyfin card: icon, its 3 default numbers, up');
   const rows = await page.$$eval('.svc-stats', (list) => list.map((r) => {
     const tiles = [...r.children];
-    return { oneRow: tiles.every((t) => t.offsetTop === tiles[0].offsetTop), fits: tiles.every((t) => t.querySelector('.v').scrollWidth <= t.querySelector('.v').clientWidth + 1) };
+    const card = r.closest('.svc-card').getBoundingClientRect();
+    return { name: r.closest('.svc-card').querySelector('strong').textContent, inside: tiles.every((t) => t.getBoundingClientRect().right <= card.right - 8 && t.querySelector('.v').scrollWidth <= t.querySelector('.v').clientWidth + 1) };
   }));
-  check(rows.length && rows.every((r) => r.oneRow && r.fits), `numbers in one row, nothing overflowing (${rows.length} cards)`);
+  check(rows.length && rows.every((r) => r.inside), `numbers stay inside their cards (${rows.length} cards${rows.filter((r) => !r.inside).map((r) => `; ${r.name} overflows`).join('')})`);
   check(cards.every((c) => !c.href || c.rel === 'noopener noreferrer'), 'links open with noopener noreferrer');
   check((await page.$$eval('.svc-group h2', (h) => h.map((x) => x.textContent))).length === 3, 'grouped (Network, Home, Media)');
   await page.screenshot({ path: `${S}/ui6-services.png` });
