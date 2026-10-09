@@ -83,6 +83,9 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   let d = (await req('GET', '/api/dashboard')).json;
   const uh = d.unifi.find((h) => h.data?.health);
   ok(uh?.data.health.wan.isp === 'Fiberlink' && d.carrier === null, 'the provider UniFi reports is on the dashboard');
+  ok(uh.data.health.internet.rxMbps === 142 && uh.data.health.internet.txMbps === 18, `traffic now through the gateway, in Mbit/s (${uh.data.health.internet.rxMbps}/${uh.data.health.internet.txMbps})`);
+  const hist = (await req('GET', `/api/history?range=24h&points=120&keys=${encodeURIComponent(`unifi:${uh.id}:wan:down,unifi:${uh.id}:wan:up`)}`)).json.series;
+  ok(hist[`unifi:${uh.id}:wan:down`]?.at(-1)?.[1] === 142 && hist[`unifi:${uh.id}:wan:up`]?.at(-1)?.[1] === 18, 'download and upload are kept as history for the graph');
   const dash = (await req('GET', '/api/admin/config')).json.settings.dashboard;
   r = await req('PUT', '/api/admin/settings', { dashboard: { ...dash, carrier: '  Telia  ' } });
   ok(r.status === 200 && r.json.settings.dashboard.carrier === 'Telia', 'a provider set in Admin is saved (trimmed)');

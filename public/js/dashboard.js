@@ -169,7 +169,8 @@ function keyMetrics(dev, ctx, max = 4) {
   if (hl) {
     add(hl.wan ? (hl.wan.status === 'ok' ? 'Up' : 'Down') : null, '', 'Internet', null, hl.wan && hl.wan.status !== 'ok' ? 'critical' : '');
     add(hl.internet?.latencyMs != null ? fmt.n(hl.internet.latencyMs) : null, 'ms', 'Latency');
-    add(hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` : null, 'Mbps', 'Down / up');
+    add(hl.internet?.rxMbps != null ? `${fmt.n(hl.internet.rxMbps, hl.internet.rxMbps < 10 ? 1 : 0)}/${fmt.n(hl.internet.txMbps ?? 0, (hl.internet.txMbps ?? 0) < 10 ? 1 : 0)}` : null, 'Mbps', 'Traffic ↓/↑');
+    add(hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` : null, 'Mbps', 'Speed test');
     add(hl.clients != null ? fmt.n(hl.clients) : null, '', 'Clients');
   }
   if (ctx.idrac) {
@@ -285,9 +286,9 @@ function kv(pairs) {
   return el('div', { class: 'kv' }, pairs.filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== '–').map(([k, v]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }))));
 }
 
-// History graphs: [key, label, unit, decimals] (null entries are skipped)
+// History graphs: [key, label, unit, decimals, more sparkSlot options] (null entries are skipped)
 function sparks(list) {
-  const cells = list.filter(Boolean).map(([key, label, unit, decimals = 0]) => HD.sparkSlot(key, { label, unit, decimals }));
+  const cells = list.filter(Boolean).map(([key, label, unit, decimals = 0, more = {}]) => HD.sparkSlot(key, { label, unit, decimals, ...more }));
   return cells.length ? el('div', { class: 'sparks', hidden: true }, cells) : null;
 }
 
@@ -521,6 +522,7 @@ function renderUnifi(hosts) {
         ['Recordings', pr?.storage ? `${fmt.bytes(pr.storage.used)} of ${fmt.bytes(pr.storage.total)}` : null],
         ['Internet', hl.wan ? `${hl.wan.status === 'ok' ? 'Up' : hl.wan.status}${hl.wan.ip ? ` · ${hl.wan.ip}` : ''}` : null],
         ['Latency', hl.internet?.latencyMs != null ? `${hl.internet.latencyMs} ms` : null],
+        ['Traffic now ↓/↑', hl.internet?.rxMbps != null ? `${fmt.n(hl.internet.rxMbps, 1)} / ${fmt.n(hl.internet.txMbps ?? 0, 1)} Mbps` : null],
         ['Speed test ↓/↑', hl.internet?.downMbps != null ? `${fmt.n(hl.internet.downMbps)} / ${fmt.n(hl.internet.upMbps)} Mbps` : null],
         ['Clients Wi-Fi / wired', `${hl.wifiClients ?? '–'} / ${hl.wiredClients ?? '–'}`],
       ]);
@@ -549,7 +551,9 @@ function unifiDeviceSection(ud, consoleHost) {
         ['Firmware', x.version || null],
       ])];
       const k = `unifi:${consoleHost.id}:${x.mac}`;
+      const wanNow = ['udm', 'ugw', 'uxg'].includes(x.type) && consoleHost.data?.health?.internet?.rxMbps != null;
       if (x.online) parts.push(sparks([
+        wanNow ? [`unifi:${consoleHost.id}:wan:down`, 'Internet traffic', ' Mbps', 1, { key2: `unifi:${consoleHost.id}:wan:up`, names: ['↓', '↑'], zero: true }] : null,
         x.cpu != null ? [`${k}:cpu`, 'CPU', ' %'] : null,
         maxTemp(x) != null ? [`${k}:temp`, 'Temperature', ' °C'] : null,
         x.clients != null ? [`${k}:clients`, 'Clients', ''] : null,
@@ -983,6 +987,24 @@ function powerDetail(p) {
 // The internet provider: set in Admin, else what the UniFi console reports
 const carrierOf = (d, hl) => d.carrier || hl?.wan?.isp || null;
 
+// Download and upload right now, as a share of the console's last speed test ("142 of 684 Mbps");
+// a console that doesn't report traffic shows the speed test itself
+const mbpsText = (v) => fmt.n(v, v < 10 ? 1 : 0);
+function speedBars(net) {
+  if (!net) return null;
+  const now = net.rxMbps != null;
+  if (!now && net.downMbps == null) return null;
+  const rows = now ? [['Download', net.rxMbps, net.downMbps], ['Upload', net.txMbps, net.upMbps]] : [['Download', net.downMbps, null], ['Upload', net.upMbps, null]];
+  const scale = now ? null : Math.max(1000, net.downMbps, net.upMbps);
+  return el('span', { class: 'speed', title: now ? (net.downMbps != null ? 'Traffic now, against the console\u2019s last speed test' : 'Traffic now') : 'The console\u2019s last speed test' },
+    ...rows.map(([l, v, cap]) => {
+      const bar = el('i');
+      const of = now ? cap || Math.max(100, net.rxMbps, net.txMbps || 0) : scale;
+      bar.style.setProperty('--w', `${Math.min(100, ((v || 0) / of) * 100).toFixed(1)}%`);
+      return el('span', null, el('span', { text: l }), bar, el('strong', { class: 'num' }, `${mbpsText(v || 0)}`, el('small', { text: now && cap ? ` of ${fmt.n(cap)} Mbps` : ' Mbps' })));
+    }));
+}
+
 // The internet, from the UniFi gateway (or an Omada gateway)
 function internetTile(d) {
   const uh = (d.unifi || []).find((h) => h.data?.health);
@@ -996,18 +1018,15 @@ function internetTile(d) {
         carrierOf(d, hl) ? el('span', { class: 'carrier' }, d.carrierLogo ? el('img', { class: 'carrier-logo', src: d.carrierLogo, alt: '' }) : null, el('span', { text: carrierOf(d, hl) })) : null,
         owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
       el('span', { class: `big-num${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
-      hl.internet?.downMbps != null ? el('span', { class: 'speed', title: 'The console\u2019s last speed test' },
-        ...[['Download', hl.internet.downMbps], ['Upload', hl.internet.upMbps]].map(([l, v]) => {
-          const bar = el('i');
-          bar.style.setProperty('--w', `${Math.min(100, (v / Math.max(1000, hl.internet.downMbps, hl.internet.upMbps)) * 100).toFixed(1)}%`);
-          return el('span', null, el('span', { text: l }), bar, el('strong', { class: 'num', text: `${fmt.n(v)} Mbps` }));
-        })) : null,
+      speedBars(hl.internet),
       el('span', { class: 'big-facts' },
         hl.clients != null ? el('span', null, el('strong', { text: fmt.n(hl.clients) }), ' clients') : null,
         hl.wifiClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wifiClients) }), ' on Wi-Fi') : null,
         hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null,
         hl.wan?.ip ? el('span', { class: 'public-ip' }, el('strong', { class: 'num', text: hl.wan.ip }), ' public IP') : null),
-      gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '', range: '24h' })) : null);
+      hl.internet?.rxMbps != null
+        ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:wan:down`, { key2: `unifi:${uh.id}:wan:up`, names: ['↓', '↑'], label: 'Internet traffic', unit: ' Mbps', decimals: 1, zero: true, range: '24h' }))
+        : gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '', range: '24h' })) : null);
     if (owner) b.addEventListener('click', () => openDevice(owner.id));
     return b;
   }

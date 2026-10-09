@@ -403,16 +403,18 @@ const HD = (() => {
 
   // Hidden until there is something to draw: no "collecting history" placeholders.
   // `range` pins a graph (Home's cards are always the last 24 h); without it, it follows the range buttons.
-  function sparkSlot(key, { label = '', unit = '', decimals = 0, range: fixed = null } = {}) {
+  // `key2` adds a second series as a thin line on the same scale (upload over download), `names`
+  // says what each is in the hover ("↓", "↑"), and `zero` starts the scale at 0 (traffic).
+  function sparkSlot(key, { label = '', unit = '', decimals = 0, range: fixed = null, key2 = null, names = null, zero = false } = {}) {
     return el('div', { class: 'spark-cell', hidden: true },
       label ? el('div', { class: 'spark-label', text: label }) : null,
-      el('div', { class: 'spark-slot', 'data-key': key, 'data-unit': unit, 'data-dec': decimals, 'data-label': label, 'data-range': fixed || null }));
+      el('div', { class: 'spark-slot', 'data-key': key, 'data-key2': key2, 'data-names': names ? names.join('|') : null, 'data-zero': zero || null, 'data-unit': unit, 'data-dec': decimals, 'data-label': label, 'data-range': fixed || null }));
   }
   const rangeOf = (slot) => (RANGES[slot.dataset.range] ? slot.dataset.range : range);
 
   const fmtVal = (v, unit, dec) => `${nf(dec).format(v)}${unit}`;
 
-  function drawSpark(slot, points, rng) {
+  function drawSpark(slot, points, rng, points2 = null) {
     const unit = slot.dataset.unit;
     const dec = Number(slot.dataset.dec);
     const cell = slot.closest('.spark-cell');
@@ -426,8 +428,9 @@ const HD = (() => {
     const t1 = Date.now();
     const t0 = Math.min(points[0][0], t1 - RANGE_MS[rng]);
     const vs = points.map((p) => p[1]);
-    let lo = Math.min(...vs);
-    let hi = Math.max(...vs);
+    const vs2 = points2?.length > 1 ? points2.map((p) => p[1]) : [];
+    let lo = slot.dataset.zero ? 0 : Math.min(...vs, ...vs2);
+    let hi = Math.max(...vs, ...vs2);
     // a steady value (an inlet at 21.8–22.1 °C) is drawn as a steady line, not zoomed into a wall
     const minSpan = Math.max(Math.abs(hi), Math.abs(lo)) * 0.1 || 1;
     if (hi - lo < minSpan) {
@@ -445,6 +448,13 @@ const HD = (() => {
       const mx = ((qx + px) / 2).toFixed(1);
       return `C${mx},${qy.toFixed(1)} ${mx},${py.toFixed(1)} ${px.toFixed(1)},${py.toFixed(1)}`;
     }).join('');
+    const smooth = (list) => list.map(([px, py], i) => {
+      if (!i) return `M${px.toFixed(1)},${py.toFixed(1)}`;
+      const [qx, qy] = list[i - 1];
+      const mx = ((qx + px) / 2).toFixed(1);
+      return `C${mx},${qy.toFixed(1)} ${mx},${py.toFixed(1)} ${px.toFixed(1)},${py.toFixed(1)}`;
+    }).join('');
+    const line2 = vs2.length ? smooth(points2.map(([t, v]) => [x(Math.max(t, t0)), y(v)])) : null;
     const gid = `sg${++sparkSeq}`;
     const marker = svg('line', { class: 'spark-marker', x1: 0, x2: 0, y1: 0, y2: H, 'vector-effect': 'non-scaling-stroke' });
     marker.style.display = 'none';
@@ -461,6 +471,7 @@ const HD = (() => {
       area,
       svg('path', { class: 'spark-glow', d: line, 'vector-effect': 'non-scaling-stroke' }),
       svg('path', { class: `spark-line${first ? ' drawn' : ''}`, d: line, 'vector-effect': 'non-scaling-stroke' }),
+      line2 ? svg('path', { class: `spark-line2${first ? ' drawn' : ''}`, d: line2, 'vector-effect': 'non-scaling-stroke' }) : null,
       marker);
     const end = el('span', { class: 'spark-end' });
     end.style.left = `${(pts[pts.length - 1][0] / W) * 100}%`;
@@ -469,8 +480,19 @@ const HD = (() => {
     const min = Math.min(...vs);
     const max = Math.max(...vs);
     const last = vs[vs.length - 1];
-    const span = `${RANGES[rng]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
-    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, end, tip);
+    const [n1, n2] = (slot.dataset.names || '|').split('|');
+    const span = vs2.length
+      ? `${RANGES[rng]}: highest ${n1} ${fmtVal(max, unit, dec)} · ${n2} ${fmtVal(Math.max(...vs2), unit, dec)}`
+      : `${RANGES[rng]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
+    const aria = vs2.length
+      ? `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: highest ${n1} ${fmtVal(max, unit, dec)} and ${n2} ${fmtVal(Math.max(...vs2), unit, dec)}, now ${n1} ${fmtVal(last, unit, dec)} and ${n2} ${fmtVal(vs2[vs2.length - 1], unit, dec)}`
+      : `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}`;
+    const box = el('div', { class: 'spark', role: 'img', 'aria-label': aria }, graph, end, tip);
+    const nearest = (list, t) => {
+      let best = 0;
+      for (let i = 1; i < list.length; i++) if (Math.abs(list[i][0] - t) < Math.abs(list[best][0] - t)) best = i;
+      return list[best];
+    };
     const show = (clientX) => {
       const r = box.getBoundingClientRect();
       const t = t0 + ((clientX - r.left) / r.width) * (t1 - t0);
@@ -480,7 +502,10 @@ const HD = (() => {
       marker.setAttribute('x1', x(bt));
       marker.setAttribute('x2', x(bt));
       marker.style.display = '';
-      tip.replaceChildren(el('strong', { text: fmtVal(bv, unit, dec) }), ` ${new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(rng !== '24h' ? { day: 'numeric', month: 'short' } : {}) })}`);
+      const second = vs2.length ? nearest(points2, bt) : null;
+      const when = new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(rng !== '24h' ? { day: 'numeric', month: 'short' } : {}) });
+      if (second) tip.replaceChildren(el('span', { class: 'tip-pair' }, el('strong', { text: `${n1} ${fmtVal(bv, unit, dec)}` }), el('strong', { text: `${n2} ${fmtVal(second[1], unit, dec)}` })), el('span', { class: 'tip-when', text: when }));
+      else tip.replaceChildren(el('strong', { text: fmtVal(bv, unit, dec) }), ` ${new Date(bt).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', ...(rng !== '24h' ? { day: 'numeric', month: 'short' } : {}) })}`);
       tip.classList.remove('hidden');
       const px = (x(bt) / W) * r.width;
       tip.style.left = `${Math.min(Math.max(px - tip.offsetWidth / 2, 0), r.width - tip.offsetWidth)}px`;
@@ -500,12 +525,12 @@ const HD = (() => {
     const draw = () => {
       for (const s of document.querySelectorAll('.spark-slot')) {
         const c = caches[rangeOf(s)];
-        if (c && s.dataset.key in c.series) drawSpark(s, c.series[s.dataset.key], rangeOf(s));
+        if (c && s.dataset.key in c.series) drawSpark(s, c.series[s.dataset.key], rangeOf(s), s.dataset.key2 ? c.series[s.dataset.key2] : null);
       }
     };
     draw(); // from cache right away, so a re-render doesn't flicker
     const wanted = {};
-    for (const s of slots) (wanted[rangeOf(s)] ||= new Set()).add(s.dataset.key);
+    for (const s of slots) for (const k of [s.dataset.key, s.dataset.key2].filter(Boolean)) (wanted[rangeOf(s)] ||= new Set()).add(k);
     await Promise.all(Object.entries(wanted).map(async ([rng, set]) => {
       const keys = [...set];
       const c = caches[rng];

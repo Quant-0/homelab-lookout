@@ -44,15 +44,16 @@ function sinceText(ms) {
 
 // An area chart that fills its box; the line keeps its width when the box is stretched
 let chartSeq = 0;
-function areaChart(points) {
+function areaChart(points, points2 = null, zero = false) {
   if (!points || points.length < 2) return el('p', { class: 'small muted', text: 'Collecting history…' });
   const t0 = points[0][0];
   const t1 = points[points.length - 1][0];
   const vs = points.map((p) => p[1]);
-  let lo = Math.min(...vs);
-  let hi = Math.max(...vs);
+  const vs2 = points2?.length > 1 ? points2.map((p) => p[1]) : [];
+  let lo = Math.min(...vs, ...vs2);
+  let hi = Math.max(...vs, ...vs2);
   const pad = (hi - lo) * 0.25 || 1;
-  lo = Math.max(0, lo - pad);
+  lo = zero ? 0 : Math.max(0, lo - pad);
   hi += pad;
   const x = (t) => ((t - t0) / (t1 - t0 || 1)) * 100;
   const y = (v) => 100 - ((v - lo) / (hi - lo)) * 100;
@@ -63,6 +64,12 @@ function areaChart(points) {
     const mx = ((pts[i - 1][0] + px) / 2).toFixed(2);
     return `C${mx},${pts[i - 1][1].toFixed(2)} ${mx},${py.toFixed(2)} ${px.toFixed(2)},${py.toFixed(2)}`;
   }).join('');
+  const smooth = (list) => list.map(([px, py], i) => {
+    if (!i) return `M${px.toFixed(2)},${py.toFixed(2)}`;
+    const mx = ((list[i - 1][0] + px) / 2).toFixed(2);
+    return `C${mx},${list[i - 1][1].toFixed(2)} ${mx},${py.toFixed(2)} ${px.toFixed(2)},${py.toFixed(2)}`;
+  }).join('');
+  const line2 = vs2.length ? smooth(points2.filter(([t]) => t >= t0).map(([t, v]) => [x(t), y(v)])) : null;
   const id = `wg${++chartSeq}`;
   const stops = [svg('stop', { offset: 0 }), svg('stop', { offset: 1 })];
   stops.forEach((st, i) => { st.style.stopColor = 'var(--line-c, var(--accent))'; st.style.stopOpacity = i ? '0' : '0.35'; });
@@ -72,7 +79,8 @@ function areaChart(points) {
     svg('defs', null, svg('linearGradient', { id, x1: 0, y1: 0, x2: 0, y2: 1 }, ...stops)),
     area,
     svg('path', { class: 'c-glow', d: line }),
-    svg('path', { class: 'c-line', d: line }));
+    svg('path', { class: 'c-line', d: line }),
+    line2 ? svg('path', { class: 'c-line2', d: line2 }) : null);
 }
 
 function trio(items) {
@@ -167,6 +175,8 @@ function gateway(d) {
   const uh = (d.unifi || []).find((h) => h.data?.health);
   if (!uh) return null;
   const gw = uh.data.devices.find((x) => ['udm', 'ugw', 'uxg'].includes(x.type));
+  // the traffic through it (download, with upload as a second line), else its clients
+  if (uh.data.health.internet?.rxMbps != null) return { uh, gw, key: `unifi:${uh.id}:wan:down`, key2: `unifi:${uh.id}:wan:up` };
   return { uh, gw, key: gw ? `unifi:${uh.id}:${gw.mac}:clients` : null };
 }
 
@@ -180,9 +190,11 @@ function renderNet() {
     box.replaceChildren(
       el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r' }, data.carrierLogo ? el('img', { class: 'carrier-logo', src: data.carrierLogo, alt: '' }) : null, data.carrier || hl.wan?.isp || g.gw?.model || 'UniFi')),
       el('div', { class: `huge${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
-      el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key]) : null),
+      el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key], g.key2 ? history[g.key2] : null, Boolean(g.key2)) : null),
       trio([
-        hl.internet?.downMbps != null ? ['Tested', `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}`, 'Mbps'] : null,
+        hl.internet?.rxMbps != null
+          ? ['Now ↓/↑', `${fmt.n(hl.internet.rxMbps, hl.internet.rxMbps < 10 ? 1 : 0)}/${fmt.n(hl.internet.txMbps ?? 0, (hl.internet.txMbps ?? 0) < 10 ? 1 : 0)}`, 'Mbps']
+          : hl.internet?.downMbps != null ? ['Tested', `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}`, 'Mbps'] : null,
         hl.clients != null ? ['Clients', fmt.n(hl.clients)] : null,
         hl.wifiClients != null ? ['Wi-Fi', fmt.n(hl.wifiClients)] : null,
       ]));
@@ -435,7 +447,7 @@ async function refresh() {
     data.rack.items = d.devices; // the server sends the devices once
     services = s;
     delay = d.refreshSeconds;
-    const keys = ['power:total', gateway(d)?.key].filter(Boolean);
+    const keys = ['power:total', gateway(d)?.key, gateway(d)?.key2].filter(Boolean);
     try {
       history = (await getJson(`/api/history?range=24h&points=120&keys=${encodeURIComponent(keys.join(','))}`)).series || {};
     } catch {

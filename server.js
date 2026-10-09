@@ -146,6 +146,9 @@ const DEFAULT_SETTINGS = {
 // ---------------------------------------------------------------------------
 // Utilities
 
+// bytes per second to Mbit/s (two decimals), or null
+const mbps = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v * 8e-4) / 100 : null);
+
 // A short text from a device's API, or null (control characters removed)
 const textOrNull = (v, max) => (typeof v === 'string' && v.trim() ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : null);
 
@@ -2436,7 +2439,15 @@ async function collectUnifi(h, password) {
         // the carrier as the console knows it (from the WAN IP's owner); Admin can set it instead
         wan: sub.wan ? { status: sub.wan.status, ip: sub.wan.wan_ip || null, isp: textOrNull(sub.wan.isp_name, 60) || textOrNull(sub.wan.isp_organization, 60) } : null,
         // 0/0 means no speed test has run on the console: show nothing rather than "0 Mbps"
-        internet: sub.www ? { status: sub.www.status, latencyMs: num0(sub.www.latency), downMbps: num0(sub.www.xput_down) || null, upMbps: num0(sub.www.xput_down) ? num0(sub.www.xput_up) : null } : null,
+        internet: sub.www || sub.wan ? {
+          status: sub.www?.status ?? sub.wan.status,
+          latencyMs: num0(sub.www?.latency),
+          downMbps: num0(sub.www?.xput_down) || null,
+          upMbps: num0(sub.www?.xput_down) ? num0(sub.www?.xput_up) : null,
+          // traffic right now (bytes/s through the WAN port, as the console reports it), in Mbit/s
+          rxMbps: mbps(sub.wan?.['rx_bytes-r'] ?? sub.www?.['rx_bytes-r']),
+          txMbps: mbps(sub.wan?.['tx_bytes-r'] ?? sub.www?.['tx_bytes-r']),
+        } : null,
         clients: (num0(sub.wlan?.num_user) || 0) + (num0(sub.lan?.num_user) || 0),
         wifiClients: num0(sub.wlan?.num_user),
         wiredClients: num0(sub.lan?.num_user),
@@ -3748,7 +3759,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe))$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -3865,6 +3876,9 @@ function recordHistory(h, data, t) {
       histRecord(`${k}:clients`, d.clients, t);
       if (d.poe) histRecord(`${k}:poe`, d.poe.usedW, t);
     }
+    // the internet traffic through the gateway, in Mbit/s
+    histRecord(`unifi:${h.id}:wan:down`, data.health?.internet?.rxMbps, t);
+    histRecord(`unifi:${h.id}:wan:up`, data.health?.internet?.txMbps, t);
   }
 }
 
