@@ -291,6 +291,7 @@
           <div class="form-grid two">
             <label><span>Show</span>
               <select name="homeServices">
+                <option value="line">One line with the count (default)</option>
                 <option value="tiles">Tiles</option>
                 <option value="compact">Compact list</option>
                 <option value="down">Only the ones that are down</option>
@@ -315,7 +316,7 @@
             <label class="check"><input type="checkbox" name="vms.cpu"> CPU</label>
             <label class="check"><input type="checkbox" name="vms.ram"> Memory</label>
             <label class="check"><input type="checkbox" name="vms.uptime"> Uptime</label>
-            <label class="check"><input type="checkbox" name="vms.homeNumbers"> Numbers on Home too (otherwise names only)</label>
+            <label class="check"><input type="checkbox" name="vms.homeNumbers"> On Home as a section with names and numbers (otherwise one line with the count)</label>
           </fieldset>
           <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
         </form>

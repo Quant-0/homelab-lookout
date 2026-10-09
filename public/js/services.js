@@ -138,9 +138,16 @@ function vmCard(g, show = { cpu: true, ram: true, uptime: true }) {
         el('span', { class: 'small muted num', text: `${g.vmid} · ${g.node}` })),
       el('span', { class: 'svc-status', title: g.status }, el('span', { class: `led ${running ? 'good' : 'off'}` }), running ? null : el('span', { class: 'small muted', text: g.status }))),
     running && (show.cpu || show.ram || show.uptime) ? el('div', { class: 'vm-stats small muted num' },
-      show.cpu ? el('span', { text: `CPU ${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` }) : null,
-      show.ram ? el('span', { text: `RAM ${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` }) : null,
-      show.uptime ? el('span', { text: `Up ${fmt.uptime(g.uptime)}` }) : null) : null);
+      // CPU and memory as bars that warm up when nearly full
+      show.cpu ? vmBar('CPU', g.cpu, `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}`) : null,
+      show.ram ? vmBar('RAM', memF, `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}`) : null,
+      show.uptime ? el('span', { class: 'vm-up', text: `Up ${fmt.uptime(g.uptime)}` }) : null) : null);
+}
+
+function vmBar(label, f, text) {
+  const bar = el('i', { class: f >= 0.9 ? 'hot' : null });
+  bar.style.setProperty('--w', `${Math.max(2, Math.min(1, f || 0) * 100).toFixed(1)}%`);
+  return el('span', { class: 'vm-bar', title: `${label} ${text}` }, el('span', { text: label }), bar, el('span', { class: 'v', text }));
 }
 
 function vmsGrid(vms) {

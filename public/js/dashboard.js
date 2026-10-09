@@ -830,11 +830,13 @@ function tileNode(info) {
   const worst = info.issues[0];
   const m = info.metrics[0];
   const line = worst ? worst.text : stateText === 'Offline' ? 'Not answering' : info.model || Rack.KIND_LABELS[dev.kind] || dev.kind;
+  const art = Rack.deviceArt(dev, lastData);
   const t = el('button', { type: 'button', class: `dtile${stateCls ? ` ${stateCls}` : ''}${tileHidden.has(dev.id) ? ' is-hidden' : ''}`, 'data-id': dev.id, 'aria-label': `${dev.name}: ${stateText}${worst ? `, ${worst.text}` : ''}` },
-    el('span', { class: 'tile-top' }, el('span', { class: 'tile-icon', title: Rack.KIND_LABELS[dev.kind] || dev.kind }, HD.icon(KIND_ICONS[dev.kind] || 'box')), status(stateText, stateCls)),
-    el('span', { class: 'tile-name', text: dev.name }),
-    el('span', { class: 'tile-state', text: line }),
-    m ? el('span', { class: 'tile-val' }, `${m.v}${m.u ? (m.u === '%' ? ' %' : ` ${m.u}`) : ''}`, el('small', { text: ` ${m.l.toLowerCase()}` })) : null);
+    el('span', { class: `tile-art${art ? '' : ' no-art'}` }, art || el('span', { class: 'tile-icon', title: Rack.KIND_LABELS[dev.kind] || dev.kind }, HD.icon(KIND_ICONS[dev.kind] || 'box')), status(stateText, stateCls)),
+    el('span', { class: 'tile-body' },
+      el('span', { class: 'tile-name', text: dev.name }),
+      m ? el('span', { class: 'tile-val' }, el('b', { text: m.v }), el('small', { text: m.u ? `${m.u === '%' ? '%' : m.u} ${m.l.toLowerCase()}` : m.l.toLowerCase() })) : null,
+      el('span', { class: 'tile-state', text: line })));
   t.addEventListener('click', () => {
     if (editing) return;
     openDevice(info.id);
@@ -849,9 +851,11 @@ function deviceDetail(info) {
   const [stateText, stateCls] = state;
   const d = lastData;
   const signed = d.loggedIn || d.viewer;
+  const art = Rack.deviceArt(dev, d);
   return el('article', { class: 'detail' },
+    art ? el('div', { class: `d-art${stateCls === 'critical' ? ' critical' : ''}` }, art) : null,
     el('header', { class: 'd-head' },
-      el('span', { class: 'tile-icon' }, HD.icon(KIND_ICONS[dev.kind] || 'box')),
+      art ? null : el('span', { class: 'tile-icon' }, HD.icon(KIND_ICONS[dev.kind] || 'box')),
       el('div', { class: 't' }, el('h2', { text: dev.name }), el('p', { text: [Rack.KIND_LABELS[dev.kind] || dev.kind, info.model, placement(dev)].filter(Boolean).join(' · ') })),
       status(stateText, stateCls)),
     info.issues.map((a) => el('div', { class: `callout ${a.severity}` }, el('b', { text: a.text }), a.detail ? HD.clampText(a.detail) : null, a.since ? el('span', { class: 'small muted', text: sinceText(a.since) === 'just now' ? 'Just now' : `For ${sinceText(a.since)}` }) : null)),
@@ -916,7 +920,7 @@ function powerTile(p) {
     el('span', { class: 'big-facts' },
       el('span', null, el('strong', { text: fmt.kr(u.today.cost) }), ' today'),
       el('span', null, el('strong', { text: fmt.kr(u.month.cost, 0) }), ' this month'),
-      pn ? el('span', null, el('strong', { text: fmt.n(pn.total, 1) }), ' øre/kWh now') : null),
+      pn ? el('span', null, el('strong', { text: `${fmt.n(pn.total, 1)} øre` }), ' per kWh now') : null),
     p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish or a UniFi switch with PoE to measure power.' }));
   b.addEventListener('click', openPower);
   return b;
@@ -987,10 +991,16 @@ function internetTile(d) {
     const b = el('button', { type: 'button', class: `big net${gw ? '' : ' empty-spark'}`, 'aria-label': 'Internet' },
       el('span', { class: 'big-head' }, HD.icon('globe'), 'Internet', owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
       el('span', { class: `big-num${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
+      hl.internet?.downMbps != null ? el('span', { class: 'speed', title: 'The console\u2019s last speed test' },
+        ...[['Download', hl.internet.downMbps], ['Upload', hl.internet.upMbps]].map(([l, v]) => {
+          const bar = el('i');
+          bar.style.setProperty('--w', `${Math.min(100, (v / Math.max(1000, hl.internet.downMbps, hl.internet.upMbps)) * 100).toFixed(1)}%`);
+          return el('span', null, el('span', { text: l }), bar, el('strong', { class: 'num', text: `${fmt.n(v)} Mbps` }));
+        })) : null,
       el('span', { class: 'big-facts' },
-        hl.internet?.downMbps != null ? el('span', null, el('strong', { text: `${fmt.n(hl.internet.downMbps)}/${fmt.n(hl.internet.upMbps)}` }), ' Mbps tested') : null,
         hl.clients != null ? el('span', null, el('strong', { text: fmt.n(hl.clients) }), ' clients') : null,
-        hl.wifiClients != null ? el('span', null, 'Wi-Fi ', el('strong', { text: fmt.n(hl.wifiClients) })) : null),
+        hl.wifiClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wifiClients) }), ' on Wi-Fi') : null,
+        hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null),
       gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '' })) : null);
     if (owner) b.addEventListener('click', () => openDevice(owner.id));
     return b;
@@ -1023,25 +1033,21 @@ function pill(cls, children, attrs) {
   return el(attrs.href ? 'a' : 'button', { class: `pill${cls ? ` ${cls}` : ''}`, ...(attrs.href ? {} : { type: 'button' }), ...attrs }, children);
 }
 
-function renderSummary(d, svc) {
+function renderSummary(d) {
   const list = d.attention || [];
   const crit = list.filter((a) => a.severity === 'critical').length;
   const warn = list.length - crit;
   const online = infos.filter((x) => !['Offline', 'Waiting'].includes(x.state[0])).length;
-  const sv = d.services;
-  const uh = (d.unifi || []).find((h) => h.data?.health);
   const toNeeds = () => $('needs-sec').scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth', block: 'start' });
+  const say = list.length
+    ? (crit && warn ? 'Everything else is running normally' : list.length === 1 ? 'Everything else is running normally' : 'The rest is running normally')
+    : infos.length ? `${online} of ${infos.length} devices online` : '';
   $('summary').replaceChildren(...[
     crit ? pill('critical', [el('span', { class: 'dot critical' }), el('strong', { text: String(crit) }), crit === 1 ? ' fault' : ' faults'], { onclick: toNeeds }) : null,
     warn ? pill('warning', [el('span', { class: 'dot warning' }), el('strong', { text: String(warn) }), ' to watch'], { onclick: toNeeds }) : null,
-    !list.length && (infos.length || sv?.total) ? pill('good', [el('span', { class: 'dot good' }), 'All normal'], { onclick: toNeeds }) : null,
-    d.power.watts != null ? pill('', [HD.icon('zap'), el('strong', { text: `${fmt.n(d.power.watts)} W` })], { onclick: openPower }) : null,
-    uh ? pill('', [HD.icon('globe'), 'Internet ', el('strong', { text: !uh.data.health.wan || uh.data.health.wan.status === 'ok' ? 'up' : 'down' })], { href: '#', onclick: (e) => { e.preventDefault(); internetTile(d)?.click(); } }) : null,
-    infos.length ? pill('', [HD.icon('server'), el('strong', { text: `${online}/${infos.length}` }), ' devices online'], { onclick: () => $('devices-sec').scrollIntoView({ behavior: reduceMotion.matches ? 'auto' : 'smooth' }) }) : null,
-    sv?.up + sv?.down ? pill('', [HD.icon('layout-grid'), el('strong', { text: `${sv.up}/${sv.up + sv.down}` }), ' services up'], { href: '/services' }) : null,
-    d.updates?.available && (d.loggedIn || d.viewer) ? pill('', [HD.icon('circle-arrow-up'), el('strong', { text: String(d.updates.available) }), d.updates.available === 1 ? ' update' : ' updates'], { href: '/updates' }) : null,
+    !list.length && (infos.length || d.services?.total) ? pill('good', [el('span', { class: 'dot good' }), 'All normal'], { onclick: toNeeds }) : null,
+    say ? el('span', { class: 'summary-say', text: say }) : null,
   ].filter(Boolean));
-  void svc;
 }
 
 function renderNeeds(d) {
@@ -1059,9 +1065,10 @@ function renderNeeds(d) {
   box.replaceChildren(...list.map((a) => {
     const attrs = { class: `need ${a.severity}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
     const inner = [
-      el('span', { class: 'need-top' }, el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')), a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : `${sinceText(a.since)} ago` }) : null),
-      el('span', null, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }), a.subject ? el('span', { class: 'who', text: a.subject }) : null, el('b', { text: a.text })),
-      a.detail ? el('span', { class: 'why', text: a.detail }) : null,
+      el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')),
+      el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
+        el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null),
+      a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
     ];
     if (a.deviceId && infos.some((x) => x.id === a.deviceId)) return el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
     if (a.serviceId) return el('a', { href: '/services', ...attrs }, inner);
@@ -1134,7 +1141,7 @@ function renderServicesSec(svc, mode = 'tiles') {
   const all = (svc?.groups || []).flatMap((g) => g.services || []).filter((s) => s.onHome !== false);
   const down = all.filter((s) => s.check && !s.check.up);
   const sec = $('services-sec');
-  sec.hidden = mode === 'off' || !all.length || (mode === 'down' && !down.length);
+  sec.hidden = mode === 'off' || mode === 'line' || !all.length || (mode === 'down' && !down.length);
   if (sec.hidden) return;
   const checked = all.filter((s) => s.check);
   $('services-count').textContent = mode === 'down' ? `${down.length} down` : checked.length ? `${checked.length - down.length} of ${checked.length} up` : String(all.length);
@@ -1148,11 +1155,30 @@ function renderServicesSec(svc, mode = 'tiles') {
   box.replaceChildren(...[...down, ...all.filter((s) => !down.includes(s))].slice(0, 12).map(serviceTile));
 }
 
+// The rest in one quiet line: services, VMs and updates, each a link to its page
+function renderFoot(d) {
+  const vs = d.vms || VM_DEFAULTS;
+  const all = (servicesData?.groups || []).flatMap((g) => g.services || []).filter((s) => s.onHome !== false);
+  const checked = all.filter((s) => s.check);
+  const down = checked.filter((s) => !s.check.up).length;
+  const seen = new Set();
+  const guests = (d.proxmox || []).flatMap((h) => h.data?.guests || []).filter((g) => !seen.has(`${g.node}:${g.vmid}`) && seen.add(`${g.node}:${g.vmid}`)).filter((g) => vs.stopped || g.status === 'running');
+  const running = guests.filter((g) => g.status === 'running').length;
+  const item = (href, ok, text) => el('a', { href }, el('span', { class: `dot ${ok ? 'good' : 'critical'}` }), text);
+  const items = [
+    d.homeServices === 'line' && all.length ? item('/services', !down, checked.length ? `${checked.length - down} of ${checked.length} services up` : `${all.length} services`) : null,
+    vs.home && !vs.homeNumbers && guests.length ? item(vs.services ? '/services#vms' : '/services', running === guests.length || !vs.stopped, `${running} of ${guests.length} VMs running`) : null,
+    d.updates?.available && (d.loggedIn || d.viewer) ? el('a', { href: '/updates' }, HD.icon('circle-arrow-up'), `${d.updates.available} ${d.updates.available === 1 ? 'update' : 'updates'} available`) : null,
+  ].filter(Boolean);
+  $('home-foot').hidden = !items.length;
+  $('home-foot').replaceChildren(...items);
+}
+
 function renderVms(d) {
   const vs = d.vms || VM_DEFAULTS;
   const sec = $('vms-sec');
   const groups = [];
-  for (const h of vs.home ? d.proxmox || [] : []) {
+  for (const h of vs.home && vs.homeNumbers ? d.proxmox || [] : []) { // otherwise one line at the bottom
     for (const node of [...new Set((h.data?.guests || []).map((g) => g.node))]) {
       if (groups.some((g) => g.node === node)) continue;
       const guests = h.data.guests.filter((g) => g.node === node && (vs.stopped || g.status === 'running'));
@@ -1179,16 +1205,33 @@ function renderVms(d) {
 // ---------------------------------------------------------------------------
 // The rack
 
+// On a wide screen the chosen device's details stand beside the rack; on smaller ones they open in
+// the drawer, as from Home
+let rackSel = null;
+const rackWide = matchMedia('(min-width: 1100px)');
+rackWide.addEventListener('change', () => lastData && currentView() === 'rack' && render(lastData));
+
 function renderRackView(d) {
   const rack = d.rack;
   const box = $('rack-view');
   if (!rack?.enabled) return box.replaceChildren(el('p', { class: 'empty', text: 'The rack is turned off in Admin.' }));
   const inner = el('div', { class: 'rack-view' });
   const inRack = rack.items.filter(Rack.inRack).length;
-  const draw = () => Rack.render(inner, rack, d, { onSelect: (item) => openDevice(item.id) });
-  box.replaceChildren(el('div', { class: 'rack-page' },
-    el('div', { class: 'rack-head' }, el('span', { class: 'muted', text: `${rack.units} U · ${inRack} device${inRack === 1 ? '' : 's'}` }), rack.items.length ? Rack.modeToggle(draw) : el('span', { class: 'small muted', text: 'Add equipment in Admin' })),
-    inner));
+  const placed = infos.filter((x) => x.dev.location === 'rack' || x.dev.location === 'outside');
+  if (!placed.some((x) => x.id === rackSel)) rackSel = (placed.find((x) => x.state[1] === 'critical') || placed.find((x) => x.dev.location === 'rack') || placed[0])?.id || null;
+  const side = rackWide.matches ? infos.find((x) => x.id === rackSel) : null;
+  const pick = (id) => {
+    if (!rackWide.matches) return openDevice(id);
+    rackSel = id;
+    renderRackView(lastData);
+    HD.fillSparks();
+  };
+  const draw = () => Rack.render(inner, rack, d, { onSelect: (item) => pick(item.id), selectedId: side ? rackSel : null });
+  box.replaceChildren(el('div', { class: `rack-page${side ? ' with-detail' : ''}` },
+    el('div', { class: 'card rack-card' },
+      el('div', { class: 'rack-head' }, el('span', { class: 'muted', text: `${rack.units} U, ${inRack} device${inRack === 1 ? '' : 's'}` }), rack.items.length ? Rack.modeToggle(draw) : el('span', { class: 'small muted', text: 'Add equipment in Admin' })),
+      inner),
+    side ? el('aside', { class: 'card rack-detail', 'aria-label': `${side.dev.name} details` }, deviceDetail(side)) : null));
   draw();
 }
 
@@ -1300,12 +1343,13 @@ function render(d) {
   $('rack-view').hidden = view !== 'rack';
   $('view-home').classList.toggle('editing', editing);
   renderEditBar();
-  renderSummary(d, servicesData);
+  renderSummary(d);
   renderNeeds(d);
   $('hero').replaceChildren(...[powerTile(d.power), internetTile(d)].filter(Boolean));
   renderDevices();
   renderServicesSec(servicesData, d.homeServices);
   renderVms(d);
+  renderFoot(d);
   if (view === 'rack') renderRackView(d);
   refreshDrawer();
   HD.fillSparks();

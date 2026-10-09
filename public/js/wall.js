@@ -43,6 +43,7 @@ function sinceText(ms) {
 }
 
 // An area chart that fills its box; the line keeps its width when the box is stretched
+let chartSeq = 0;
 function areaChart(points) {
   if (!points || points.length < 2) return el('p', { class: 'small muted', text: 'Collecting history…' });
   const t0 = points[0][0];
@@ -55,9 +56,22 @@ function areaChart(points) {
   hi += pad;
   const x = (t) => ((t - t0) / (t1 - t0 || 1)) * 100;
   const y = (v) => 100 - ((v - lo) / (hi - lo)) * 100;
-  const line = points.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(2)},${y(v).toFixed(2)}`).join('');
+  // a smooth line, each step leaving and arriving level, over an area that fades out downwards
+  const pts = points.map(([t, v]) => [x(t), y(v)]);
+  const line = pts.map(([px, py], i) => {
+    if (!i) return `M${px.toFixed(2)},${py.toFixed(2)}`;
+    const mx = ((pts[i - 1][0] + px) / 2).toFixed(2);
+    return `C${mx},${pts[i - 1][1].toFixed(2)} ${mx},${py.toFixed(2)} ${px.toFixed(2)},${py.toFixed(2)}`;
+  }).join('');
+  const id = `wg${++chartSeq}`;
+  const stops = [svg('stop', { offset: 0 }), svg('stop', { offset: 1 })];
+  stops.forEach((st, i) => { st.style.stopColor = 'var(--line-c, var(--accent))'; st.style.stopOpacity = i ? '0' : '0.35'; });
+  const area = svg('path', { class: 'c-area', d: `${line}L100,100L0,100Z` });
+  area.style.fill = `url(#${id})`;
   return svg('svg', { viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': 'true' },
-    svg('path', { class: 'c-area', d: `${line}L100,100L0,100Z` }),
+    svg('defs', null, svg('linearGradient', { id, x1: 0, y1: 0, x2: 0, y2: 1 }, ...stops)),
+    area,
+    svg('path', { class: 'c-glow', d: line }),
     svg('path', { class: 'c-line', d: line }));
 }
 

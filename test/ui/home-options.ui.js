@@ -32,7 +32,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(quiet.status === 201 && quiet.json.service.onHome === false, 'a service can be left off Home');
   const { settings } = (await call('GET', '/api/admin/config')).json;
   const dash = settings.dashboard;
-  check(dash.homeServices === 'tiles' && dash.serviceAlerts === true && dash.vms.home && dash.vms.stopped && !dash.vms.homeNumbers, 'defaults: tiles, alerts on, VMs everywhere, names only on Home');
+  check(dash.homeServices === 'line' && dash.serviceAlerts === true && dash.vms.home && dash.vms.stopped && !dash.vms.homeNumbers, 'defaults: services and VMs as one line at the bottom, alerts on, VMs everywhere');
   const set = async (change) => {
     const r = await call('PUT', '/api/admin/settings', { dashboard: { ...dash, ...change, vms: { ...dash.vms, ...change.vms } } });
     await page.goto(B + '/');
@@ -44,15 +44,20 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check((await call('PUT', '/api/admin/settings', { dashboard: { ...dash, homeServices: 'big' } })).status === 400, 'an unknown choice is refused');
   await page.waitForTimeout(2500);
 
-  // tiles (default): the two services meant for Home, the down one first
+  // the default: one line at the bottom for services and VMs
   await set({});
+  const foot = await page.textContent('#home-foot');
+  check(/1 of 2 services up/.test(foot) && /2 of 3 VMs running/.test(foot) && await page.locator('#services-sec').isHidden() && await page.locator('#vms-sec').isHidden(), `default: one line (${foot.trim()})`);
+
+  // tiles: the two services meant for Home, the down one first
+  await set({ homeServices: 'tiles', vms: { homeNumbers: true } });
   await page.waitForSelector('#services .dtile');
   const tiles = await page.locator('#services .dtile .tile-name').allTextContents();
   check(tiles.join() === 'Gone,Jellyfin', `tiles, down first, "Quiet" left out (${tiles})`);
-  check(/Gone/.test(await page.textContent('#needs')) && /services up/.test(await page.textContent('#summary')), 'a down service is under "Needs you" and in the summary');
-  // VMs on Home: names only, stopped ones too
+  check(/Gone/.test(await page.textContent('#needs')) && /fault/.test(await page.textContent('#summary')), 'a down service is under "Needs you" and counted at the top');
+  // VMs on Home as a section: stopped ones too
   const chips = await page.locator('#vms .chip').allTextContents();
-  check(chips.length === 3 && chips.includes('win11') && !chips.some((c) => /CPU/.test(c)), `VM tile: names only, stopped too (${chips})`);
+  check(chips.length === 3 && chips.includes('win11'), `VM section on Home, stopped too (${chips})`);
   await page.screenshot({ path: `${S}/home-options-tiles.png`, fullPage: true });
 
   // compact list
@@ -68,7 +73,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   // off, with service alerts off too; VMs with numbers, without stopped ones
   await set({ homeServices: 'off', serviceAlerts: false, vms: { stopped: false, homeNumbers: true, uptime: false } });
   check(await page.locator('#services-sec').isHidden(), 'off: no services section on Home');
-  check(!/Gone/.test(await page.textContent('#needs')) && !/services up/.test(await page.textContent('#summary')), 'service alerts off: not under "Needs you" nor in the summary');
+  check(!/Gone/.test(await page.textContent('#needs')) && !/services/.test(await page.textContent('#home-foot')), 'service alerts off: not under "Needs you", and services off: not in the line at the bottom');
   const numChips = await page.locator('#vms .chip').allTextContents();
   check(numChips.length === 2 && numChips.every((c) => /CPU .*RAM/.test(c) && !/up /.test(c)), `VMs: running only, with CPU and RAM, no uptime (${numChips.join(' | ')})`);
   await page.screenshot({ path: `${S}/home-options-off.png`, fullPage: true });

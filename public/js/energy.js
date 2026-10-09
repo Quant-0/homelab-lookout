@@ -26,7 +26,7 @@ function barChart(rows) {
   const tip = el('div', { class: 'tooltip hidden', role: 'status' });
   const draw = () => {
     const W = Math.max(wrap.clientWidth || 600, 280);
-    const H = 190;
+    const H = 230;
     const padL = 44;
     const padB = 22;
     const padT = 10;
@@ -40,6 +40,11 @@ function barChart(rows) {
     const band = (W - padL) / rows.length;
     const bw = Math.max(2, Math.min(28, band - 3));
     const s = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': `Energy use in kWh, ${rows.length} ${rows[0]?.key.length === 10 ? 'days' : 'months'}; see the table for the values` });
+    // the bars glow amber from top to bottom (colours through the style object, as the CSP wants)
+    const stops = [svg('stop', { offset: 0 }), svg('stop', { offset: 1 })];
+    stops[0].style.stopColor = 'var(--power-2)';
+    stops[1].style.stopColor = 'color-mix(in srgb, var(--power) 55%, transparent)';
+    s.append(svg('defs', null, svg('linearGradient', { id: 'en-fill', x1: 0, y1: 0, x2: 0, y2: 1 }, ...stops)));
     for (let i = 0; i <= 3; i++) {
       s.append(svg('line', { class: 'gridline', x1: padL, x2: W, y1: y(step * i), y2: y(step * i) }));
       s.append(svg('text', { class: 'axis-label', x: padL - 8, y: y(step * i) + 4, 'text-anchor': 'end' }, fmt.n(step * i, step < 1 ? 1 : 0)));
@@ -48,7 +53,8 @@ function barChart(rows) {
     rows.forEach((r, i) => {
       const cx = padL + band * i + band / 2;
       const h = Math.max(0, y(0) - y(r.kwh));
-      const bar = svg('rect', { class: `bar${r.future ? ' future' : ''}`, x: cx - bw / 2, y: y(r.kwh), width: bw, height: h, rx: Math.min(3, bw / 2) });
+      const bar = svg('rect', { class: `bar${r.future ? ' future' : ''}`, x: cx - bw / 2, y: y(r.kwh), width: bw, height: h, rx: Math.min(6, bw / 2) });
+      if (!r.future) bar.style.fill = 'url(#en-fill)';
       const hit = svg('rect', { class: 'hit', x: padL + band * i, y: padT, width: band, height: plotH });
       const show = () => {
         bar.classList.add('active');

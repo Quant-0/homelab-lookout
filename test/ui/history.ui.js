@@ -34,7 +34,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const label = await power.getAttribute('aria-label');
   check(/Measured draw, last 24 h: lowest 20\d W, highest 2\d\d W/.test(label), `power sparkline has a text summary (${label})`);
   const d = await page.locator('.power-tile .spark-line').getAttribute('d');
-  check((d.match(/L/g) || []).length >= 100, 'power sparkline drawn from ~120 points');
+  check((d.match(/[LC]/g) || []).length >= 100, 'power sparkline drawn from ~120 points (a smooth curve)');
   const box = await power.boundingBox();
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height / 2);
   const tip = page.locator('.power-tile .spark-tip');

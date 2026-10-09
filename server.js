@@ -97,7 +97,8 @@ const DEFAULT_SETTINGS = {
     title: 'Homelab',
     refreshSeconds: 30,
     public: false,
-    homeServices: 'tiles', // tiles | compact | down (only the ones that are down) | off
+    homeServices: 'line', // line (a count at the bottom) | tiles | compact | down (only the ones that are down) | off
+    design: 2, // 2 = the 2026 Home: installs from before it get the one-line services once
     serviceAlerts: true, // a down service shows under "Needs you" and in the top pill
     // VMs and containers: where they show, and what
     vms: { home: true, services: true, host: true, rack: true, stopped: true, cpu: true, ram: true, uptime: true, homeNumbers: false },
@@ -351,6 +352,8 @@ function loadConfig() {
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
+  // The 2026 Home shows services as one line; an install from before keeps any other choice it made
+  if (raw.settings?.dashboard && raw.settings.dashboard.design !== 2 && config.settings.dashboard.homeServices === 'tiles') config.settings.dashboard.homeServices = 'line';
   // Blank panels, patch panels and shelves used to be devices; they are passive rack items now
   const PASSIVE_FROM = { blank: 'blank', 'patch-panel': 'patch', shelf: 'shelf' };
   config.devices = config.devices.filter((d) => {
@@ -536,12 +539,12 @@ function num(v, min, max, name, { int = false } = {}) {
   return n;
 }
 
-const HOME_SERVICES = ['tiles', 'compact', 'down', 'off'];
+const HOME_SERVICES = ['line', 'tiles', 'compact', 'down', 'off'];
 
 function validateDashboard(d) {
   const title = String(d.title ?? '').trim() || 'Homelab';
   if (title.length > 60 || hasControlChars(title)) throw new UserError('Title is too long');
-  const homeServices = d.homeServices ?? 'tiles';
+  const homeServices = d.homeServices ?? 'line';
   if (!HOME_SERVICES.includes(homeServices)) throw new UserError('Invalid choice for services on Home');
   const v = d.vms && typeof d.vms === 'object' ? d.vms : {};
   const vms = {};
@@ -552,6 +555,7 @@ function validateDashboard(d) {
     refreshSeconds: num(d.refreshSeconds, 10, 3600, 'Refresh interval', { int: true }),
     public: d.public === true,
     homeServices,
+    design: 2,
     serviceAlerts: d.serviceAlerts !== false,
     vms,
   };

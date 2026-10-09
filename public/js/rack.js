@@ -906,6 +906,32 @@ const Rack = (() => {
     return node;
   }
 
+  // A picture of a device as it looks, for Home, Admin, Updates and Docs: its product shape when it
+  // stands on its own (access points, desktop NAS, cameras), else its rack front; null when the best
+  // there is would be a plain panel (the caller shows an icon instead).
+  let artSeq = 0;
+  function deviceArt(item, data) {
+    const info = itemInfo(item, data);
+    const own = unifiOf(item, info);
+    if (own?.shape && own.form !== 'rack') {
+      const shape = productShape(own, info);
+      if (shape) return shape;
+    }
+    const fr = frontOf(item, info);
+    let um = /^[um]-/.test(fr.model) && typeof MODEL_BY_FRONT !== 'undefined' ? MODEL_BY_FRONT.get(fr.model) || null : null;
+    if (um?.shape && um.form !== 'rack') return productShape(um, info);
+    if (um?.rackFront) {
+      fr.model = um.rackFront;
+      um = null;
+    }
+    if (!um && (!FACES[fr.model] || fr.model === 'plain')) return null;
+    const height = Math.max(1, Math.min(4, item.height || um?.height || 1));
+    const h = height * U;
+    const n = ++artSeq;
+    const draw = um ? (...a) => unifiFace(...a, um) : FACES[fr.model];
+    return S('svg', { class: 'device-art', viewBox: `0 0 ${W} ${h}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': item.name }, draw({ ...item, height }, info, fr, h, (x) => `art${n}-${x}`));
+  }
+
   function schematicItem(item, info, opts) {
     const w = wattsText(info, item);
     const ud = info.ud;
@@ -1061,5 +1087,5 @@ const Rack = (() => {
     });
   }
 
-  return { render, modeToggle, resolve, itemInfo, linkStatus, inRack, frontOf, productShape, unifiOf, SHAPES, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
+  return { render, modeToggle, resolve, itemInfo, deviceArt, linkStatus, inRack, frontOf, productShape, unifiOf, SHAPES, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
 })();

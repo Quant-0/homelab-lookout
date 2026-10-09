@@ -395,6 +395,8 @@ const HD = (() => {
     /* storage unavailable */
   }
   let cache = { range: null, at: 0, series: {} };
+  let sparkSeq = 0;
+  const drawnKeys = new Set();
 
   // Hidden until there is something to draw: no "collecting history" placeholders
   function sparkSlot(key, { label = '', unit = '', decimals = 0 } = {}) {
@@ -430,19 +432,40 @@ const HD = (() => {
     }
     const x = (t) => ((t - t0) / (t1 - t0 || 1)) * W;
     const y = (v) => H - 3 - ((v - lo) / (hi - lo)) * (H - 6);
-    const line = points.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
+    // a smooth line: each step is a curve that leaves and arrives level, so it never overshoots
+    const pts = points.map(([t, v]) => [x(t), y(v)]);
+    const line = pts.map(([px, py], i) => {
+      if (!i) return `M${px.toFixed(1)},${py.toFixed(1)}`;
+      const [qx, qy] = pts[i - 1];
+      const mx = ((qx + px) / 2).toFixed(1);
+      return `C${mx},${qy.toFixed(1)} ${mx},${py.toFixed(1)} ${px.toFixed(1)},${py.toFixed(1)}`;
+    }).join('');
+    const gid = `sg${++sparkSeq}`;
     const marker = svg('line', { class: 'spark-marker', x1: 0, x2: 0, y1: 0, y2: H, 'vector-effect': 'non-scaling-stroke' });
     marker.style.display = 'none';
+    // colours through the style object: the CSP allows that, but not style attributes
+    const stops = [svg('stop', { offset: 0 }), svg('stop', { offset: 1 })];
+    stops.forEach((st, i) => { st.style.stopColor = 'var(--line-c, var(--accent))'; st.style.stopOpacity = i ? '0' : '0.32'; });
+    const fade = svg('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 }, ...stops);
+    const area = svg('path', { class: 'spark-area', d: `${line}L${pts[pts.length - 1][0].toFixed(1)},${H}L${pts[0][0].toFixed(1)},${H}Z` });
+    area.style.fill = `url(#${gid})`;
+    const first = !drawnKeys.has(slot.dataset.key); // the line draws itself in once, not on every refresh
+    drawnKeys.add(slot.dataset.key);
     const graph = svg('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
-      svg('path', { class: 'spark-area', d: `${line}L${x(points[points.length - 1][0]).toFixed(1)},${H}L${x(points[0][0]).toFixed(1)},${H}Z` }),
-      svg('path', { class: 'spark-line', d: line, 'vector-effect': 'non-scaling-stroke' }),
+      svg('defs', null, fade),
+      area,
+      svg('path', { class: 'spark-glow', d: line, 'vector-effect': 'non-scaling-stroke' }),
+      svg('path', { class: `spark-line${first ? ' drawn' : ''}`, d: line, 'vector-effect': 'non-scaling-stroke', pathLength: 1 }),
       marker);
+    const end = el('span', { class: 'spark-end' });
+    end.style.left = `${(pts[pts.length - 1][0] / W) * 100}%`;
+    end.style.top = `${(pts[pts.length - 1][1] / H) * 100}%`;
     const tip = el('div', { class: 'tooltip spark-tip hidden' });
     const min = Math.min(...vs);
     const max = Math.max(...vs);
     const last = vs[vs.length - 1];
     const span = `${RANGES[range]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
-    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[range]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, tip);
+    const box = el('div', { class: 'spark', role: 'img', 'aria-label': `${slot.dataset.label || 'History'}, last ${RANGES[range]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}` }, graph, end, tip);
     const show = (clientX) => {
       const r = box.getBoundingClientRect();
       const t = t0 + ((clientX - r.left) / r.width) * (t1 - t0);

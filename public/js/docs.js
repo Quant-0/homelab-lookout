@@ -28,9 +28,16 @@ const unifiClients = () => D.auto.unifi.flatMap((u) => u.clients);
 const deviceByIp = (ip) => D.auto.devices.find((d) => d.ips.includes(ip));
 const toolbar = (...items) => el('div', { class: 'docs-toolbar' }, items);
 
+let DASH = null; // the dashboard data, to draw each device as it looks
+
 async function load() {
   try {
-    D = await api('GET', '/api/docs');
+    const [docs, dash] = await Promise.all([api('GET', '/api/docs'), DASH ? DASH : api('GET', '/api/dashboard').catch(() => null)]);
+    D = docs;
+    if (dash) {
+      DASH = dash;
+      DASH.rack.items = DASH.devices;
+    }
     HD.shell({ active: 'docs', title: D.title, admin: !D.readOnly, viewer: Boolean(D.readOnly) });
     renderNav();
     route();
@@ -321,7 +328,10 @@ function serverView(id) {
     ['Role', doc.role], ['Operating system', doc.os], ['Location', doc.location], ['Purchased', doc.purchased], ['Warranty until', doc.warranty],
     ...(doc.custom || []).map((f) => [f.label, f.value]),
   ]);
+  const full = DASH?.devices.find((x) => x.id === id);
+  const art = full ? Rack.deviceArt(full, DASH) : null;
   show(
+    art ? el('div', { class: 'd-art sheet-art' }, art) : null,
     toolbar(el('h2', { text: dev.name }), el('span', { class: 'spacer' }), D.readOnly ? null : el('button', { type: 'button', text: 'Edit notes', onclick: () => serverEdit(dev, doc) })),
     el('p', { class: 'muted', text: [KIND[dev.kind], placement(dev), dev.model].filter(Boolean).join(' · ') }),
     el('h3', { text: 'Facts (automatic)' }),

@@ -407,7 +407,9 @@ function deviceRow(d) {
   const missing = conns.filter((h) => !h.hasSecret).length;
   const what = [...conns.map((h) => state.types[h.type].short || state.types[h.type].label), d.unifi && !conns.some((h) => h.type === 'unifi') ? 'found via UniFi' : null].filter(Boolean).join(' + ');
   const problems = [errors ? `${errors} with errors` : '', missing ? `${missing} without credentials` : ''].filter(Boolean).join(', ');
+  const art = rackData ? Rack.deviceArt(item, rackData) : null;
   return el('button', { type: 'button', class: `device-row${draft?.id === d.id ? ' selected' : ''}`, onclick: () => openDevice(d) },
+    el('span', { class: 'device-thumb', 'aria-hidden': 'true' }, art || HD.icon(Rack.KIND_ICONS[d.kind] || 'box')),
     el('span', { class: `led ${info.status || 'off'}`, 'aria-hidden': 'true' }),
     el('span', { class: 'device-main' },
       el('strong', { text: d.name }),

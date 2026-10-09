@@ -72,9 +72,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.click('#rack-view .rack-mode button:has-text("Realistic")');
   await page.waitForSelector('#rack-view .rack2.realistic .front-dell13');
   await page.locator('#rack-view .front-dell13').click();
-  await page.waitForSelector('dialog.drawer[open]');
-  check(await page.textContent('dialog.drawer h2') === 'titan', 'clicking a server opens its details');
-  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('.rack-detail h2')?.textContent === 'titan');
+  check(await page.locator('.rack-item.selected.front-dell13').count() === 1, 'clicking a server shows its details beside the rack, and marks it');
 
   // admin: empty U → chooser → patch panel; edit it
   await page.goto(B + '/admin#devices');

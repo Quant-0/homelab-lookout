@@ -15,9 +15,23 @@ function versions(r) {
   return el('span', { class: 'upd-versions num muted', text: r.current || '' });
 }
 
+// What the row is about: the device drawn as it looks, or the service's icon
+let dash = null;
+let icons = new Map();
+function thumb(r) {
+  if (r.ownerType === 'device' && dash) {
+    const dev = dash.devices.find((x) => x.id === r.owner);
+    const art = dev && Rack.deviceArt(dev, dash);
+    if (art) return el('span', { class: 'upd-thumb' }, art);
+    if (dev) return el('span', { class: 'upd-thumb' }, el('span', { class: 'tile-icon' }, HD.icon(Rack.KIND_ICONS[dev.kind] || 'box')));
+  }
+  const icon = icons.get(r.owner);
+  return el('span', { class: 'upd-thumb' }, icon ? el('img', { class: 'svc-icon', src: icon, alt: '' }) : HD.letterIcon(r.name || r.part || '?'));
+}
+
 function row(r) {
   return el('li', { class: `upd-row${r.available ? ' available' : ''}${r.error ? ' failed' : ''}` },
-    el('span', { class: `led ${r.error ? 'warning' : r.available ? 'info' : 'good'}`, 'aria-hidden': 'true' }),
+    thumb(r),
     el('div', { class: 'upd-main' },
       el('div', { class: 'upd-name' }, el('strong', { text: r.name || r.part }), r.name && r.name !== r.part ? el('span', { class: 'muted', text: r.part }) : null),
       r.error ? el('span', { class: 'small msg error', text: r.error }) : versions(r),
@@ -63,7 +77,12 @@ function render(d) {
 
 async function load() {
   try {
-    const d = await HD.api('GET', '/api/updates');
+    const [d, dd, sv] = await Promise.all([HD.api('GET', '/api/updates'), dash ? dash : HD.api('GET', '/api/dashboard').catch(() => null), icons.size ? null : HD.api('GET', '/api/services').catch(() => null)]);
+    if (dd) {
+      dash = dd;
+      dash.rack.items = dash.devices;
+    }
+    if (sv) icons = new Map(sv.groups.flatMap((g) => g.services || []).filter((s) => s.icon).map((s) => [s.id, s.icon]));
     HD.shell({ active: 'updates', title: d.title, admin: !d.readOnly, viewer: Boolean(d.readOnly), updates: d.rows.filter((r) => !r.error && r.available).length });
     render(d);
     if (d.running) setTimeout(load, 3000);

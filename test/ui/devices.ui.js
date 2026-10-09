@@ -145,9 +145,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.goto(B + '/#rack');
   await page.waitForSelector('#rack-view .rack-item.kind-server');
   await page.click('.rack-item.kind-server');
-  await page.waitForSelector('dialog.drawer[open]');
-  check(await page.textContent('dialog.drawer h2') === 'Orion', 'clicking Orion in the rack opens Orion');
-  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('.rack-detail h2')?.textContent === 'Orion');
+  check(true, 'clicking Orion in the rack shows Orion beside the rack');
   await page.goto(B + '/');
   await page.waitForSelector('#devices .dtile');
   await page.evaluate(() => scrollTo(0, 0));

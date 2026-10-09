@@ -47,8 +47,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   // Overview
   await page.goto(B + '/');
   await page.waitForSelector('#devices .dtile');
-  const link = page.locator('#summary .pill[href="/updates"]');
-  check(/\d+ updates?$/.test(await link.textContent()), `the summary links to the updates (${await link.textContent()})`);
+  const link = page.locator('#home-foot a[href="/updates"]');
+  check(/\d+ updates? available$/.test(await link.textContent()), `the line at the bottom links to the updates (${await link.textContent()})`);
   await page.locator('#devices .dtile', { hasText: 'titan' }).click();
   await page.waitForSelector('dialog.drawer[open]');
   check(await page.locator('dialog.drawer a[href="/updates"]', { hasText: 'Update available' }).count() === 1, 'titan\'s details say "Update available" and link there');
