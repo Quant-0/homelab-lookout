@@ -66,7 +66,8 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
   - **Snooze** (signed in as admin): the clock button at the end of a row hides it from the top of Home and from the wall display for **1 day** or **1 week**, for everyone. The device itself keeps showing the problem, alerts are still sent, and the snooze ends early if a warning turns into a fault. **N snoozed · Show** under the list shows them again; the bell button on a snoozed row ends the snooze.
 - **Power** and **Internet**, two big cards with a large number and a glowing graph of the last hours (amber for power, teal for the network):
   - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d**) is remembered per browser; the cards on Home always show the last 24 hours.
-  - **Internet** comes from the UniFi console (up or down, latency, the last speed test as bars, clients on Wi-Fi and wired) and opens the gateway. Next to the heading is your **internet provider**: what the console reports, or the name you set in *Admin → Dashboard & look*.
+  - **Internet** comes from the UniFi console (up or down, latency, the last speed test as bars, clients on Wi-Fi and wired) and opens the gateway. Next to the heading is your **internet provider** with its logo: what the console reports, or the name you set in *Admin → Dashboard & look*. The card also shows your **public IP** (only to people who are signed in; never on a public dashboard).
+  - When the public IP changes, a teal **Public IP changed** row (old → new) appears at the top of Home and on the wall display. An admin closes it with **×**, for everyone; it stays in the **Log**.
 - **Devices:** a tile per device, drawn as it looks (its rack front, or its shape for access points, cameras and desktop NAS), grouped *In the rack* and *Elsewhere*. Each tile has one status (**OK**, **Warning**, **Fault** or **Offline**), its worst problem or its model, and one key number. Click a tile to open its **details** (from the right, or from the bottom on a phone):
   - its problems first, then up to eight numbers
   - every connection's full view: fans, power supplies, pools, disks, ports, UPS battery, graphs (hover for value and time)
@@ -141,6 +142,10 @@ One list of what can be updated: Proxmox packages, TrueNAS and its apps, UniFi f
 - It's checked every night at 04:00. **Check now** checks right away (once a minute at most).
 - **Nothing is ever installed from the dashboard.** Update on the device itself, then press **Check now**.
 - A Proxmox row counts the **Proxmox packages** (pve-manager, kernel, QEMU…) that have a newer version. Plain Debian updates aren't included: Proxmox only shows those to tokens that may change the node, and the dashboard's token is read-only on purpose.
+
+### Log
+
+**Log** in the menu (admin only) lists everything that changed, newest first, grouped by day: every change in Admin and Docs (with what changed, e.g. *Title: Homelab → My Lab*, and who did it), devices found, problems starting and clearing, notifications sent, snoozes, the public IP and its changes, sign-ins and failed sign-ins, update checks, backups and restarts. Filter by category or search, and **Download CSV** for the current filter. Entries are kept for a year and are included in backups. Passwords and keys are never written to it; at most it says that one was changed.
 
 ### Search
 
@@ -260,6 +265,7 @@ To arrange the page, press **Customize** on the Services page:
 ### Dashboard & look
 
 - **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
+- **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
 - **VMs and containers:** choose where they show (**On Home**, **On the Services tab**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). On Home they are one line with the count at the bottom, unless you tick **On Home as a section with names and numbers**.

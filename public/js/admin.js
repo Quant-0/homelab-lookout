@@ -178,10 +178,91 @@ $('power-form').elements.area.addEventListener('change', (ev) => {
   updatePlanFields();
 });
 
+// --- The provider's logo: found automatically, uploaded, from a link, or none ---
+let carrierDraft = { kind: 'auto' };
+let carrierMode = null; // which choice is open (upload/link stay open until a logo is in)
+
+function renderCarrier() {
+  const box = $('carrier-pick');
+  if (!box || !state) return;
+  const auto = state.carrierAuto || {};
+  const mode = carrierMode || (carrierDraft.kind === 'file' ? 'upload' : carrierDraft.kind);
+  const src = carrierDraft.kind === 'file' ? `/media/icon/${carrierDraft.id}` : carrierDraft.kind === 'auto' ? auto.url : null;
+  const setMode = (k) => {
+    carrierMode = k;
+    if (k === 'auto' || k === 'none') carrierDraft = { kind: k };
+    renderCarrier();
+  };
+  const useIcon = (icon) => {
+    carrierDraft = { kind: 'file', id: icon.id };
+    carrierMode = null;
+    renderCarrier();
+    showMsg('dash-msg', 'Logo ready. Save dashboard settings to use it.', true);
+  };
+  const parts = [
+    el('div', { class: 'logo-head' },
+      el('span', { class: 'logo-preview' }, src ? el('img', { src, alt: '' }) : HD.icon('globe')),
+      el('div', { class: 'seg', role: 'group', 'aria-label': 'Provider logo' }, [['auto', 'Automatic'], ['upload', 'Upload'], ['link', 'Link'], ['none', 'None']].map(([k, label]) => el('button', { type: 'button', 'aria-pressed': String(mode === k), text: label, onclick: () => setMode(k) })))),
+  ];
+  if (mode === 'auto') {
+    const what = auto.iconId && auto.isp === auto.current ? `Found on ${auto.domain}.` : auto.current ? (auto.error && auto.isp === auto.current ? `Nothing found: ${auto.error}.` : 'Not looked up yet; it is looked up from who owns your public IP.') : 'Waiting for the UniFi console to report your provider.';
+    parts.push(el('div', { class: 'logo-image' },
+      el('span', { class: 'small muted', text: what }),
+      auto.current ? el('button', { type: 'button', text: 'Find again', onclick: async (e) => {
+        e.target.disabled = true;
+        showMsg('dash-msg', 'Looking for the logo…', true);
+        try {
+          const r = await api('POST', '/api/admin/carrier-logo/auto', {});
+          state.carrierAuto = { ...r.carrier, current: auto.current, url: r.url };
+          state.settings.dashboard.carrierLogo = { kind: 'auto' };
+          carrierDraft = { kind: 'auto' };
+          showMsg('dash-msg', r.url ? 'Logo found and saved' : 'No logo found; upload one or paste a link', Boolean(r.url));
+        } catch (err) {
+          showMsg('dash-msg', err.message, false);
+        }
+        renderCarrier();
+      } }) : null));
+  }
+  if (mode === 'upload') {
+    const upload = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/svg+xml' });
+    upload.addEventListener('change', async () => {
+      const file = upload.files[0];
+      upload.value = '';
+      if (!file) return;
+      if (file.size > 1024 * 1024) return showMsg('dash-msg', 'The logo is larger than 1 MB', false);
+      try {
+        useIcon((await HD.upload('/api/admin/logo', file)).icon);
+      } catch (e) {
+        showMsg('dash-msg', e.message, false);
+      }
+    });
+    parts.push(el('div', { class: 'logo-image' }, el('label', { class: 'button' }, upload, HD.icon('upload'), 'Upload logo'), el('span', { class: 'small muted', text: 'PNG, JPEG, WebP or SVG, up to 1 MB' })));
+  }
+  if (mode === 'link') {
+    const input = el('input', { type: 'url', id: 'carrier-link', placeholder: 'https://… link to the logo image', 'aria-label': 'Link to the logo image' });
+    const use = async () => {
+      if (!input.value.trim()) return;
+      showMsg('dash-msg', 'Fetching…', true);
+      try {
+        useIcon((await api('POST', '/api/admin/carrier-logo/url', { url: input.value.trim() })).icon);
+      } catch (e) {
+        showMsg('dash-msg', e.message, false);
+      }
+    };
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && (e.preventDefault(), use()));
+    parts.push(el('div', { class: 'logo-image' }, input, el('button', { type: 'button', text: 'Use', onclick: use })),
+      el('p', { class: 'hint', text: 'The dashboard fetches the image once (https only) and keeps a copy; PNG, JPEG, WebP, SVG or .ico.' }));
+  }
+  box.replaceChildren(el('span', { class: 'carrier-pick-label', text: 'Provider logo' }), ...parts);
+}
+
 function fillDashboard(d) {
   const f = $('dash-form').elements;
   f.title.value = d.title;
   f.carrier.value = d.carrier || '';
+  carrierDraft = structuredClone(d.carrierLogo || { kind: 'auto' });
+  carrierMode = null;
+  renderCarrier();
   f.refreshSeconds.value = d.refreshSeconds;
   f.public.checked = d.public;
   f.homeServices.value = d.homeServices;
@@ -195,6 +276,7 @@ async function saveSettings(msgId) {
     dashboard: {
       title: d.title.value,
       carrier: d.carrier.value,
+      carrierLogo: carrierDraft,
       refreshSeconds: Number(d.refreshSeconds.value),
       public: d.public.checked,
       homeServices: d.homeServices.value,

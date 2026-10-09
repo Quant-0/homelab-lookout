@@ -992,7 +992,9 @@ function internetTile(d) {
     const gw = uh.data.devices.find((x) => ['udm', 'ugw', 'uxg'].includes(x.type));
     const owner = d.devices.find((dev) => dev.connections.some((c) => c.id === uh.id));
     const b = el('button', { type: 'button', class: `big net${gw ? '' : ' empty-spark'}`, 'aria-label': 'Internet' },
-      el('span', { class: 'big-head' }, HD.icon('globe'), 'Internet', carrierOf(d, hl) ? el('span', { class: 'carrier', text: carrierOf(d, hl) }) : null, owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
+      el('span', { class: 'big-head' }, HD.icon('globe'), 'Internet',
+        carrierOf(d, hl) ? el('span', { class: 'carrier' }, d.carrierLogo ? el('img', { class: 'carrier-logo', src: d.carrierLogo, alt: '' }) : null, el('span', { text: carrierOf(d, hl) })) : null,
+        owner ? el('span', { class: 'go' }, owner.name, HD.icon('arrow-right')) : null),
       el('span', { class: `big-num${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
       hl.internet?.downMbps != null ? el('span', { class: 'speed', title: 'The console\u2019s last speed test' },
         ...[['Download', hl.internet.downMbps], ['Upload', hl.internet.upMbps]].map(([l, v]) => {
@@ -1003,7 +1005,8 @@ function internetTile(d) {
       el('span', { class: 'big-facts' },
         hl.clients != null ? el('span', null, el('strong', { text: fmt.n(hl.clients) }), ' clients') : null,
         hl.wifiClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wifiClients) }), ' on Wi-Fi') : null,
-        hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null),
+        hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null,
+        hl.wan?.ip ? el('span', { class: 'public-ip' }, el('strong', { class: 'num', text: hl.wan.ip }), ' public IP') : null),
       gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '', range: '24h' })) : null);
     if (owner) b.addEventListener('click', () => openDevice(owner.id));
     return b;
@@ -1066,11 +1069,11 @@ function renderNeeds(d) {
   const zz = snoozedOnes(d);
   const box = $('needs');
   $('needs-count').textContent = list.length ? String(list.length) : '';
-  $('needs-sec').hidden = !list.length && !zz.length && !infos.length && !d.services?.total; // the empty hint says it already
+  $('needs-sec').hidden = !list.length && !zz.length && !(d.notices || []).length && !infos.length && !d.services?.total; // the empty hint says it already
   const snoozeLine = zz.length ? el('div', { class: 'snoozed-line' },
     HD.icon('clock'), `${zz.length} snoozed`,
     el('button', { type: 'button', class: 'link-button', 'aria-expanded': String(showSnoozed), text: showSnoozed ? 'Hide' : 'Show', onclick: () => { showSnoozed = !showSnoozed; renderNeeds(d); } })) : null;
-  const rows = [...list.map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
+  const rows = [...(d.notices || []).map((n) => noticeRow(n, d)), ...list.map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
   if (!list.length) {
     box.className = rows.length ? 'needs' : '';
     const head = infos.length || d.services?.total
@@ -1080,6 +1083,29 @@ function renderNeeds(d) {
   }
   box.className = 'needs';
   box.replaceChildren(...rows, snoozeLine || '');
+}
+
+// A notice (the public IP changed): not a problem, shown until an admin closes it (for everyone)
+function noticeRow(n, d) {
+  const row = el('div', { class: 'need info', title: `${n.title} · ${n.detail}` },
+    el('span', { class: 'need-icon' }, HD.icon(n.kind === 'ip' ? 'globe' : 'info')),
+    el('span', { class: 'need-text' }, el('b', { text: n.title }), el('span', { class: 'why num', text: n.detail })),
+    el('time', { text: sinceText(n.at) === 'just now' ? 'just now' : sinceText(n.at) }));
+  if (!d.loggedIn) return row;
+  const close = el('button', {
+    type: 'button', class: 'snooze', title: 'Close (stays in the Log)', 'aria-label': `Close: ${n.title}`,
+    onclick: async () => {
+      try {
+        await HD.api('DELETE', `/api/admin/notices/${n.id}`);
+        d.notices = d.notices.filter((x) => x !== n);
+        renderNeeds(d);
+      } catch (e) {
+        box.append(el('span', { class: 'snooze-error', role: 'alert', text: e.message }));
+      }
+    },
+  }, HD.icon('x'));
+  const box = el('div', { class: 'snooze-box' }, close);
+  return el('div', { class: 'need-wrap' }, row, box);
 }
 
 const untilText = (t) => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });

@@ -1520,7 +1520,7 @@ html:has(.wall-body), .wall-body { height: 100%; }
 .wall .w { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: clamp(14px, 2vh, 24px); border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden; }
 .wall .lbl { display: flex; align-items: center; gap: 8px; font-size: clamp(12px, 1.35vh, 15px); font-weight: 500; color: var(--muted); }
 .wall .lbl .icon { width: 1.1em; height: 1.1em; }
-.wall .lbl .r { margin-left: auto; font-variant-numeric: tabular-nums; }
+.wall .lbl .r { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
 .wall-head { flex: none; display: flex; align-items: center; gap: clamp(12px, 1.4vw, 24px); min-width: 0; }
 .orb { width: clamp(14px, 1.8vh, 20px); height: clamp(14px, 1.8vh, 20px); flex: none; border-radius: 50%; background: var(--c, var(--good)); box-shadow: 0 0 0 6px color-mix(in srgb, var(--c, var(--good)) 15%, transparent), 0 0 calc(28px * var(--glow)) var(--c, var(--good)); }
 .orb.critical { --c: var(--critical); animation: breathe 2.4s ease-in-out infinite; }
@@ -2001,3 +2001,54 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
   table.facts th, table.facts td { width: auto; padding: 0; border: 0; }
   table.facts th { font-size: 12.5px; }
 }
+
+/* ---- Log ---- */
+.log-main { display: flex; flex-direction: column; gap: 16px; max-width: var(--page-w); }
+.log-main .card { margin: 0; }
+.log-filters { display: grid; gap: 14px; }
+.log-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.log-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2); font-size: 13px; }
+.log-chip .icon { width: 14px; height: 14px; }
+.log-chip:hover { border-color: var(--border-strong); background: var(--surface); color: var(--text); }
+.log-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); color: var(--text); }
+.log-search input { width: 100%; }
+.log-day + .log-day { margin-top: 18px; }
+.log-day h2 { position: sticky; top: 64px; z-index: 1; margin: 0 0 4px; padding: 6px 0; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted); background: linear-gradient(var(--glass) 70%, transparent); }
+.log-entries { margin: 0; padding: 0; list-style: none; }
+.log-entry { display: grid; grid-template-columns: 5.2em 28px minmax(0, 1fr); gap: 4px 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--border); }
+.log-entries > .log-entry:first-child { border-top: 0; }
+.log-entry time { padding-top: 4px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.log-cat { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: color-mix(in srgb, var(--c, var(--accent)) 14%, transparent); color: var(--c, var(--accent)); }
+.log-cat .icon { width: 15px; height: 15px; }
+.cat-alerts { --c: var(--warning); }
+.cat-network { --c: var(--net); }
+.cat-sign-in { --c: var(--good); }
+.cat-system, .cat-docs { --c: var(--text-2); }
+.cat-devices, .cat-services, .cat-settings { --c: var(--accent); }
+.log-body { min-width: 0; display: grid; gap: 3px; }
+.log-text { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.log-by { font-size: 12px; color: var(--muted); }
+.log-by::before { content: "by "; }
+.log-detail { font-size: 12.5px; line-height: 1.5; color: var(--text-2); white-space: pre-line; overflow-wrap: anywhere; }
+.log-detail.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.log-body .link-button { justify-self: start; font-size: 12.5px; }
+.log-more { display: flex; justify-content: center; }
+.log-more button:not([hidden]) { margin-top: 14px; }
+.log-empty { margin: 8px 0; }
+@media (max-width: 640px) {
+  .log-entry { grid-template-columns: 28px minmax(0, 1fr); }
+  .log-entry time { grid-column: 2; grid-row: 2; padding: 0; }
+  .log-cat { grid-row: 1 / span 2; }
+  .log-day h2 { top: 0; }
+}
+/* Home: a notice (the public IP changed) in the provider's teal, and the provider's logo */
+.need.info { --c: var(--net); --w: color-mix(in srgb, var(--net) 10%, transparent); cursor: default; }
+.big-head .carrier { display: inline-flex; align-items: center; gap: 7px; }
+.carrier-logo { height: 18px; width: auto; max-width: 64px; object-fit: contain; border-radius: 4px; }
+.big-facts .public-ip strong { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+/* Admin: the provider's logo next to its name */
+.carrier-pick { display: grid; gap: 10px; margin: 20px 0 18px; }
+.carrier-pick-label { font-size: 13px; font-weight: 500; color: var(--text-2); }
+.carrier-pick .logo-preview .icon { width: 22px; height: 22px; color: var(--muted); }
+.carrier-pick input[type="url"] { flex: 1 1 260px; min-width: 0; }
+.need.info .why { -webkit-line-clamp: 2; } /* the old and the new IP both stay readable on a phone */

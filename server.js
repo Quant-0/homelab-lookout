@@ -28,6 +28,8 @@ const zlib = require('node:zlib');
 const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const dns = require('node:dns');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -96,6 +98,7 @@ const DEFAULT_SETTINGS = {
   dashboard: {
     title: 'Homelab',
     carrier: '', // the internet provider shown on Home; empty = what UniFi reports
+    carrierLogo: { kind: 'auto' }, // auto (looked up from the provider's website) | file (uploaded or a link) | none
     refreshSeconds: 30,
     public: false,
     homeServices: 'line', // line (a count at the bottom) | tiles | compact | down (only the ones that are down) | off
@@ -150,6 +153,104 @@ class UserError extends Error {} // message is safe to show to the admin
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+// ---------------------------------------------------------------------------
+// The change log: everything that changes, with when and who. One JSON line per entry in
+// events.jsonl (0600), kept for a year, shown on the Log page (admin only) and kept in backups.
+// Each admin request is tied to its user here, so an entry knows who made the change; a change
+// a route doesn't describe itself still gets a line ("Changed: …") after the request.
+const EVENTS_FILE = path.join(DATA_DIR, 'events.jsonl');
+const EVENT_DAYS = 365;
+const EVENT_MAX = 200000;
+const EVENT_CATS = ['settings', 'devices', 'services', 'alerts', 'network', 'docs', 'sign-in', 'system'];
+const requestCtx = new AsyncLocalStorage();
+let events = [];
+
+function loadEvents() {
+  events = [];
+  let text = '';
+  try {
+    text = fs.readFileSync(EVENTS_FILE, 'utf8');
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - EVENT_DAYS * 864e5;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line);
+      if (Number.isFinite(e.t) && e.t >= cutoff && typeof e.text === 'string') events.push(e);
+    } catch {
+      /* a torn last line */
+    }
+  }
+  if (events.length > EVENT_MAX) events = events.slice(-EVENT_MAX);
+}
+
+function rewriteEvents() {
+  const tmp = `${EVENTS_FILE}.tmp`;
+  fs.writeFileSync(tmp, events.map((e) => JSON.stringify(e)).join('\n') + (events.length ? '\n' : ''), { mode: 0o600 });
+  fs.renameSync(tmp, EVENTS_FILE);
+}
+
+// Drops entries older than a year (once a day is plenty)
+function pruneEvents() {
+  const cutoff = Date.now() - EVENT_DAYS * 864e5;
+  const keep = events.findIndex((e) => e.t >= cutoff);
+  const drop = keep < 0 ? events.length : keep;
+  if (!drop && events.length <= EVENT_MAX) return;
+  events = events.slice(Math.max(drop, events.length - EVENT_MAX));
+  rewriteEvents();
+}
+
+function event(cat, text, detail = null) {
+  const ctx = requestCtx.getStore();
+  const e = { t: Date.now(), cat: EVENT_CATS.includes(cat) ? cat : 'system', text: String(text).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 400) };
+  if (detail) e.detail = String(detail).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 2000);
+  if (ctx?.user) e.by = ctx.user;
+  if (ctx) ctx.logged = true;
+  events.push(e);
+  if (events.length > EVENT_MAX + 1000) events = events.slice(-EVENT_MAX);
+  try {
+    fs.appendFileSync(EVENTS_FILE, `${JSON.stringify(e)}\n`, { mode: 0o600 });
+  } catch (err) {
+    console.error(new Date().toISOString(), 'Could not write the change log:', err.message);
+  }
+  log(e.by ? `[${e.cat}] ${e.text} (by ${e.by})` : `[${e.cat}] ${e.text}`);
+}
+
+// What changed between two versions of a settings section, device or service, as
+// "Title: Homelab → My Lab; Theme: auto → dark". Secrets are only ever said to have changed.
+const SECRET_KEY = /secret|password|passphrase|token|apikey|api_key|privatekey/i;
+function changesText(before, after, skip = ['id', 'updatedAt', 'createdAt']) {
+  const flat = (o, pre = '', out = {}) => {
+    if (o && typeof o === 'object' && !Array.isArray(o)) {
+      for (const [k, v] of Object.entries(o)) if (!skip.includes(k)) flat(v, pre ? `${pre}.${k}` : k, out);
+    } else out[pre] = o;
+    return out;
+  };
+  const a = flat(before);
+  const b = flat(after);
+  const show = (v) => {
+    if (v === undefined || v === null || v === '') return '(none)';
+    const t = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return t.length > 60 ? `${t.slice(0, 57)}…` : t;
+  };
+  const name = (k) => k.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\./g, ' › ').toLowerCase().replace(/^./, (c) => c.toUpperCase());
+  const out = [];
+  for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])]) {
+    if (JSON.stringify(a[k]) === JSON.stringify(b[k])) continue;
+    out.push(SECRET_KEY.test(k) ? `${name(k)} changed` : `${name(k)}: ${show(a[k])} → ${show(b[k])}`);
+  }
+  return out.join('; ');
+}
+
+// For the change log: where a device is, and a device with its connections minus secrets' values
+const placeText = (d) => (d.location === 'rack' ? `rack U${d.u}${d.height > 1 ? `–${d.u + d.height - 1}` : ''}` : 'outside the rack');
+function deviceSnapshot(dev) {
+  const { id, unifi, ...rest } = dev;
+  return { ...rest, connections: Object.fromEntries(deviceHosts(dev).map((h) => [h.type, { address: h.address, username: h.username, tls: h.tlsMode, fingerprint: h.fingerprint, secret: h.secret ? crypto.createHash('sha256').update(String(h.secret)).digest('hex').slice(0, 8) : null, options: h.options }])) };
 }
 
 function fatal(msg) {
@@ -557,9 +658,17 @@ function validateDashboard(d) {
   const vms = {};
   for (const [k, def] of Object.entries(DEFAULT_SETTINGS.dashboard.vms)) vms[k] = typeof v[k] === 'boolean' ? v[k] : def;
   if (typeof v.stopped !== 'boolean' && d.showStoppedGuests === false) vms.stopped = false; // the older setting
+  const cl = d.carrierLogo;
+  let carrierLogo = structuredClone(config.settings.dashboard.carrierLogo || { kind: 'auto' }); // left out: kept
+  if (cl !== undefined) {
+    if (cl?.kind === 'auto' || cl?.kind === 'none') carrierLogo = { kind: cl.kind };
+    else if (cl?.kind === 'file' && config.icons.some((i) => i.id === cl.id)) carrierLogo = { kind: 'file', id: cl.id };
+    else throw new UserError('Upload or link the provider logo again');
+  }
   return {
     title,
     carrier, // '' = what UniFi reports
+    carrierLogo,
     refreshSeconds: num(d.refreshSeconds, 10, 3600, 'Refresh interval', { int: true }),
     public: d.public === true,
     homeServices,
@@ -838,7 +947,7 @@ function syncUnifiDevices(h, devices) {
   }
   if (added) {
     saveConfig();
-    log(`UniFi: ${added} device(s) found through ${h.name}`);
+    event('devices', `UniFi: ${added} device(s) found through ${h.name}`);
   }
 }
 
@@ -3368,6 +3477,8 @@ function storeIcon(buf, source, clean = sanitizeImage) {
 function pruneIcons() {
   const used = new Set(config.services.filter((s) => s.icon?.kind === 'file').map((s) => s.icon.id));
   if (config.settings.appearance.logo?.kind === 'file') used.add(config.settings.appearance.logo.id);
+  if (config.settings.dashboard.carrierLogo?.kind === 'file') used.add(config.settings.dashboard.carrierLogo.id);
+  if (alertState.carrier?.iconId) used.add(alertState.carrier.iconId);
   for (const icon of config.icons.filter((i) => !used.has(i.id))) {
     if (Date.now() - icon.addedAt < 3600 * 1000) continue; // just picked in an unsaved form
     fs.rmSync(path.join(ICON_DIR, icon.id), { force: true });
@@ -3789,7 +3900,30 @@ async function runCollector(h, plainSecret = null) {
   }
 }
 
-async function pollHost(h) {
+// The public IP from the UniFi console. A change becomes a notice at the top of Home and the wall
+// (until an admin closes it) and a line in the change log; the first one seen is only logged.
+function watchWan(h, health) {
+  const ip = health?.wan?.ip;
+  if (!ip || !net.isIP(ip)) return; // during an outage the console has none: not a change
+  const prev = alertState.wan[h.id];
+  if (prev === ip) return;
+  alertState.wan[h.id] = ip;
+  alertsDirty = true;
+  const isp = health.wan.isp ? ` (${health.wan.isp})` : '';
+  if (!prev) {
+    event('network', `Public IP: ${ip}${isp}`);
+  } else {
+    event('network', `Public IP changed: ${prev} → ${ip}${isp}`);
+    alertState.notices = [{ id: crypto.randomBytes(8).toString('hex'), kind: 'ip', title: 'Public IP changed', detail: `${prev} → ${ip}`, at: Date.now(), hostId: h.id }, ...alertState.notices].slice(0, 20);
+  }
+  saveAlertState();
+}
+
+function pollHost(h) {
+  return requestCtx.exit(() => pollHostNow(h));
+}
+
+async function pollHostNow(h) {
   const r = await runCollector(h);
   if (config.hosts.find((x) => x.id === h.id) !== h) return; // host edited/removed meanwhile
   const now = Date.now();
@@ -3802,6 +3936,8 @@ async function pollHost(h) {
       // PoE a switch delivers counts for that switch
       for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now, false, config.devices.find((v) => v.unifi?.hostId === h.id && v.unifi.mac === d.mac)?.id || null);
       syncUnifiDevices(h, r.data.devices);
+      watchWan(h, r.data.health);
+      carrierLogoSoon();
     }
     if (h.type === 'idrac' || h.type === 'unifi') histRecord('power:total', measuredWatts().total, now);
   } else {
@@ -4539,6 +4675,7 @@ function loadStatic() {
     'services.html': 'services.html',
     'docs.html': 'docs.html',
     'updates.html': 'updates.html',
+    'log.html': 'log.html',
     'energy.html': 'energy.html',
     'wall.html': 'wall.html',
     'offline.html': 'offline.html',
@@ -4550,6 +4687,7 @@ function loadStatic() {
     '/static/icons/apple-touch-icon.png': 'icons/apple-touch-icon.png',
     '/static/js/energy.js': 'js/energy.js',
     '/static/js/updates.js': 'js/updates.js',
+    '/static/js/log.js': 'js/log.js',
     '/static/js/services.js': 'js/services.js',
     '/static/js/docs.js': 'js/docs.js',
     '/static/js/markdown.js': 'js/markdown.js',
@@ -4786,6 +4924,184 @@ function sendLogo(req, res) {
   return res.end(data);
 }
 
+// --- Fetching from the internet (the provider's logo) ---
+// Only https, only public addresses (checked again after every redirect, and the connection goes to
+// the address that was checked), size and time limited. PUBLIC_FETCH_ALLOW_LOCAL, PUBLIC_FETCH_CA
+// and PUBLIC_FETCH_ONLY (the hosts it may reach) exist for the tests.
+function isPublicAddress(ip) {
+  if (process.env.PUBLIC_FETCH_ALLOW_LOCAL === '1') return true;
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)));
+  }
+  const v = ip.toLowerCase();
+  if (v.startsWith('::ffff:')) return isPublicAddress(v.slice(7));
+  return !(v === '::' || v === '::1' || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith('ff'));
+}
+
+async function fetchPublic(link, { accept = '*/*', maxBytes = 1 << 20, hops = 4 } = {}) {
+  let url;
+  try {
+    url = new URL(link);
+  } catch {
+    throw new UserError('Not a valid link');
+  }
+  for (let i = 0; i <= hops; i++) {
+    if (url.protocol !== 'https:') throw new UserError('Only https:// links are fetched');
+    if (url.username || url.password) throw new UserError('Links with a user name or password are not fetched');
+    const host = url.hostname.replace(/^\[|\]$/g, '');
+    const port = url.port ? Number(url.port) : 443;
+    if (process.env.PUBLIC_FETCH_ONLY && !process.env.PUBLIC_FETCH_ONLY.split(',').includes(host)) throw new UserError(`${host} is not reachable from the tests`);
+    const addrs = net.isIP(host) ? [{ address: host }] : await dns.promises.lookup(host, { all: true }).catch(() => []);
+    if (!addrs.length) throw new UserError(`Could not find ${host}`);
+    if (!addrs.every((a) => isPublicAddress(a.address))) throw new UserError(`${host} is not on the public internet`);
+    const ca = process.env.PUBLIC_FETCH_CA ? fs.readFileSync(process.env.PUBLIC_FETCH_CA) : undefined;
+    const sock = new Promise((resolve, reject) => {
+      const t = tls.connect({ host: addrs[0].address, port, servername: net.isIP(host) ? undefined : host, minVersion: 'TLSv1.2', ALPNProtocols: ['http/1.1'], rejectUnauthorized: true, ...(ca ? { ca } : {}),
+        checkServerIdentity: (_h, cert) => tls.checkServerIdentity(host, cert) });
+      const timer = setTimeout(() => t.destroy(new UserError('Connection timed out')), 8000);
+      t.once('secureConnect', () => (clearTimeout(timer), resolve(t)));
+      t.once('error', (e) => (clearTimeout(timer), reject(friendlyNetError(e))));
+    });
+    const r = await httpsRequest(sock, `${host.includes(':') ? `[${host}]` : host}:${port}`, { path: `${url.pathname}${url.search}`, headers: { Accept: accept, 'User-Agent': 'homelab-dashboard (logo lookup)' }, binary: true, timeoutMs: 8000, maxBytes });
+    if ([301, 302, 303, 307, 308].includes(r.status) && r.headers.location) {
+      url = new URL(r.headers.location, url);
+      continue;
+    }
+    if (r.status !== 200) throw new UserError(`HTTP ${r.status} from ${host}`);
+    return { url, body: r.body, type: String(r.headers['content-type'] || '') };
+  }
+  throw new UserError('Too many redirects');
+}
+
+// A logo file from the web: PNG/JPEG/WebP/SVG as for uploads, or the PNG inside a .ico
+function webLogo(buf) {
+  if (buf.length > 6 && buf.readUInt16LE(0) === 0 && buf.readUInt16LE(2) === 1) {
+    let best = null;
+    for (let i = 0, n = buf.readUInt16LE(4); i < n && 6 + i * 16 + 16 <= buf.length; i++) {
+      const size = buf.readUInt32LE(6 + i * 16 + 8);
+      const off = buf.readUInt32LE(6 + i * 16 + 12);
+      if (off + size <= buf.length && sniffImage(buf.subarray(off, off + 8)) === 'image/png' && (!best || size > best.size)) best = { size, off };
+    }
+    if (!best) throw new UserError('Only an old-style .ico, no PNG inside');
+    return sanitizeImage(buf.subarray(best.off, best.off + best.size));
+  }
+  return sanitizeLogo(buf);
+}
+
+// The provider's logo, found from who owns the public IP: the registry record (RDAP) names the
+// provider's domains (its e-mail addresses and links), then that website's own icon is used.
+const RDAP_BASE = process.env.RDAP_URL || 'https://rdap.org';
+const REGISTRIES = /(^|\.)(ripe\.net|arin\.net|apnic\.net|lacnic\.net|afrinic\.net|rdap\.org|iana\.org|nic\.ad\.jp)$/;
+const registrable = (d) => {
+  const parts = d.toLowerCase().replace(/\.$/, '').split('.');
+  return parts.length > 2 && /^(co|com|net|org|ac|gov|or|ne)$/.test(parts[parts.length - 2]) ? parts.slice(-3).join('.') : parts.slice(-2).join('.');
+};
+
+async function findCarrierLogo(isp, ip) {
+  const counts = new Map();
+  let country = null;
+  const bump = (d, n = 1) => {
+    const r = registrable(d);
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(r) && !REGISTRIES.test(r)) counts.set(r, (counts.get(r) || 0) + n);
+  };
+  const tried = [];
+  try {
+    const r = await fetchPublic(`${RDAP_BASE}/ip/${encodeURIComponent(ip)}`, { accept: 'application/rdap+json, application/json' });
+    const j = JSON.parse(r.body.toString('utf8'));
+    if (typeof j.country === 'string' && /^[A-Za-z]{2}$/.test(j.country)) country = j.country.toLowerCase();
+    const walk = (o, depth) => {
+      if (depth > 8 || o === null || o === undefined) return;
+      if (Array.isArray(o)) return o.forEach((x) => walk(x, depth + 1));
+      if (typeof o === 'object') return Object.values(o).forEach((x) => walk(x, depth + 1));
+      if (typeof o !== 'string') return;
+      for (const m of o.matchAll(/[a-z0-9._%+-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi)) bump(m[1]);
+      for (const m of o.matchAll(/https?:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi)) bump(m[1]);
+    };
+    walk(j, 0);
+  } catch (e) {
+    tried.push(`registry: ${e.message}`);
+  }
+  // the provider's own name as a domain too (Telenor Norge → telenor.no, telenor.com)
+  const word = String(isp || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9 ]/g, '').split(' ').find((w) => w.length >= 3);
+  if (word) {
+    // its own domains first, then its name as a domain, and only then other domains the record names
+    // (an IP block can be registered by someone else, and their logo would be the wrong one)
+    for (const [d, n] of counts) if (d.split('.')[0].includes(word)) counts.set(d, n + 100);
+    if (country && country !== 'us') bump(`${word}.${country}`, 50);
+    bump(`${word}.com`, 49);
+  }
+  const domains = [...counts].sort((a, b) => b[1] - a[1]).map(([d]) => d).slice(0, 4);
+  for (const domain of domains) {
+    const links = [];
+    try {
+      const page = await fetchPublic(`https://${domain}/`, { accept: 'text/html', maxBytes: 768 << 10 });
+      const html = page.body.toString('utf8');
+      for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
+        const rel = /\brel\s*=\s*["']?([^"'>]+)/i.exec(tag)?.[1]?.toLowerCase() || '';
+        const href = /\bhref\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
+        if (!href || !/icon/.test(rel) || /mask-icon/.test(rel)) continue;
+        const size = Number(/\bsizes\s*=\s*["']?(\d+)/i.exec(tag)?.[1] || 0);
+        const score = (/apple-touch/.test(rel) ? 300 : 0) + (/\.svg(\?|$)/i.test(href) ? 250 : 0) + Math.min(size, 256) - (/\.ico(\?|$)/i.test(href) ? 200 : 0);
+        try {
+          links.push({ url: new URL(href.replace(/&amp;/g, '&'), page.url).href, score });
+        } catch {
+          /* a broken link */
+        }
+      }
+    } catch (e) {
+      tried.push(`${domain}: ${e.message}`);
+    }
+    links.sort((a, b) => b.score - a.score);
+    for (const link of [...links.slice(0, 3).map((l) => l.url), `https://${domain}/apple-touch-icon.png`, `https://${domain}/favicon.ico`]) {
+      try {
+        const got = await fetchPublic(link, { accept: 'image/*' });
+        const icon = storeIcon(got.body, `carrier:${domain}`, webLogo);
+        return { domain, iconId: icon.id, from: link };
+      } catch (e) {
+        tried.push(`${link}: ${e.message}`);
+      }
+    }
+  }
+  return { domain: null, iconId: null, error: domains.length ? `No usable logo on ${domains.join(', ')}` : 'The registry named no website for this provider', tried: tried.slice(0, 12) };
+}
+
+function currentWan() {
+  for (const h of config.hosts.filter((x) => x.type === 'unifi')) {
+    const w = results.get(h.id)?.data?.health?.wan;
+    if (w?.ip) return w;
+  }
+  return null;
+}
+
+let carrierRunning = null;
+function carrierLogoSoon(force = false) {
+  if (config.settings.dashboard.carrierLogo?.kind !== 'auto' || carrierRunning) return carrierRunning;
+  const wan = currentWan();
+  if (!wan?.isp) return null;
+  const c = alertState.carrier || {};
+  if (!force && c.isp === wan.isp && (c.iconId || Date.now() - (c.at || 0) < 7 * 864e5)) return null; // known, or tried this week
+  carrierRunning = findCarrierLogo(wan.isp, wan.ip).then((r) => {
+    alertState.carrier = { isp: wan.isp, at: Date.now(), ...r };
+    alertsDirty = true;
+    saveAlertState();
+    if (r.iconId) event('network', `Logo found for ${wan.isp} at ${r.domain}`, r.from);
+    else event('network', `No logo found for ${wan.isp}`, [r.error, ...(r.tried || [])].join('; '));
+    pruneIcons();
+    saveConfig();
+    return alertState.carrier;
+  }).catch((e) => log('Provider logo lookup failed:', e.message)).finally(() => (carrierRunning = null));
+  return carrierRunning;
+}
+
+function carrierLogoUrl() {
+  const cl = config.settings.dashboard.carrierLogo || { kind: 'auto' };
+  if (cl.kind === 'file') return config.icons.some((i) => i.id === cl.id) ? `/media/icon/${cl.id}` : null;
+  if (cl.kind !== 'auto') return null;
+  const c = alertState.carrier;
+  return c?.iconId && config.icons.some((i) => i.id === c.iconId) && c.isp === currentWan()?.isp ? `/media/icon/${c.iconId}` : null;
+}
+
 function readRawBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const declared = parseInt(req.headers['content-length'] || '0', 10);
@@ -4885,6 +5201,7 @@ function sendPage(res, key, session, edit = (html) => html) {
 // What visitors of a public dashboard don't get: addresses (UniFi reports WAN and LAN IPs) and
 // software versions, which tell an attacker what to try. Names and status stay.
 function forVisitors(payload) {
+  payload.notices = []; // they carry the public IP
   payload.unifi = payload.unifi.map((h) => (h.data ? {
     ...h,
     data: {
@@ -4974,6 +5291,8 @@ function dashboardPayload() {
   return {
     title: s.title,
     carrier: s.carrier || null,
+    carrierLogo: carrierLogoUrl(),
+    notices: alertState.notices,
     refreshSeconds: s.refreshSeconds,
     homeServices: s.homeServices,
     vms: s.vms,
@@ -5017,7 +5336,7 @@ async function handleLogin(req, res) {
   if (!(userOk && passOk)) {
     registerFailure('ip:' + ip, 5);
     registerFailure('global', 20);
-    log(`Failed login from ${ip}`);
+    event('sign-in', `Failed sign-in from ${ip}`);
     await new Promise((r) => setTimeout(r, 400 + crypto.randomInt(400)));
     return sendError(res, 401, 'Invalid username or password');
   }
@@ -5027,7 +5346,9 @@ async function handleLogin(req, res) {
   createSession(req, res, admin.username);
   const known = rememberedFor(req);
   if (body.remember === true && !known) rememberDevice(req, res, admin);
-  log(`Admin login from ${ip}${body.remember === true && !known ? ' (device remembered for viewing)' : ''}`);
+  const ctx = requestCtx.getStore();
+  if (ctx) ctx.user = admin.username;
+  event('sign-in', `Signed in from ${ip}${body.remember === true && !known ? ' (device remembered for viewing)' : ''}`);
   sendJson(res, 200, { ok: true, remembered: Boolean(known) || body.remember === true });
 }
 
@@ -5134,7 +5455,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/admin/remembered' && m === 'DELETE') {
     for (const r of [...remembered.values()]) forgetDevice(r);
     saveRemembered();
-    log('All remembered devices signed out');
+    event('sign-in', 'All remembered devices signed out');
     return sendJson(res, 200, { ok: true });
   }
   const rmd = p.match(/^\/api\/admin\/remembered\/([0-9a-f]{16})$/);
@@ -5143,7 +5464,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (!rec) return sendError(res, 404, 'Not found');
     forgetDevice(rec);
     saveRemembered();
-    log(`Remembered device signed out: ${rec.name}`);
+    event('sign-in', `Remembered device signed out: ${rec.name}`);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -5165,6 +5486,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       builtinBackgrounds: BUILTIN_BACKGROUNDS,
       logoIcons: LOGO_ICONS,
       logoColors: LOGO_COLORS,
+      carrierAuto: { ...alertState.carrier, current: currentWan()?.isp || null, url: carrierLogoUrl() },
       backgrounds: config.backgrounds,
       rack: config.rack,
       rackKinds: RACK_KINDS,
@@ -5176,11 +5498,14 @@ async function handleApi(req, res, url, session, viewer = null) {
     const body = await readBody(req);
     const prevRefresh = config.settings.dashboard.refreshSeconds;
     const prevPower = JSON.stringify(config.settings.power);
+    const before = structuredClone(config.settings);
     config.settings = validateSettings(body, config.settings);
     saveConfig();
     if (config.settings.dashboard.refreshSeconds !== prevRefresh) schedulePolling();
     else if (JSON.stringify(config.settings.power) !== prevPower) ensurePrices().catch(() => {});
-    log('Settings updated');
+    const what = changesText(before, config.settings);
+    if (what) event('settings', `Settings changed: ${what.split('; ').map((x) => x.split(':')[0]).slice(0, 4).join(', ')}${what.split('; ').length > 4 ? ', …' : ''}`, what);
+    else requestCtx.getStore().logged = true; // saved without changes
     return sendJson(res, 200, { settings: config.settings });
   }
 
@@ -5196,7 +5521,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     config.devices.push(dev);
     config.hosts.push(h);
     saveConfig();
-    log(`Host added: ${type} ${h.name}`);
+    event('devices', `Connection added: ${type} ${h.name}`);
     pollHost(h);
     return sendJson(res, 201, { host: publicHost(h) });
   }
@@ -5227,7 +5552,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       config.hosts[config.hosts.indexOf(old)] = next;
       saveConfig();
       forgetHost(old.id);
-      log(`Host updated: ${next.type} ${next.name}`);
+      event('devices', `Connection updated: ${next.type} ${next.name}`);
       pollHost(next);
       return sendJson(res, 200, { host: publicHost(next), note: secretNote });
     }
@@ -5239,7 +5564,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       saveConfig();
       forgetHost(old.id);
       recheckAlerts();
-      log(`Host removed: ${old.type} ${old.name}`);
+      event('devices', `Connection removed: ${old.type} ${old.name}`);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -5250,7 +5575,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const old = await applyServer(next); // throws (and changes nothing) if a port can't be used
     config.settings.server = next;
     saveConfig();
-    log(`Web server settings changed: ${JSON.stringify(serverUrls())}`);
+    event('system', 'Web server settings changed', JSON.stringify(serverUrls()));
     sendJson(res, 200, serverStatus());
     closeListeners(old); // after the response, so the browser gets it on the old port
     return;
@@ -5259,7 +5584,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/admin/rack' && m === 'PUT') {
     config.rack = validateRackSettings(await readBody(req));
     saveConfig();
-    log('Rack settings updated');
+    event('devices', 'Rack settings changed');
     return sendJson(res, 200, { rack: config.rack });
   }
 
@@ -5294,7 +5619,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     config.devices.push(dev);
     config.hosts.push(...built.map((b) => b.host));
     saveConfig();
-    log(`Device added: ${dev.name} (${built.map((b) => b.host.type).join(', ') || 'no connections'})`);
+    event('devices', `Device added: ${dev.name} (${built.map((b) => b.host.type).join(', ') || 'no connections'})`);
     built.forEach((b) => pollHost(b.host));
     return sendJson(res, 201, { device: dev, notes: built.map((b) => b.note).filter(Boolean) });
   }
@@ -5304,14 +5629,18 @@ async function handleApi(req, res, url, session, viewer = null) {
     const dev = findDevice(dm[1]);
     if (dm[2] && m === 'PUT') {
       // Drag in the rack view: only placement changes
+      const was = placeText(dev);
       Object.assign(dev, validatePlacement({ ...dev, ...(await readBody(req)) }, dev.id, dev.name));
       saveConfig();
+      if (placeText(dev) !== was) event('devices', `Device moved: ${dev.name}`, `${was} → ${placeText(dev)}`);
+      else requestCtx.getStore().logged = true;
       return sendJson(res, 200, { device: dev });
     }
     if (!dm[2] && m === 'PUT') {
       const body = await readBody(req);
       const fields = validateDeviceFields(body, dev.id);
       const existing = deviceHosts(dev);
+      const before = deviceSnapshot(dev);
       // Without a connections list (e.g. "show again"), the connections are left as they are
       const list = body.connections === undefined ? existing.map((h) => ({ ...h, id: h.id, secret: undefined })) : body.connections;
       const built = validateConnections(list).map((c) => {
@@ -5330,7 +5659,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       const changed = built.map((b) => b.host).filter((h) => !existing.some((o) => o.id === h.id && same(o, h)));
       for (const h of [...removed, ...changed]) forgetHost(h.id);
       changed.forEach((h) => pollHost(h));
-      log(`Device updated: ${dev.name}`);
+      event('devices', `Device updated: ${dev.name}`, changesText(before, deviceSnapshot(dev)) || null);
       return sendJson(res, 200, { device: dev, notes: built.map((b) => b.note).filter(Boolean) });
     }
     if (!dm[2] && m === 'DELETE') {
@@ -5339,6 +5668,7 @@ async function handleApi(req, res, url, session, viewer = null) {
         dev.hidden = true;
         saveConfig();
         recheckAlerts();
+        event('devices', `Device hidden: ${dev.name}`);
         return sendJson(res, 200, { hidden: true });
       }
       const removed = deviceHosts(dev);
@@ -5347,7 +5677,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       saveConfig();
       removed.forEach((h) => forgetHost(h.id));
       recheckAlerts();
-      log(`Device removed: ${dev.name}`);
+      event('devices', `Device removed: ${dev.name}`);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -5421,7 +5751,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const rec = { id, mime, bytes: data.length, name, uploadedAt: Date.now() };
     config.backgrounds.push(rec);
     saveConfig();
-    log(`Background uploaded (${mime}, ${data.length} bytes)`);
+    event('settings', `Background image uploaded (${mime}, ${data.length} bytes)`);
     return sendJson(res, 201, { background: rec });
   }
 
@@ -5455,14 +5785,14 @@ async function handleApi(req, res, url, session, viewer = null) {
     const { svc, note } = buildService(null, await readBody(req));
     config.services.push(svc);
     saveConfig();
-    log(`Service added: ${svc.name}`);
+    event('services', `Service added: ${svc.name}`);
     pollService(svc);
     return sendJson(res, 201, { service: publicService(svc), note });
   }
   if (p === '/api/admin/services/layout' && m === 'PUT') {
     saveServicesLayout(await readBody(req));
     saveConfig();
-    log('Services layout updated');
+    event('services', 'Services layout changed');
     return sendJson(res, 200, { ...servicesPayload(true), loggedIn: true, title: config.settings.dashboard.title });
   }
   if (p === '/api/admin/services/order' && m === 'PUT') {
@@ -5495,6 +5825,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (!old) throw Object.assign(new UserError('Service not found'), { status: 404 });
     if (m === 'PUT') {
       const { svc, note } = buildService(old, await readBody(req));
+      event('services', `Service updated: ${svc.name}`, changesText(old, svc, ['id', 'updatedAt', 'createdAt', 'secretHost']) || null);
       config.services[config.services.indexOf(old)] = svc;
       pruneIcons();
       saveConfig();
@@ -5508,7 +5839,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       saveConfig();
       forgetService(old.id);
       recheckAlerts();
-      log(`Service removed: ${old.name}`);
+      event('services', `Service removed: ${old.name}`);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -5518,11 +5849,14 @@ async function handleApi(req, res, url, session, viewer = null) {
     const { key, days } = await readBody(req);
     const a = attentionList().find((x) => x.key === key);
     if (!a) throw new UserError('This warning is no longer active');
-    if (days === 0) delete alertState.snoozed[key];
+    if (days === 0) {
+      delete alertState.snoozed[key];
+      event('alerts', `Snooze ended: ${a.subject ? `${a.subject}: ` : ''}${a.text}`);
+    }
     else if (SNOOZE_DAYS.includes(days)) {
       alertState.snoozed[key] = { until: Date.now() + days * 864e5, severity: a.severity, by: session.user };
       for (const k of Object.keys(alertState.snoozed).slice(0, -500)) delete alertState.snoozed[k]; // a bound, not a feature
-      log(`Snoozed for ${days === 1 ? '1 day' : `${days} days`}: ${a.subject ? `${a.subject}: ` : ''}${a.text}`);
+      event('alerts', `Snoozed for ${days === 1 ? '1 day' : `${days} days`}: ${a.subject ? `${a.subject}: ` : ''}${a.text}`);
     } else throw new UserError('Snooze for 1 or 7 days');
     alertsDirty = true;
     saveAlertState();
@@ -5557,6 +5891,58 @@ async function handleApi(req, res, url, session, viewer = null) {
     const icon = await fetchLibraryIcon(String(name || ''));
     saveConfig();
     return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
+  }
+  // --- Change log ---
+  if ((p === '/api/admin/events' && m === 'GET') || (p === '/api/admin/events.csv' && m === 'GET')) {
+    const cat = url.searchParams.get('cat') || '';
+    const q = String(url.searchParams.get('q') || '').toLowerCase().slice(0, 100);
+    const before = Number(url.searchParams.get('before')) || Infinity;
+    const from = Number(url.searchParams.get('from')) || 0;
+    const match = (e) => (!cat || e.cat === cat) && e.t >= from && (!q || `${e.text} ${e.detail || ''} ${e.by || ''}`.toLowerCase().includes(q));
+    if (p.endsWith('.csv')) {
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/^[=+\-@\t\r]/, "'$&")}"`; // no formulas in Excel
+      const rows = events.filter(match).reverse().map((e) => [new Date(e.t).toISOString(), e.cat, e.text, e.detail || '', e.by || ''].map(cell).join(','));
+      const body = Buffer.from(`\uFEFF"Time (UTC)","Category","What","Details","By"\r\n${rows.join('\r\n')}\r\n`);
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="homelab-log-${new Date().toISOString().slice(0, 10)}.csv"`, 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+      return res.end(body);
+    }
+    const out = [];
+    for (let i = events.length - 1; i >= 0 && out.length < 201; i--) if (events[i].t < before && match(events[i])) out.push(events[i]);
+    return sendJson(res, 200, { events: out.slice(0, 200), more: out.length > 200, categories: EVENT_CATS, keepDays: EVENT_DAYS, total: events.length, title: config.settings.dashboard.title });
+  }
+
+  if (p === '/api/admin/carrier-logo/url' && m === 'POST') {
+    const { url: link } = await readBody(req);
+    const got = await fetchPublic(String(link || '').trim(), { accept: 'image/*' });
+    const icon = storeIcon(got.body, `link:${got.url.hostname}`, webLogo);
+    saveConfig();
+    return sendJson(res, 201, { icon: { id: icon.id, source: icon.source } });
+  }
+  if (p === '/api/admin/carrier-logo/auto' && m === 'POST') {
+    if (!currentWan()?.isp) throw new UserError('The UniFi console has not reported a provider yet');
+    config.settings.dashboard.carrierLogo = { kind: 'auto' };
+    saveConfig();
+    const r = await carrierLogoSoon(true);
+    return sendJson(res, 200, { carrier: r || alertState.carrier, url: carrierLogoUrl() });
+  }
+  if (p === '/api/admin/notices' && m === 'DELETE') {
+    // close every notice
+    const n = alertState.notices.length;
+    alertState.notices = [];
+    alertsDirty = true;
+    saveAlertState();
+    if (n) event('network', `Closed ${n} notice${n === 1 ? '' : 's'}`);
+    return sendJson(res, 200, { ok: true });
+  }
+  const nm = p.match(/^\/api\/admin\/notices\/([0-9a-f]{16})$/);
+  if (nm && m === 'DELETE') {
+    const n = alertState.notices.find((x) => x.id === nm[1]);
+    if (!n) throw Object.assign(new UserError('Already closed'), { status: 404 });
+    alertState.notices = alertState.notices.filter((x) => x !== n);
+    alertsDirty = true;
+    saveAlertState();
+    event('network', `Notice closed: ${n.title} (${n.detail})`);
+    return sendJson(res, 200, { ok: true });
   }
   if (p === '/api/admin/logo' && m === 'POST') {
     const icon = storeIcon(await readRawBody(req, 1 << 20), 'logo', sanitizeLogo);
@@ -5692,7 +6078,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     config.alerts = { ...config.alerts, rules, settings: { resolved: b.settings?.resolved !== false, repeatHours } };
     saveConfig();
     recheckAlerts();
-    log('Alert rules updated');
+    event('alerts', 'Alert rules changed');
     return sendJson(res, 200, alertsStatus());
   }
   if (p === '/api/admin/alerts/test' && m === 'POST') {
@@ -5719,7 +6105,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     config.alerts.channels.push(c);
     for (const r of Object.values(config.alerts.rules)) if (r.enabled) r.channels.push(c.id); // adjust per alert in the table
     saveConfig();
-    log(`Alert channel added: ${c.name} (${c.type})`);
+    event('alerts', `Alert channel added: ${c.name} (${c.type})`);
     return sendJson(res, 201, { channel: publicChannel(c), status: alertsStatus() });
   }
   const ac = p.match(/^\/api\/admin\/alerts\/channels\/([0-9a-f-]{36})(\/test)?$/);
@@ -5744,7 +6130,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       }
       config.alerts.channels = config.alerts.channels.map((c) => (c.id === old.id ? next : c));
       saveConfig();
-      log(`Alert channel updated: ${next.name}`);
+      event('alerts', `Alert channel updated: ${next.name}`);
       return sendJson(res, 200, { channel: publicChannel(next), note, status: alertsStatus() });
     }
     if (!ac[2] && m === 'DELETE') {
@@ -5754,7 +6140,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       alertsDirty = true;
       saveConfig();
       saveAlertState();
-      log(`Alert channel deleted: ${old.name}`);
+      event('alerts', `Alert channel deleted: ${old.name}`);
       return sendJson(res, 200, alertsStatus());
     }
   }
@@ -5813,7 +6199,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     saveEnergy();
     fs.writeFileSync(path.join(LOCAL_BACKUP_DIR, backupStamp('-pre-restore')), await encryptBackup(backupBundle(), passphrase), { mode: 0o600 });
     await restoreBundle(bundle, opts);
-    log(`Restored backup from ${new Date(bundle.createdAt).toISOString()} (${bundle.host})`);
+    event('system', `Backup restored from ${new Date(bundle.createdAt).toISOString()} (${bundle.host})`);
     return sendJson(res, 200, { ok: true, createdAt: bundle.createdAt, host: bundle.host });
   }
   const lb = p.match(/^\/api\/admin\/backup\/local\/(homelab-dashboard-[0-9a-z-]+\.hldb)$/);
@@ -5948,7 +6334,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (!(await verifyPassword(String(body.current || '').slice(0, 1024), admin.hash))) {
       registerFailure('ip:' + ip, 5);
       registerFailure('global', 20);
-      log(`Wrong current password on password change from ${ip}`);
+      event('sign-in', `Wrong current password on password change from ${ip}`);
       throw new UserError('Current password is incorrect');
     }
     const problem = passwordProblem(body.password);
@@ -5960,11 +6346,49 @@ async function handleApi(req, res, url, session, viewer = null) {
     for (const r of [...remembered.values()]) if (r !== here) forgetDevice(r);
     if (here) here.pw = changedAt;
     saveRemembered();
-    log('Admin password changed; other sessions and remembered devices signed out');
+    event('sign-in', 'Admin password changed; other sessions and remembered devices signed out');
     return sendJson(res, 200, { ok: true });
   }
 
   sendError(res, 404, 'Not found');
+}
+
+// Requests that change nothing (tests, look-ups, sign-in) get no line of their own
+const QUIET = [/^\/api\/(login|logout|session)$/, /\/test(-connection)?$/, /\/keyscan$/, /\/fingerprint$/, /^\/api\/admin\/icons/, /^\/api\/admin\/(logo|carrier-logo\/url)$/, /^\/api\/admin\/backup\/download$/, /^\/api\/admin\/updates\/check$/];
+const CHANGE_NAMES = [
+  [/^\/api\/admin\/settings$/, 'settings', 'settings'],
+  [/^\/api\/admin\/hosts/, 'devices', 'connection'],
+  [/^\/api\/admin\/server$/, 'system', 'web server settings'],
+  [/^\/api\/admin\/rack\/passive/, 'devices', 'rack panel'],
+  [/^\/api\/admin\/rack$/, 'devices', 'rack settings'],
+  [/^\/api\/admin\/devices/, 'devices', 'device'],
+  [/^\/api\/admin\/layout$/, 'settings', 'Home layout'],
+  [/^\/api\/admin\/wall$/, 'settings', 'wall display layout'],
+  [/^\/api\/admin\/backgrounds/, 'settings', 'background image'],
+  [/^\/api\/admin\/services\/layout$/, 'services', 'services layout'],
+  [/^\/api\/admin\/services\/order$/, 'services', 'services order'],
+  [/^\/api\/admin\/services/, 'services', 'service'],
+  [/^\/api\/docs\/servers/, 'docs', 'server sheet'],
+  [/^\/api\/docs\/nav$/, 'docs', 'docs menu'],
+  [/^\/api\/docs\/network$/, 'docs', 'network plan'],
+  [/^\/api\/docs\/deleted/, 'docs', 'deleted docs page'],
+  [/^\/api\/docs\/pages/, 'docs', 'docs page'],
+  [/^\/api\/admin\/alerts\/channels/, 'alerts', 'alert channel'],
+  [/^\/api\/admin\/alerts$/, 'alerts', 'alert rules'],
+  [/^\/api\/admin\/backup\/run$/, 'system', 'backup (run now)'],
+  [/^\/api\/admin\/backup\/destinations/, 'system', 'backup destination'],
+  [/^\/api\/admin\/backup\/local/, 'system', 'local backup file'],
+  [/^\/api\/admin\/backup/, 'system', 'backup settings'],
+  [/^\/api\/admin\/remembered/, 'sign-in', 'remembered device'],
+  [/^\/api\/admin\/notices/, 'network', 'notice'],
+  [/^\/api\/admin\/carrier-logo/, 'settings', 'internet provider logo'],
+];
+function changeName(p, m) {
+  if (QUIET.some((re) => re.test(p))) return null;
+  const hit = CHANGE_NAMES.find(([re]) => re.test(p));
+  const what = hit ? hit[2] : p.replace(/^\/api\/(admin\/)?/, '').replace(/\/[0-9a-f-]{16,}/g, '');
+  const verb = m === 'DELETE' ? 'Removed' : m === 'POST' ? 'Added or ran' : 'Changed';
+  return { cat: hit ? hit[1] : 'system', text: `${verb}: ${what}` };
 }
 
 async function handle(req, res) {
@@ -5984,7 +6408,16 @@ async function handle(req, res) {
   const sees = Boolean(seer || config.settings.dashboard.public);
 
   try {
-    if (p.startsWith('/api/')) return await handleApi(req, res, url, session, viewer);
+    if (p.startsWith('/api/')) {
+      const ctx = { user: session?.user || null, logged: false };
+      await requestCtx.run(ctx, () => handleApi(req, res, url, session, viewer));
+      // a change no route described itself still goes in the change log
+      if (session && req.method !== 'GET' && res.statusCode < 400 && !ctx.logged) {
+        const c = changeName(p, req.method);
+        if (c) requestCtx.run(ctx, () => event(c.cat, c.text));
+      }
+      return;
+    }
     if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
 
     if (p === '/login') {
@@ -6007,6 +6440,7 @@ async function handle(req, res) {
     }
     if (p === '/docs') return seer ? sendPage(res, 'docs.html', seer) : redirect(res, '/login?next=docs');
     if (p === '/updates') return seer ? sendPage(res, 'updates.html', seer) : redirect(res, '/login?next=updates');
+    if (p === '/log') return session ? sendPage(res, 'log.html', session) : redirect(res, '/login?next=log');
     if (p === '/energy') {
       if (!sees) return redirect(res, '/login?next=energy');
       return sendPage(res, 'energy.html', seer);
@@ -6417,7 +6851,7 @@ const testMessage = () => ({ site: config.settings.dashboard.title, severity: 't
 
 // --- State and evaluation ---
 
-let alertState = { active: {}, log: [], channels: {}, snoozed: {} };
+let alertState = { active: {}, log: [], channels: {}, snoozed: {}, seen: {}, wan: {}, notices: [], carrier: {} };
 let alertsDirty = false;
 let alertsRunning = false;
 let alertsAgain = false; // a check was asked for while one was running
@@ -6425,7 +6859,7 @@ let alertsAgain = false; // a check was asked for while one was running
 function loadAlertState() {
   const s = readJson(ALERTS_FILE, null);
   const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels), snoozed: obj(s?.snoozed) };
+  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels), snoozed: obj(s?.snoozed), seen: obj(s?.seen), wan: obj(s?.wan), notices: Array.isArray(s?.notices) ? s.notices.slice(0, 20) : [], carrier: obj(s?.carrier) };
 }
 
 function saveAlertState() {
@@ -6547,13 +6981,18 @@ function alertConditions(all = false) {
   return out;
 }
 
-async function evaluateAlerts(now = Date.now()) {
+function evaluateAlerts(now = Date.now()) {
+  return requestCtx.exit(() => evaluateAlertsNow(now));
+}
+
+async function evaluateAlertsNow(now) {
   if (alertsRunning) {
     alertsAgain = true; // run once more when this one is done
     return;
   }
   alertsRunning = true;
   try {
+    logProblems();
     const cond = alertConditions();
     const { rules, settings } = config.alerts;
     const events = [];
@@ -6596,6 +7035,27 @@ async function evaluateAlerts(now = Date.now()) {
   }
 }
 
+// Every problem the dashboard shows goes in the change log when it starts and when it clears,
+// whether or not a notification is set up for it. Hosts without fresh data keep theirs.
+function logProblems() {
+  const seen = alertState.seen || (alertState.seen = {});
+  const now = new Map(attentionList().map((a) => [a.key, a]));
+  for (const [key, a] of now) {
+    if (seen[key]) continue;
+    seen[key] = { text: `${a.subject ? `${a.subject}: ` : ''}${a.text}`, severity: a.severity };
+    event('alerts', `${a.severity === 'critical' ? 'Fault' : 'Warning'}: ${seen[key].text}`, a.detail || null);
+    alertsDirty = true;
+  }
+  for (const key of Object.keys(seen)) {
+    if (now.has(key)) continue;
+    const owner = key.split(':')[1];
+    if (results.get(owner) && results.get(owner).ok === false && !key.startsWith('offline:')) continue; // no fresh data: unknown
+    event('alerts', `Cleared: ${seen[key].text}`);
+    delete seen[key];
+    alertsDirty = true;
+  }
+}
+
 const recheckAlerts = () => setImmediate(() => evaluateAlerts().catch((e) => log('Alert check failed:', e.message)));
 
 // One-off events (a failed backup): sent right away, nothing to resolve
@@ -6620,7 +7080,11 @@ async function deliverAlerts(events, now) {
     const r = await sendToChannel(ch, alertMessage(idx.map((i) => events[i])));
     for (const i of idx) entries[i].sent.push({ id: ch.id, name: ch.name, ok: r.ok, ...(r.ok ? {} : { error: r.error }) });
   }));
-  for (const e of entries) log(`Alert ${e.event}: ${e.title}${e.sent.length ? ` → ${e.sent.map((s) => `${s.name} ${s.ok ? 'ok' : 'FAILED'}`).join(', ')}` : ' (no channel)'}`);
+  for (const e of entries) {
+    const line = `Alert ${e.event}: ${e.title}`;
+    if (e.sent.length) event('alerts', `Notification sent (${e.event}): ${e.title}`, e.sent.map((s) => `${s.name} ${s.ok ? 'ok' : `FAILED: ${s.error || ''}`}`).join(', '));
+    else log(`${line} (no channel)`);
+  }
   alertState.log = [...entries.reverse(), ...alertState.log].slice(0, 200);
   alertsDirty = true;
 }
@@ -6844,7 +7308,7 @@ async function runUpdateChecks() {
   updates = { ...updates, checkedAt: now, items };
   writeJsonAtomic(UPDATES_FILE, updates);
   const n = items.filter((x) => x.available).length;
-  log(`Update check: ${n} can be updated, ${items.filter((x) => x.error).length} could not be checked`);
+  event('system', `Update check: ${n} can be updated, ${items.filter((x) => x.error).length} could not be checked`);
 }
 
 function checkUpdates() {
@@ -6970,6 +7434,7 @@ function backupBundle() {
     },
     docs,
     docsHistory,
+    events,
     energy,
     history,
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
@@ -7103,6 +7568,14 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   history = cleanHistory(bundle.history);
   historyDirty = true;
   saveHistory();
+  // the change log comes back too (entries checked like when loading), and the restore is added to it
+  if (Array.isArray(bundle.events)) {
+    const cutoff = Date.now() - EVENT_DAYS * 864e5;
+    events = bundle.events.filter((e) => e && Number.isFinite(e.t) && e.t >= cutoff && typeof e.text === 'string')
+      .map((e) => ({ t: e.t, cat: EVENT_CATS.includes(e.cat) ? e.cat : 'system', text: String(e.text).slice(0, 400), ...(e.detail ? { detail: String(e.detail).slice(0, 2000) } : {}), ...(e.by ? { by: String(e.by).slice(0, 64) } : {}) }))
+      .sort((a, b) => a.t - b.t).slice(-EVENT_MAX);
+    rewriteEvents();
+  }
   if (admin && bundle.admin?.username && bundle.admin?.hash) {
     writeJsonAtomic(ADMIN_FILE, bundle.admin);
     for (const r of [...remembered.values()]) forgetDevice(r); // they belonged to the replaced password
@@ -7345,10 +7818,10 @@ async function runBackup(trigger) {
         entry.results.push({ id: d.id, name: d.name, ok: false, error: safeErrorMessage(e, null) });
       }
     }
-    log(`Backup ${file} (${data.length} bytes): ${entry.results.map((r) => `${r.name} ${r.ok ? 'ok' : 'FAILED'}`).join(', ') || 'local only'}`);
+    event('system', `Backup ${file} (${data.length} bytes): ${entry.results.map((r) => `${r.name} ${r.ok ? 'ok' : 'FAILED'}`).join(', ') || 'local only'}`);
   } catch (e) {
     entry.error = e instanceof UserError ? e.message : 'Backup failed';
-    log(`Backup failed: ${e.message}`);
+    event('system', `Backup failed: ${e.message}`);
   } finally {
     backupRunning = false;
     config.backup.history = [entry, ...config.backup.history].slice(0, 30);
@@ -7643,6 +8116,7 @@ async function main() {
   loadEnergy();
   loadHistory();
   loadAlertState();
+  loadEvents();
   loadUpdates();
   loadDocs();
   loadDocsHistory();
@@ -7662,7 +8136,9 @@ async function main() {
   const urls = serverUrls();
   log(`Listening on ${[urls.https, urls.http && `${urls.http}${effectiveServer(config.settings.server).http.mode === 'redirect' ? ' (redirects to HTTPS)' : ''}`].filter(Boolean).join(' and ')}`);
 
+  event('system', 'Dashboard started');
   schedulePolling();
+  setInterval(pruneEvents, 24 * 3600 * 1000).unref();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
   setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(() => rememberedDirty && saveRemembered(), 5 * 60 * 1000).unref(); // "last used"

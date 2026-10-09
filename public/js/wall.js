@@ -97,6 +97,7 @@ function renderHead(d) {
     `updated ${fmt.ago(d.generatedAt)}`,
     vms.length ? `${vms.filter((g) => g.status === 'running').length} of ${vms.length} VMs running` : null,
     d.updates?.available ? `${d.updates.available} update${d.updates.available === 1 ? '' : 's'}` : null,
+    ...(d.notices || []).map((n) => `${n.title}: ${n.detail}`), // until an admin closes it on Home
   ].filter(Boolean).join(' · ');
 }
 
@@ -177,7 +178,7 @@ function renderNet() {
     const hl = g.uh.data.health;
     const up = !hl.wan || hl.wan.status === 'ok';
     box.replaceChildren(
-      el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r', text: data.carrier || hl.wan?.isp || g.gw?.model || 'UniFi' })),
+      el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r' }, data.carrierLogo ? el('img', { class: 'carrier-logo', src: data.carrierLogo, alt: '' }) : null, data.carrier || hl.wan?.isp || g.gw?.model || 'UniFi')),
       el('div', { class: `huge${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
       el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key]) : null),
       trio([

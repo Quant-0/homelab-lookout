@@ -99,6 +99,7 @@ function s3Handle(req, res, body) {
   res.writeHead(400); res.end();
 }
 
+let wanIp = '203.0.113.45';
 const server = https.createServer(opts, (req, res) => {
   if (req.url.startsWith(`/${S3.bucket}/`) || req.url === '/__s3') {
     if (req.url === '/__s3') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ keys: [...S3.objects.keys()], requests: S3.requests })); }
@@ -110,6 +111,15 @@ const server = https.createServer(opts, (req, res) => {
   requests++;
   const u = req.url;
   if (u === '/__stats') { res.end(R({ requests, seenAuth, unifiLogins, omadaLogins })); return; }
+  // the public IP the console reports, changed by the tests
+  if (u.startsWith('/__wan?ip=')) { wanIp = decodeURIComponent(u.slice(10)); return res.end('{}'); }
+  // a registry record (RDAP) for the public IP and a logo image to fetch (provider logo tests)
+  if (u.startsWith('/rdap/ip/')) {
+    res.setHeader('Content-Type', 'application/rdap+json');
+    return res.end(R({ objectClassName: 'ip network', country: 'NO', entities: [{ roles: ['registrant'], vcardArray: ['vcard', [['fn', {}, 'text', 'Fiberlink AS'], ['email', {}, 'text', 'noc@fiberlink.invalid']]], entities: [{ roles: ['abuse'], vcardArray: ['vcard', [['email', {}, 'text', 'abuse@fiberlink.invalid']]] }] }, { roles: ['registry'], links: [{ href: 'https://rdap.db.ripe.net/entity/RIPE' }] }] }));
+  }
+  if (u === '/logo.png') { res.setHeader('Content-Type', 'image/png'); return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')); }
+  if (u === '/redirect-logo') { res.writeHead(302, { Location: '/logo.png' }); return res.end(); }
   seenAuth.push(req.headers.authorization || null);
   if (u.startsWith('/redfish/')) {
     if (req.headers.authorization !== 'Basic ' + Buffer.from('root:calvin').toString('base64')) { res.writeHead(401); return res.end('{}'); }
@@ -192,7 +202,7 @@ const server = https.createServer(opts, (req, res) => {
     ] }));
     if (u === '/proxy/network/api/s/default/stat/health') return res.end(R({ meta: { rc: 'ok' }, data: [
       { subsystem: 'wlan', num_user: 14, num_ap: 1, status: 'ok' },
-      { subsystem: 'wan', status: 'ok', wan_ip: '203.0.113.45', isp_name: 'Fiberlink' },
+      { subsystem: 'wan', status: 'ok', wan_ip: wanIp, isp_name: 'Fiberlink' },
       { subsystem: 'www', status: 'ok', latency: 7, xput_down: 912.4, xput_up: 487.1 },
       { subsystem: 'lan', num_user: 23, num_sw: 1, status: 'ok' },
     ] }));

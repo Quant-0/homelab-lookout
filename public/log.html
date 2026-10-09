@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Log · Homelab</title>
+  <link rel="icon" href="/logo">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body class="app">
+  <div class="app-bg" aria-hidden="true"></div>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Log</h1>
+      <span class="spacer"></span>
+      <a class="button" id="log-csv" href="/api/admin/events.csv" download>Download CSV</a>
+    </header>
+    <main class="log-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <section class="card log-filters" aria-label="Filter">
+        <div class="log-cats" id="log-cats" role="group" aria-label="Category"></div>
+        <label class="log-search"><span class="sr-only">Search the log</span><input type="search" id="log-q" placeholder="Search (a device, a setting, an IP …)" autocomplete="off"></label>
+      </section>
+      <section class="card log-list" aria-live="polite">
+        <div id="log-days"></div>
+        <div class="log-more"><button type="button" id="log-more" hidden>Show older</button></div>
+      </section>
+      <p class="hint" id="log-foot"></p>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/log.js"></script>
+</body>
+</html>

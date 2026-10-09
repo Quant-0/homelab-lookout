@@ -195,6 +195,7 @@ const HD = (() => {
     { key: 'energy', label: 'Energy', href: '/energy', icon: 'zap' },
     { key: 'docs', label: 'Docs', href: '/docs', icon: 'book-open', signed: true },
     { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
+    { key: 'log', label: 'Log', href: '/log', icon: 'list', admin: true },
   ];
   let shellState = { active: null, title: 'Homelab', admin: false, viewer: false, updates: 0, rack: true };
   let userName = null;
@@ -209,7 +210,7 @@ const HD = (() => {
     const navLink = (n, cls) => el('a', { class: `${cls}${n.key === st.active ? ' active' : ''}`, href: n.href, 'aria-current': n.key === st.active ? 'page' : null, title: n.label },
       icon(n.icon), el('span', { class: 'label', text: n.label }),
       n.key === 'updates' && st.updates ? el('span', { class: 'nav-badge num', text: String(st.updates), title: `${st.updates} available` }) : null);
-    const items = NAV.filter((n) => (!n.signed || signed) && (!n.rack || st.rack));
+    const items = NAV.filter((n) => (!n.signed || signed) && (!n.admin || st.admin) && (!n.rack || st.rack));
     const admin = { key: 'admin', label: 'Admin', href: st.admin ? '/admin' : '/login?next=admin', icon: 'settings' };
     const next = st.active && st.active !== 'overview' && st.active !== 'admin' ? `?next=${st.active}` : '';
     if (side) {
@@ -231,7 +232,7 @@ const HD = (() => {
     }
     if (bar) {
       const tabs = items.filter((n) => ['overview', 'rack', 'services', 'energy'].includes(n.key));
-      const more = el('button', { type: 'button', class: `tab${['docs', 'updates', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
+      const more = el('button', { type: 'button', class: `tab${['docs', 'updates', 'log', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
         icon('ellipsis'), el('span', { class: 'label', text: 'More' }), st.updates && signed ? el('span', { class: 'nav-badge num', text: String(st.updates) }) : null);
       bar.replaceChildren(...tabs.map((n) => navLink(n, 'tab')), more);
     }
@@ -255,6 +256,7 @@ const HD = (() => {
       el('div', { class: 'sheet-handle', 'aria-hidden': 'true' }),
       signed ? row('book-open', 'Docs', { href: '/docs' }) : null,
       signed ? row('circle-arrow-up', st.updates ? `Updates · ${st.updates} available` : 'Updates', { href: '/updates' }) : null,
+      st.admin ? row('list', 'Log', { href: '/log' }) : null,
       row('tv', 'Wall display', { href: '/wall' }),
       row('palette', 'Look on this device', { onclick: () => { close(); openLook(null); } }),
       signed ? row('settings', 'Admin', { href: st.admin ? '/admin' : '/login?next=admin' }) : null,
@@ -629,8 +631,9 @@ const HD = (() => {
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
+      if (!docs.readOnly) items.push({ kind: 'Page', title: 'Log', sub: 'Every change, problem and sign-in', href: '/log', words: 'history changes audit events ip timeline' });
       if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada cisco mikrotik'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
-        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public'], ['system', 'System', 'web server https port certificate backup password account']]) {
+        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public logo internet provider carrier isp'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }
     }
