@@ -429,7 +429,10 @@ const Rack = (() => {
 
   function unifiChassis(h, units, id, dark = false) {
     const fill = dark ? `url(#${id('black')})` : `url(#${id('silver')})`;
-    return [...ears(h, dark ? '#2a2d32' : '#c9cdd2', units), r(19.6, 0.4, W - 39.2, h - 0.8, fill, { rx: 1.6, stroke: dark ? '#0b0c0e' : '#9aa0a8', 'stroke-width': 0.5 })];
+    const out = [...ears(h, dark ? '#2a2d32' : '#c9cdd2', units), r(19.6, 0.4, W - 39.2, h - 0.8, fill, { rx: 1.6, stroke: dark ? '#0b0c0e' : '#9aa0a8', 'stroke-width': 0.5 })];
+    // the thin vent slits along the top edge of UniFi rack gear
+    if (!dark) for (let i = 0; i < 5; i++) out.push(r(55 + i * 78, 2, 74, 1.1, '#2b2e33', { rx: 0.5, opacity: 0.75 }));
+    return out;
   }
 
   function statusDot(x, y, info, item) {
@@ -437,17 +440,20 @@ const Rack = (() => {
     return g({ class: `led-status ${st || 'off'}` }, tip(st ? `Status: ${st}` : item.links?.length ? 'Status: unknown' : 'Not monitored'), led(x, y, 1.5, st === 'critical' ? RED : st === 'warning' ? AMBER : st === 'good' ? '#9fd0ff' : OFF, Boolean(st)));
   }
 
+  // Dream Machine Pro, as it looks from the front: the touchscreen on the far left, a plain front,
+  // the 3.5" drive bay just left of the middle, then the 8 LAN ports, the WAN port and two SFP+.
   function udmPro(item, info, fr, h, id) {
     const { rj, sfp: sfps } = portList(info.ud, 9, 2);
     const y0 = (h - 23.2) / 2;
-    const lan = jackBlocks(rj.slice(0, 8), 58, y0, 4);
-    const out = [...unifiChassis(h, item.height, id), uScreen(26, 6.5, 24, h - 13, info.ud), ...lan.nodes];
-    const wanX = 58 + lan.width + 5;
-    if (rj[8]) out.push(jack(wanX, y0, rj[8], false));
-    sfps.slice(0, 2).forEach((p, i) => out.push(sfp(wanX + 17, y0 + 1 + i * 12.6, p)));
-    // the 3.5" drive bay behind a perforated door
-    out.push(g({ class: 'u-bay' }, tip('Drive bay'), r(236, 5, 214, h - 10, '#c3c8ce', { rx: 1.4, stroke: '#9aa0a8', 'stroke-width': 0.5 }),
-      r(244, 8, 198, h - 16, `url(#${id('hex-light')})`), r(238.5, h / 2 - 5, 3, 10, '#8a9098', { rx: 1 })));
+    const out = [...unifiChassis(h, item.height, id), uScreen(26, 6.5, 24, h - 13, info.ud)];
+    // the drive bay: a flat silver door with its LED near the right edge
+    out.push(g({ class: 'u-bay' }, tip('Drive bay'), r(205, 7.5, 109, h - 15, '#c9cdd3', { rx: 1.2, stroke: '#8f959d', 'stroke-width': 0.6 }),
+      r(206.5, 9, 106, 1, '#e6e8eb', { opacity: 0.8 }), led(305, h / 2, 0.9, '#e6e8eb', true)));
+    const lan = jackBlocks(rj.slice(0, 8), 330, y0, 4);
+    out.push(...lan.nodes);
+    if (rj[8]) out.push(jack(406, y0 + 6.3, rj[8], false));
+    sfps.slice(0, 2).forEach((p, i) => out.push(sfp(424, y0 + 1 + i * 12.6, p)));
+    out.push(c(447, h - 9, 1.1, '#2a2d31')); // reset
     out.push(statusDot(456, h / 2, info, item));
     return out;
   }
@@ -457,10 +463,13 @@ const Rack = (() => {
     const y0 = (h - 23.2) / 2;
     const out = [...unifiChassis(h, item.height, id, dark)];
     if (!dark) out.push(uScreen(26, 6.5, 24, h - 13, info.ud));
-    const start = dark ? 30 : 64;
+    // UniFi switches have their ports in the right half, the SFP cages at the far right; other makes start at the left
+    const sfpCols = Math.ceil(sfps.length / 2);
+    const width = jackBlocks(rj, 0, y0, 6).width;
+    const start = dark ? 30 : Math.max(64, 444 - sfpCols * 17 - 16 - width);
     const blocks = jackBlocks(rj, start, y0, 6);
     out.push(...blocks.nodes);
-    const sx = start + blocks.width + 10;
+    const sx = dark ? start + blocks.width + 10 : 444 - sfpCols * 17 + 2.6;
     sfps.forEach((p, i) => out.push(sfp(sx + Math.floor(i / 2) * 17, y0 + 1 + (i % 2) * 12.6, p)));
     out.push(statusDot(456, h / 2, info, item));
     return out;
@@ -562,8 +571,17 @@ const Rack = (() => {
         out.push(statusDot(456, mid, info, item));
         return out;
       }
+      const nvr = m.type === 'nvr' || m.type === 'other' || m.type === 'nas';
+      const block = m.type === 'gateway' ? 4 : 6;
+      // UniFi rack gear (a display on the left) has its ports at the right end, like the real UDM Pro
+      // and USW-24-PoE; a gateway's drive bay sits just left of them. Other makes start at the left.
+      const sfpCols = Math.ceil(sfps.length / 2);
+      const portsWidth = (m.rj ? jackBlocks(rj.slice(0, m.rj), 0, y0, block).width + 6 : 0) + (m.wan ? 17 : 0) + sfpCols * 17;
+      const rightAligned = Boolean(m.screen) && !nvr && portsWidth > 0;
+      if (rightAligned) px = Math.max(x, right - 4 - portsWidth);
+      const portsStart = px;
       if (m.rj) {
-        const lan = jackBlocks(rj.slice(0, m.rj), px, y0, m.type === 'gateway' ? 4 : 6);
+        const lan = jackBlocks(rj.slice(0, m.rj), px, y0, block);
         out.push(...lan.nodes);
         px += lan.width + 6;
       }
@@ -572,19 +590,25 @@ const Rack = (() => {
         px += 17;
       }
       if (sfps.length) {
-        const cols = Math.ceil(sfps.length / 2);
-        const room = (m.bays ? 236 : right) - px;
-        const pitch = Math.min(17, room / cols);
+        const room = (m.bays && !rightAligned ? 236 : right) - px;
+        const pitch = Math.min(17, room / sfpCols);
         sfps.forEach((p, i) => out.push(sfp(px + Math.floor(i / 2) * pitch, y0 + 1 + (i % 2) * 12.6, p)));
-        px += cols * pitch + 6;
+        px += sfpCols * pitch + 6;
       }
       if (m.bays) {
-        // network gear with drive bays (UDM SE, Pro Max): on the right; recorders: across the front
-        const nvr = m.type === 'nvr' || m.type === 'other' || m.type === 'nas';
-        const bx = nvr ? Math.max(px, x + 6) : 236;
+        // recorders: drive trays across the front; gateways (UDM Pro, SE, Pro Max): beside the ports
+        let bx;
+        let bw;
+        if (nvr || !rightAligned) {
+          bx = nvr ? Math.max(px, x + 6) : 236;
+          const cols = Math.ceil(m.bays / (nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1));
+          bw = (right - bx - (cols - 1) * 2) / cols;
+        } else {
+          bw = Math.min(118, (portsStart - x - 40 - (m.bays - 1) * 2) / m.bays);
+          bx = portsStart - 18 - (m.bays * bw + (m.bays - 1) * 2);
+        }
         const rows = nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1;
         const cols = Math.ceil(m.bays / rows);
-        const bw = (right - bx - (cols - 1) * 2) / cols;
         const bh = (h - 10 - (rows - 1) * 2) / rows;
         for (let i = 0; i < m.bays; i++) out.push(uBay(bx + (i % cols) * (bw + 2), 5 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on, darkChassis(m)));
       }
