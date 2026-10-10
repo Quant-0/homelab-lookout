@@ -190,7 +190,8 @@ function renderNet() {
     box.replaceChildren(
       el('div', { class: 'lbl' }, HD.icon('globe'), 'Internet', el('span', { class: 'r' }, data.carrierLogo ? el('img', { class: 'carrier-logo', src: data.carrierLogo, alt: '' }) : null, data.carrier || hl.wan?.isp || g.gw?.model || 'UniFi')),
       el('div', { class: `huge${up ? '' : ' down'}` }, up ? 'Up' : 'Down', hl.internet?.latencyMs != null ? el('small', { text: `${fmt.n(hl.internet.latencyMs)} ms` }) : null),
-      el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key], g.key2 ? history[g.key2] : null, Boolean(g.key2)) : null),
+      el('div', { class: 'wall-chart' }, g.key ? areaChart(history[g.key], g.key2 ? history[g.key2] : null, Boolean(g.key2)) : null,
+        g.key2 ? el('div', { class: 'spark-legend', 'aria-hidden': 'true' }, el('span', null, el('i'), 'Download'), el('span', null, el('i', { class: 'up' }), 'Upload')) : null),
       trio([
         hl.internet?.rxMbps != null
           ? ['Now ↓/↑', `${fmt.n(hl.internet.rxMbps, hl.internet.rxMbps < 10 ? 1 : 0)}/${fmt.n(hl.internet.txMbps ?? 0, (hl.internet.txMbps ?? 0) < 10 ? 1 : 0)}`, 'Mbps']

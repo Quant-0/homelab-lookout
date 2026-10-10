@@ -42,6 +42,7 @@
   --power-2: color-mix(in srgb, var(--warning) 60%, #ffffff);
   --net: color-mix(in oklab, var(--good) 50%, #22b8cf);
   --net-2: color-mix(in srgb, var(--net) 55%, #ffffff);
+  --up: #9d82ff; /* upload, next to the teal download: a colour nothing else on Home uses */
   --glass: color-mix(in srgb, var(--surface) calc(var(--card-alpha, 1) * 78%), transparent);
   --edge-hi: color-mix(in srgb, var(--text) 9%, transparent);
   --pedestal: radial-gradient(120% 95% at 50% 0%, color-mix(in srgb, var(--text) 7%, transparent), color-mix(in srgb, var(--text) 1.5%, transparent) 72%);
@@ -60,14 +61,14 @@
   color-scheme: light;
 }
 /* only the default light look: the light block above also matches every other theme through :root */
-:root:not([data-theme]), [data-theme="auto"], [data-theme="light"] { --power: #e08a00; --power-2: #f2b33d; --net: #0f9e8a; --net-2: #3cc9b4; }
+:root:not([data-theme]), [data-theme="auto"], [data-theme="light"] { --power: #e08a00; --power-2: #f2b33d; --net: #0f9e8a; --net-2: #3cc9b4; --up: #6e4ee6; }
 [data-theme="dark"] {
   --bg: #0c1117; --surface: #121922; --surface-2: #18212c; --surface-3: #1f2a36; --border: rgb(255 255 255 / 0.07); --border-strong: rgb(255 255 255 / 0.14); --grid: rgb(255 255 255 / 0.06);
   --text: #eef2f7; --text-2: #c2cad6; --muted: #8592a5; --accent: #5b8cff; --on-accent: #ffffff;
   --input-bg: #0e141b; --scrim: 0 0 0;
   --shadow: 0 18px 40px -26px #000; --shadow-sm: none; --shadow-lg: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 30px 60px -26px #000;
   --good: #3ddc97; --warning: #f5b44a; --serious: #f08a4b; --critical: #ff5a5f; --glow: 1;
-  --power: #f5b44a; --power-2: #ffd27f; --net: #39d4c0; --net-2: #8af0e2;
+  --power: #f5b44a; --power-2: #ffd27f; --net: #39d4c0; --net-2: #8af0e2; --up: #b39dff;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -77,7 +78,7 @@
     --input-bg: #0e141b; --scrim: 0 0 0;
     --shadow: 0 18px 40px -26px #000; --shadow-sm: none; --shadow-lg: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 30px 60px -26px #000;
     --good: #3ddc97; --warning: #f5b44a; --serious: #f08a4b; --critical: #ff5a5f; --glow: 1;
-    --power: #f5b44a; --power-2: #ffd27f; --net: #39d4c0; --net-2: #8af0e2;
+    --power: #f5b44a; --power-2: #ffd27f; --net: #39d4c0; --net-2: #8af0e2; --up: #b39dff;
     color-scheme: dark;
   }
 }
@@ -2060,10 +2061,18 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .carrier-pick input[type="url"] { flex: 1 1 260px; min-width: 0; }
 .need.info .why { -webkit-line-clamp: 2; } /* the old and the new IP both stay readable on a phone */
 /* a second series (upload over download): thinner and lighter, no area */
-.spark-line2 { fill: none; stroke: color-mix(in srgb, var(--line-c, var(--accent)) 45%, var(--text)); stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; opacity: 0.85; }
+.spark-line2 { fill: none; stroke: var(--up); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--up) 55%, transparent)); }
+.spark-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.spark-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.spark-legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--line-c, var(--accent)); }
+.spark-legend i.up { height: 3px; border-radius: 2px; background: var(--up); }
+.big-spark { position: relative; }
+.big-spark .spark-legend { position: absolute; right: 18px; top: 2px; z-index: 1; pointer-events: none; }
 .spark .spark-line2.drawn { clip-path: inset(0 100% 0 0); animation: spark-draw 1.4s cubic-bezier(.2,.8,.2,1) .25s forwards; }
 .big .speed strong small { font-weight: 500; color: var(--muted); }
 .big .speed i::after { transition: width .6s cubic-bezier(.2,.8,.2,1); }
-.wall-chart .c-line2 { fill: none; stroke: color-mix(in srgb, var(--line-c, var(--accent)) 45%, var(--text)); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; opacity: 0.85; }
+.wall-chart .c-line2 { fill: none; stroke: var(--up); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
 .spark-tip .tip-pair { display: flex; gap: 12px; white-space: nowrap; }
 .spark-tip .tip-when { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.wall-chart { position: relative; }
+.wall-chart .spark-legend { position: absolute; right: 4px; top: 0; font-size: clamp(12px, 1.4vh, 15px); }

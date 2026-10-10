@@ -405,10 +405,10 @@ const HD = (() => {
   // `range` pins a graph (Home's cards are always the last 24 h); without it, it follows the range buttons.
   // `key2` adds a second series as a thin line on the same scale (upload over download), `names`
   // says what each is in the hover ("↓", "↑"), and `zero` starts the scale at 0 (traffic).
-  function sparkSlot(key, { label = '', unit = '', decimals = 0, range: fixed = null, key2 = null, names = null, zero = false } = {}) {
+  function sparkSlot(key, { label = '', unit = '', decimals = 0, range: fixed = null, key2 = null, names = null, zero = false, legend = null } = {}) {
     return el('div', { class: 'spark-cell', hidden: true },
       label ? el('div', { class: 'spark-label', text: label }) : null,
-      el('div', { class: 'spark-slot', 'data-key': key, 'data-key2': key2, 'data-names': names ? names.join('|') : null, 'data-zero': zero || null, 'data-unit': unit, 'data-dec': decimals, 'data-label': label, 'data-range': fixed || null }));
+      el('div', { class: 'spark-slot', 'data-key': key, 'data-key2': key2, 'data-names': names ? names.join('|') : null, 'data-legend': legend ? legend.join('|') : null, 'data-zero': zero || null, 'data-unit': unit, 'data-dec': decimals, 'data-label': label, 'data-range': fixed || null }));
   }
   const rangeOf = (slot) => (RANGES[slot.dataset.range] ? slot.dataset.range : range);
 
@@ -516,7 +516,10 @@ const HD = (() => {
       tip.classList.add('hidden');
       marker.style.display = 'none';
     });
-    slot.replaceChildren(box, el('div', { class: 'spark-range', text: span }));
+    // which line is which, when there are two (the colours alone don't say)
+    const [l1, l2] = (slot.dataset.legend || '').split('|');
+    const legend = vs2.length && l1 ? el('div', { class: 'spark-legend', 'aria-hidden': 'true' }, el('span', null, el('i'), l1), el('span', null, el('i', { class: 'up' }), l2)) : null;
+    slot.replaceChildren(...[box, legend, el('div', { class: 'spark-range', text: span })].filter(Boolean));
   }
 
   async function fillSparks(force = false) {

@@ -553,7 +553,7 @@ function unifiDeviceSection(ud, consoleHost) {
       const k = `unifi:${consoleHost.id}:${x.mac}`;
       const wanNow = ['udm', 'ugw', 'uxg'].includes(x.type) && consoleHost.data?.health?.internet?.rxMbps != null;
       if (x.online) parts.push(sparks([
-        wanNow ? [`unifi:${consoleHost.id}:wan:down`, 'Internet traffic', ' Mbps', 1, { key2: `unifi:${consoleHost.id}:wan:up`, names: ['↓', '↑'], zero: true }] : null,
+        wanNow ? [`unifi:${consoleHost.id}:wan:down`, 'Internet traffic', ' Mbps', 1, { key2: `unifi:${consoleHost.id}:wan:up`, names: ['↓', '↑'], legend: ['Download', 'Upload'], zero: true }] : null,
         x.cpu != null ? [`${k}:cpu`, 'CPU', ' %'] : null,
         maxTemp(x) != null ? [`${k}:temp`, 'Temperature', ' °C'] : null,
         x.clients != null ? [`${k}:clients`, 'Clients', ''] : null,
@@ -1025,7 +1025,7 @@ function internetTile(d) {
         hl.wiredClients != null ? el('span', null, el('strong', { text: fmt.n(hl.wiredClients) }), ' wired') : null,
         hl.wan?.ip ? el('span', { class: 'public-ip' }, el('strong', { class: 'num', text: hl.wan.ip }), ' public IP') : null),
       hl.internet?.rxMbps != null
-        ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:wan:down`, { key2: `unifi:${uh.id}:wan:up`, names: ['↓', '↑'], label: 'Internet traffic', unit: ' Mbps', decimals: 1, zero: true, range: '24h' }))
+        ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:wan:down`, { key2: `unifi:${uh.id}:wan:up`, names: ['↓', '↑'], legend: ['Download', 'Upload'], label: 'Internet traffic', unit: ' Mbps', decimals: 1, zero: true, range: '24h' }))
         : gw ? el('span', { class: 'big-spark' }, HD.sparkSlot(`unifi:${uh.id}:${gw.mac}:clients`, { label: 'Clients', unit: '', range: '24h' })) : null);
     if (owner) b.addEventListener('click', () => openDevice(owner.id));
     return b;
