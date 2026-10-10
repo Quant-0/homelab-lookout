@@ -23,6 +23,17 @@ async function req(method, p, body, extra = {}) {
   return { status: r.status, json, text, headers: r.headers };
 }
 const mockStats = () => new Promise((res) => https.get({ host: '127.0.0.1', port: 18443, path: '/__stats', rejectUnauthorized: false }, (r) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => res(JSON.parse(d))); }));
+// waits until the mock has had no other traffic (a background drive inventory) for 0.6 s
+async function quietStats() {
+  let a = await mockStats();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 600));
+    const b = await mockStats();
+    if (b.requests === a.requests + 1) return b;
+    a = b;
+  }
+  return a;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const noSecrets = (text, where) => ok(!SECRETS.some((s) => text.includes(s)), `no secret in ${where}`);
 
@@ -85,7 +96,7 @@ const noSecrets = (text, where) => ok(!SECRETS.some((s) => text.includes(s)), `n
   // Test buttons
   r = await req('POST', `/api/admin/hosts/${idrac.id}/test`, {}); ok(r.json.ok === true, `iDRAC test ${r.json.error || ''}`);
   r = await req('POST', `/api/admin/hosts/${nas.id}/test`, {}); ok(r.json.ok === true, `TrueNAS test ${r.json.error || ''}`);
-  before = (await mockStats()).requests;
+  before = (await quietStats()).requests;
   r = await req('POST', `/api/admin/hosts/${verifyHost.id}/test`, {});
   ok(r.json.ok === false && /Self-signed/i.test(r.json.error), `CA verify mode fails on self-signed: ${r.json.error}`);
   ok((await mockStats()).requests === before + 1, 'nothing sent when CA verification fails');
@@ -93,7 +104,7 @@ const noSecrets = (text, where) => ok(!SECRETS.some((s) => text.includes(s)), `n
   // Wrong pin: nothing sent
   const wrongFp = 'AA:' + FP.slice(3);
   r = await req('PUT', `/api/admin/hosts/${verifyHost.id}`, { name: 'Bad', address: '127.0.0.1:18443', username: 'root', secret: 'calvin', tlsMode: 'pin', fingerprint: wrongFp });
-  before = (await mockStats());
+  before = (await quietStats());
   r = await req('POST', `/api/admin/hosts/${verifyHost.id}/test`, {});
   const after = await mockStats();
   ok(r.json.ok === false && /fingerprint mismatch/i.test(r.json.error), `pin mismatch detected: ${r.json.error}`);

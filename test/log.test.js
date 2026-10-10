@@ -118,6 +118,26 @@ const find = (l, re) => l.events.find((e) => re.test(e.text));
   ok(find(await log('?cat=network'), /^No logo found for Fiberlink$/), 'a lookup that finds nothing is logged');
   ok((await req('GET', '/api/admin/config')).json.settings.dashboard.carrierLogo.kind === 'auto', '"Find again" switches to automatic');
 
+  // a connection that stops answering only counts as down after the grace period (12 s here)
+  r = await req('POST', '/api/admin/devices', { name: 'slowbmc', kind: 'server', location: 'outside', connections: [{ type: 'idrac', address: '127.0.0.1:1', username: 'root', secret: 'x', tlsMode: 'pin', fingerprint: FP }] });
+  const slow = r.json.device;
+  let firstFail = null;
+  for (let i = 0; i < 40 && !firstFail; i++) {
+    await sleep(250);
+    const host = (await req('GET', '/api/dashboard')).json.idrac.find((x) => x.ok === false);
+    if (host) firstFail = Date.now();
+  }
+  d = (await req('GET', '/api/dashboard')).json;
+  ok(firstFail && !d.attention.some((a) => a.type === 'offline' && a.subject === 'slowbmc'), 'one failed poll is not "not answering" yet');
+  let down = null;
+  for (let i = 0; i < 120 && !down; i++) {
+    await sleep(250);
+    d = (await req('GET', '/api/dashboard')).json;
+    down = d.attention.find((a) => a.type === 'offline' && a.subject === 'slowbmc');
+  }
+  ok(down && Date.now() - firstFail >= 10000, `still failing after the grace period: now it is (${Math.round((Date.now() - firstFail) / 1000)} s)`);
+  await req('DELETE', `/api/admin/devices/${slow.id}`);
+
   console.log(failures ? `\n${failures} FAILED` : '\nALL LOG TESTS PASSED');
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

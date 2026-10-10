@@ -141,7 +141,7 @@ async function main() {
     { file: 'test/services.test.js', fresh: true },
     { file: 'test/infra.test.js', fresh: true, env: { TAILSCALE_API_URL: 'http://127.0.0.1:18090/tailscale' } },
     { file: 'test/branding.test.js', fresh: true },
-    { file: 'test/log.test.js', fresh: true, env: { PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), RDAP_URL: 'https://127.0.0.1:18443/rdap' } },
+    { file: 'test/log.test.js', fresh: true, env: { OFFLINE_GRACE_S: '12', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), RDAP_URL: 'https://127.0.0.1:18443/rdap' } },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },
@@ -151,7 +151,7 @@ async function main() {
     { file: 'test/remember.test.js', fresh: true, seed: require('./remember.test.js').seed },
     { file: 'test/security.test.js', fresh: true },
     // the alert mocks use the device mock's certificate, trusted here like a public CA would be
-    { file: 'test/alerts.test.js', fresh: true, env: { NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), TELEGRAM_API_URL: 'https://127.0.0.1:18449', DISCORD_WEBHOOK_HOSTS: '127.0.0.1:18449' } },
+    { file: 'test/alerts.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), TELEGRAM_API_URL: 'https://127.0.0.1:18449', DISCORD_WEBHOOK_HOSTS: '127.0.0.1:18449' } },
   ];
   if (args.has('--ui')) {
     let playwright = true;

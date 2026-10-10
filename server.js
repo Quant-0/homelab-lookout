@@ -1740,9 +1740,11 @@ async function idracDrives(tryGet, sysPath) {
   return drives.sort((a, b) => a.bay - b.bay);
 }
 
-async function collectIdrac(h, secret) {
+// One request at a time, with time to spare: an older BMC (iDRAC 8) answers one request in under a
+// second but slows to 3–10 s when several connections arrive at once, and then runs out of time.
+async function collectIdrac(h, secret, poll = false) {
   const auth = 'Basic ' + Buffer.from(`${h.username}:${secret}`).toString('base64');
-  const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers: { Authorization: auth, 'OData-Version': '4.0' } });
+  const get = (p) => httpsRequest(connectHost(h, { timeoutMs: 25000 }), h.address, { path: p, headers: { Authorization: auth, 'OData-Version': '4.0' }, timeoutMs: 25000 });
   const tryGet = (p) => get(p).catch((e) => (e.status === 404 || e.status === 405 ? null : Promise.reject(e)));
 
   const cacheKey = `${h.id}|${h.address}`;
@@ -1756,11 +1758,9 @@ async function collectIdrac(h, secret) {
     paths = { sysPath, chassisPath };
     redfishPathCache.set(cacheKey, paths);
   }
-  const [sys, power, thermal] = await Promise.all([
-    get(paths.sysPath),
-    tryGet(paths.chassisPath + '/Power'),
-    tryGet(paths.chassisPath + '/Thermal'),
-  ]);
+  const sys = await get(paths.sysPath);
+  const power = await tryGet(paths.chassisPath + '/Power');
+  const thermal = await tryGet(paths.chassisPath + '/Thermal');
 
   const out = {
     model: sys.Model || null,
@@ -1791,7 +1791,9 @@ async function collectIdrac(h, secret) {
     out.watts = env?.PowerWatts?.Reading ?? null;
     const coll = await tryGet(paths.chassisPath + '/PowerSubsystem/PowerSupplies');
     const members = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 8);
-    out.psus = (await Promise.all(members.map(tryGet))).filter(Boolean).map((p) => ({
+    const list = [];
+    for (const m of members) list.push(await tryGet(m));
+    out.psus = list.filter(Boolean).map((p) => ({
       name: p.Name || p.Id || 'PSU',
       ...healthOf(p.Status),
       inputWatts: null,
@@ -1824,7 +1826,9 @@ async function collectIdrac(h, secret) {
       .map((t) => ({ name: t.DeviceName || 'Sensor', celsius: t.Reading, warn: null, crit: null, health: null, state: null }));
     const coll = await tryGet(paths.chassisPath + '/ThermalSubsystem/Fans');
     const members = (coll?.Members || []).map((m) => okPath(m['@odata.id'])).filter(Boolean).slice(0, 16);
-    out.fans = (await Promise.all(members.map(tryGet))).filter(Boolean).map((f) => ({
+    const list = [];
+    for (const m of members) list.push(await tryGet(m));
+    out.fans = list.filter(Boolean).map((f) => ({
       name: f.Name || f.Id || 'Fan',
       rpm: f.SpeedPercent?.SpeedRPM ?? null,
       percent: f.SpeedPercent?.Reading ?? null,
@@ -1832,15 +1836,24 @@ async function collectIdrac(h, secret) {
     }));
   }
 
+  // The drive inventory (a request per bay) runs on its own after the poll, never inside it: on an
+  // iDRAC 8 it can take longer than a whole poll may. Until it is done the last one is used.
   const known = driveCache.get(cacheKey);
-  if (known && Date.now() - known.at < DRIVE_INVENTORY_MS) out.drives = known.drives;
-  else {
-    try {
-      out.drives = await idracDrives(tryGet, paths.sysPath);
-      driveCache.set(cacheKey, { at: Date.now(), drives: out.drives });
-    } catch {
-      out.drives = known?.drives || null; // keep the last inventory if Storage doesn't answer this time
-    }
+  out.drives = known?.drives || null;
+  if (poll && (!known || Date.now() - known.at >= DRIVE_INVENTORY_MS) && !known?.running) {
+    driveCache.set(cacheKey, { ...(known || { drives: null }), at: known?.at || 0, running: true });
+    setImmediate(() => idracDrives(tryGet, paths.sysPath)
+      .then((drives) => {
+        driveCache.set(cacheKey, { at: Date.now(), drives });
+        // straight into the latest reading, so a failing drive shows (and alerts) without waiting a poll
+        const r = results.get(h.id);
+        if (r?.data && config.hosts.some((x) => x.id === h.id)) {
+          r.data = { ...r.data, drives };
+          alertsSoon();
+        }
+      })
+      .catch(() => driveCache.set(cacheKey, { at: Date.now(), drives: known?.drives || null })) // try again in 15 min
+      .finally(() => delete driveCache.get(cacheKey)?.running));
   }
   return out;
 }
@@ -3902,14 +3915,15 @@ function alertsSoon() {
 }
 
 // `plainSecret` is only used to test a connection before it is saved.
-async function runCollector(h, plainSecret = null) {
+// `poll`: a regular poll (not a Test button), which may also start slow background work
+async function runCollector(h, plainSecret = null, poll = false) {
   let secret = plainSecret;
   try {
     if (h.type !== 'nut') {
       if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
       secret ||= decryptSecret(h);
     }
-    const data = await withTimeout(COLLECTORS[h.type](h, secret), COLLECT_TIMEOUT_MS, 'Data collection');
+    const data = await withTimeout(COLLECTORS[h.type](h, secret, poll), COLLECT_TIMEOUT_MS, 'Data collection');
     return { ok: true, data };
   } catch (e) {
     return { ok: false, error: safeErrorMessage(e, secret) };
@@ -3940,7 +3954,7 @@ function pollHost(h) {
 }
 
 async function pollHostNow(h) {
-  const r = await runCollector(h);
+  const r = await runCollector(h, null, true);
   if (config.hosts.find((x) => x.id === h.id) !== h) return; // host edited/removed meanwhile
   const now = Date.now();
   const prev = results.get(h.id);
@@ -3957,7 +3971,7 @@ async function pollHostNow(h) {
     }
     if (h.type === 'idrac' || h.type === 'unifi') histRecord('power:total', measuredWatts().total, now);
   } else {
-    results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null });
+    results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null, failingSince: prev?.ok === false ? prev.failingSince ?? now : now });
   }
   alertsSoon();
 }
@@ -4358,7 +4372,7 @@ function measuredWatts() {
   let poe = null;
   for (const h of config.hosts) {
     const r = results.get(h.id);
-    if (!r?.ok) continue;
+    if (!r?.ok && !inGrace(r)) continue; // a missed poll doesn't drop the server from the total
     if (h.type === 'idrac' && typeof r.data?.watts === 'number') idrac = (idrac || 0) + r.data.watts;
     if (h.type === 'unifi') for (const d of r.data.devices) if (d.poe) poe = (poe || 0) + d.poe.usedW;
   }
@@ -6900,8 +6914,9 @@ function alertConditions(all = false) {
   for (const h of config.hosts) {
     const r = results.get(h.id);
     const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
-    if (r?.ok === false) add('offline', h.id, 'critical', `${name}: ${controllerName(h, r.data)} not answering`, r.error, h.id, false);
-    if (!r?.ok) continue;
+    // "not answering" only after it has failed for a while: one slow or missed poll is not an outage
+    if (r?.ok === false && Date.now() - (r.failingSince ?? 0) >= offlineGraceMs()) add('offline', h.id, 'critical', `${name}: ${controllerName(h, r.data)} not answering`, r.error, h.id, false);
+    if (!r?.ok && !inGrace(r)) continue; // meanwhile its last reading still counts
     const d = r.data;
     const own = h.id;
     if (h.type === 'idrac') {
@@ -7071,6 +7086,11 @@ function logProblems() {
     alertsDirty = true;
   }
 }
+
+// How long a connection must keep failing before it counts as not answering (OFFLINE_GRACE_S for the tests)
+// Failing, but not for long enough to count as down: its last data is still used
+const inGrace = (r) => Boolean(r && r.ok === false && r.data && Date.now() - (r.failingSince ?? 0) < offlineGraceMs());
+const offlineGraceMs = () => (process.env.OFFLINE_GRACE_S !== undefined ? Number(process.env.OFFLINE_GRACE_S) * 1000 : Math.max(120000, 3 * config.settings.dashboard.refreshSeconds * 1000));
 
 const recheckAlerts = () => setImmediate(() => evaluateAlerts().catch((e) => log('Alert check failed:', e.message)));
 

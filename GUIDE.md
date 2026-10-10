@@ -62,7 +62,7 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
 ### Home
 
 - **At the top:** how many faults and things to watch (or **All normal**), and a sentence about the rest.
-- **Needs you:** one row per problem, worst first, with how long it has been going on. Click a row to open that device. The same findings drive the alerts. When nothing is wrong it says **All systems normal**.
+- **Needs you:** one row per problem, worst first, with how long it has been going on. Click a row to open that device. A connection that stops answering is listed after it has failed for 2 minutes (a single slow or missed reading doesn't count). The same findings drive the alerts. When nothing is wrong it says **All systems normal**.
   - **Snooze** (signed in as admin): the clock button at the end of a row hides it from the top of Home and from the wall display for **1 day** or **1 week**, for everyone. The device itself keeps showing the problem, alerts are still sent, and the snooze ends early if a warning turns into a fault. **N snoozed · Show** under the list shows them again; the bell button on a snoozed row ends the snooze.
 - **Power** and **Internet**, two big cards with a large number and a glowing graph of the last hours (amber for power, teal for the network):
   - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d**) is remembered per browser; the cards on Home always show the last 24 hours.
