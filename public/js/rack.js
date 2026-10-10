@@ -254,7 +254,7 @@ const Rack = (() => {
 
   // --- Drive bays: 3.5" lie flat; 2.5" stand up in 2U and lie flat in 1U ---
 
-  function bayGrid(layout, units, area) {
+  function bayGrid(layout, units, area, align = 'center') {
     const spec = DRIVES[layout];
     if (!spec) return null;
     const count = spec[0] * spec[1];
@@ -264,7 +264,7 @@ const Rack = (() => {
     let ch;
     let orient = 'flat';
     if (spec[2] === 'lff') [cols, rows, cw, ch] = [spec[0], spec[1], 101.6, 26.4];
-    else if (units >= 2) [cols, rows, cw, ch, orient] = [count, 1, 15.6, 70, 'stand'];
+    else if (units >= 2) [cols, rows, cw, ch, orient] = [count, 1, 15.6, Math.min(80, area.h), 'stand']; // the carriers fill the 2U front
     else [cols, rows, cw, ch] = [Math.ceil(count / 2), 2, 70, 15.6];
     const gap = 1.4;
     const groupGap = orient === 'stand' && count >= 16 ? 8 : 0;
@@ -279,7 +279,7 @@ const Rack = (() => {
       ch = (area.h - (rows - 1) * gap) / rows;
       totalH = area.h;
     }
-    return { count, cols, rows, cw, ch, gap, groupGap, orient, lff: spec[2] === 'lff', x0: area.x + (area.w - totalW) / 2, y0: area.y + area.h - totalH, totalW, totalH };
+    return { count, cols, rows, cw, ch, gap, groupGap, orient, lff: spec[2] === 'lff', x0: align === 'left' ? area.x : area.x + (area.w - totalW) / 2, y0: area.y + area.h - totalH, totalW, totalH };
   }
 
   function bayPos(gr, i) {
@@ -325,8 +325,8 @@ const Rack = (() => {
   }
 
   // The drive area: bays from the layout; drives from the iDRAC fill their bays, the rest are blanks
-  function driveArea(area, layout, units, on, info, gen, id) {
-    const gr = bayGrid(layout, units, area);
+  function driveArea(area, layout, units, on, info, gen, id, align = 'center') {
+    const gr = bayGrid(layout, units, area, align);
     if (!gr) return [r(area.x, area.y, area.w, area.h, `url(#${id('holes')})`, { opacity: 0.8 })];
     const out = [];
     const known = Array.isArray(info.idrac?.drives) && info.idrac.drives.length > 0;
@@ -342,10 +342,36 @@ const Rack = (() => {
 
   // --- Fronts ---
 
+  // A slim optical drive (DVD): a dark tray with its eject button and LED
+  function optical(x, y, w, hh, on) {
+    return g({ class: 'dell-dvd' }, tip('Optical drive'),
+      r(x, y, w, hh, '#101215', { rx: 0.8, stroke: '#3a3e44', 'stroke-width': 0.5 }),
+      r(x + 3, y + hh / 2 - 0.4, w * 0.55, 0.8, '#2a2d32'),
+      r(x + w - 18, y + hh / 2 - 1.6, 9, 3.2, '#2b2f35', { rx: 0.6, stroke: '#4a4f56', 'stroke-width': 0.4 }),
+      led(x + w - 5, y + hh / 2, 0.7, GREEN, false));
+  }
+
+  // A USB port and a VGA connector, as on the front of a Dell
+  const usb = (x, y, blue = false) => r(x, y, 9, 3.6, '#0b0c0d', { rx: 0.4, stroke: blue ? '#3d7fd9' : '#5a6068', 'stroke-width': 0.6 });
+  const vga = (x, y) => g({ class: 'dell-vga' }, tip('VGA'), S('path', { d: `M${x} ${y}h14l-1.6 6h-10.8z`, fill: '#0b0c0d', stroke: '#5a6068', 'stroke-width': 0.5 }));
+
+  // 13th gen: the blue LCD (amber on a fault) showing the draw, with its three buttons
+  function dellLcd(x, y, w, hh, info, item, on, fault) {
+    const wt = on ? wattsText(info, item) : '';
+    return g({ class: `dell-lcd-panel${fault ? ' fault' : ''}` },
+      r(x, y, w, hh, !on ? '#0d1116' : fault ? '#e39a12' : '#2f6fd0', { rx: 1, class: `dell-lcd${fault ? ' fault' : ''}` }),
+      wt ? S('text', { x: x + w / 2, y: y + hh / 2 + 1.9, 'text-anchor': 'middle', class: 'lcd-text', 'font-size': 5.4, fill: fault ? '#1b1300' : '#eaf3ff' }, wt.replace(' ', '')) : null);
+  }
+
   function dell(item, info, fr, h, id, gen) {
     const d = info.idrac;
     const on = d ? d.powerState === 'On' : false;
     const oneU = item.height === 1;
+    // how the real 2U fronts are laid out (see the table in the guide): the 2.5″ fronts with 8–16 bays
+    // keep the drives on the left and an optical drive and grille on the right; a 13th gen 8 × 3.5″
+    // has a control strip (LCD, VGA, USB, grille, DVD) above its two rows of bays
+    const partial = !oneU && ['8x2.5', '10x2.5', '16x2.5'].includes(fr.drives);
+    const strip = gen < 14 && !oneU && fr.drives === '8x3.5';
     const fault = info.status === 'critical' || info.status === 'warning';
     const out = [r(0, 0.5, W, h - 1, `url(#${id('black')})`, { rx: 2.4 }), r(2, 0.5, W - 4, 1, '#3a3e44')];
     // control panels on the ears
@@ -359,13 +385,15 @@ const Rack = (() => {
       const step = oneU ? 6.6 : 7.4;
       icons.forEach(([name, bad], i) => out.push(g({ class: `dell-icon${bad ? ' bad' : ''}` }, tip(`${name}${bad ? ': fault' : ''}`), r(4, 5 + i * step, 6, step - 2.4, bad ? AMBER : '#30343a', { rx: 0.8 }))));
       out.push(g({ class: `dell-id ${info.status || ''}` }, tip(`Health: ${d?.health || 'unknown'}`), led(16.5, oneU ? 9 : 12, 2.6, fault ? AMBER : BLUE, on)));
-    } else {
-      // 13th gen: the LCD (blue, amber on a fault) with its buttons
-      const w = on ? wattsText(info, item) : '';
-      out.push(r(2.6, oneU ? 4 : 6, 18, oneU ? 10 : 12, !on ? '#0d1116' : fault ? '#e39a12' : '#2f6fd0', { rx: 1, class: `dell-lcd${fault ? ' fault' : ''}` }));
-      if (w) out.push(S('text', { x: 11.6, y: oneU ? 10.8 : 13.8, 'text-anchor': 'middle', class: 'lcd-text', 'font-size': 5.4, fill: fault ? '#1b1300' : '#eaf3ff' }, w.replace(' ', '')));
+    } else if (!strip && !partial) {
+      // 13th gen with drives across the whole front: the LCD sits on the left ear
+      out.push(dellLcd(2.6, oneU ? 4 : 6, 18, oneU ? 10 : 12, info, item, on, fault));
       for (const x of [6.8, 11.6, 16.4]) out.push(c(x, oneU ? 19 : 23.5, 1.5, '#3a3e44'));
       if (!oneU) out.push(c(11.6, 33, 3, '#2b2f35', { stroke: '#4a4f56', 'stroke-width': 0.6 }));
+    } else {
+      // the LCD is on the front itself: the ear has the logo and the system ID button
+      out.push(S('text', { x: 11.6, y: 9, 'text-anchor': 'middle', 'font-size': 4.2, 'font-weight': 700, fill: '#c9cdd2', class: 'lcd-text' }, 'DELL'));
+      out.push(g({ class: `dell-id ${info.status || ''}` }, tip(`Health: ${d?.health || 'unknown'}`), led(11.6, 18, 2.2, fault ? AMBER : BLUE, on)));
     }
     // right: power button, USB, iDRAC Direct, VGA
     out.push(g({ class: `dell-power${on ? ' on' : ''}` }, tip(`Power ${d?.powerState || 'unknown'}`),
@@ -378,6 +406,47 @@ const Rack = (() => {
       out.push(S('path', { d: `M${W - 18.6} 31h14l-1.8 6h-10.4z`, fill: '#284a7c' }));
     }
     const area = { x: 27, y: 3, w: W - 54, h: h - 6 };
+    const model = String(d?.model || '').replace(/^PowerEdge\s*/i, '');
+    if (strip) {
+      // the control strip: VGA, the LCD panel with the model name, buttons and USB, a grille and the DVD
+      const sh = 24;
+      const sy = area.y + 1;
+      out.push(r(area.x, sy, area.w, sh, '#16181b', { rx: 1, stroke: '#0b0c0e', 'stroke-width': 0.5 }));
+      out.push(vga(area.x + 6, sy + sh / 2 - 3));
+      out.push(r(area.x + 26, sy + 3, 76, sh - 6, '#0f1113', { rx: 1, stroke: '#2e3237', 'stroke-width': 0.5 }));
+      if (model) out.push(S('text', { x: area.x + 30, y: sy + 9.2, 'font-size': 4.6, fill: '#c9cdd2', class: 'lcd-text', 'font-style': 'italic' }, `PowerEdge ${model}`));
+      out.push(dellLcd(area.x + 30, sy + 11.5, 36, 8, info, item, on, fault));
+      for (const x of [72, 79, 86]) out.push(c(area.x + x, sy + 15.5, 1.5, '#3a3e44'));
+      out.push(usb(area.x + 108, sy + 6), usb(area.x + 108, sy + 13.5));
+      out.push(r(area.x + 124, sy + 3, area.w - 124 - 112, sh - 6, `url(#${id('holes')})`, { rx: 1, opacity: 0.9 }));
+      out.push(optical(area.x + area.w - 106, sy + sh / 2 - 6, 100, 12, on));
+      out.push(...driveArea({ x: area.x, y: sy + sh + 2, w: area.w, h: area.y + area.h - (sy + sh + 2) }, fr.drives, item.height, on, info, gen, id));
+      return out;
+    }
+    if (partial) {
+      // drives from the left; then the optical drive (and USB) on top of a grille, with the 13th gen
+      // LCD panel below it
+      const gr = bayGrid(fr.drives, item.height, area, 'left');
+      out.push(...driveArea(area, fr.drives, item.height, on, info, gen, id, 'left'));
+      const rx = area.x + (gr ? gr.totalW : 0) + 5;
+      const rw = area.x + area.w - rx;
+      if (rw > 40) {
+        out.push(r(rx, area.y, rw, area.h, '#16181b', { rx: 1, stroke: '#0b0c0e', 'stroke-width': 0.5 }));
+        const ow = Math.min(100, rw - 30);
+        out.push(optical(rx + 4, area.y + 4, ow, 12, on));
+        out.push(usb(rx + ow + 10, area.y + 8.2, gen >= 14));
+        if (gen < 14) {
+          out.push(r(rx + 4, area.y + 22, Math.min(80, rw - 8), 22, '#0f1113', { rx: 1, stroke: '#2e3237', 'stroke-width': 0.5 }));
+          out.push(dellLcd(rx + 8, area.y + 26, 34, 8, info, item, on, fault));
+          for (const x of [48, 55, 62]) out.push(c(rx + x, area.y + 30, 1.5, '#3a3e44'));
+          out.push(vga(rx + 8, area.y + 37), usb(rx + 28, area.y + 38));
+          out.push(r(rx + 4, area.y + 48, rw - 8, area.h - 52, `url(#${id('holes')})`, { rx: 1, opacity: 0.9 }));
+        } else {
+          out.push(r(rx + 4, area.y + 20, rw - 8, area.h - 24, `url(#${id('holes')})`, { rx: 1, opacity: 0.9 }));
+        }
+      }
+      return out;
+    }
     out.push(...driveArea(area, fr.drives, item.height, on, info, gen, id));
     return out;
   }
