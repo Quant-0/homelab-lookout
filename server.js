@@ -287,11 +287,16 @@ function writeJsonAtomic(file, obj) {
   fs.renameSync(tmp, file);
 }
 
+// Saved settings over the defaults, keeping only the fields the defaults know. A choice with a
+// `kind` (the logo: default | icon | file) is taken whole, since its other fields depend on the
+// kind (a file logo's id isn't in the default, and was lost on every restart).
 function deepMerge(base, over) {
   if (!over || typeof over !== 'object' || Array.isArray(over)) return structuredClone(base);
   const out = {};
   for (const [k, v] of Object.entries(base)) {
-    out[k] = v && typeof v === 'object' && !Array.isArray(v) ? deepMerge(v, over[k]) : k in over ? over[k] : v;
+    const o = over[k];
+    if (v && typeof v === 'object' && !Array.isArray(v) && 'kind' in v) out[k] = o && typeof o === 'object' && !Array.isArray(o) && typeof o.kind === 'string' ? structuredClone(o) : structuredClone(v);
+    else out[k] = v && typeof v === 'object' && !Array.isArray(v) ? deepMerge(v, o) : k in over ? o : v;
   }
   return out;
 }

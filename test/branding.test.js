@@ -119,6 +119,11 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   d = (await req('GET', '/api/dashboard')).json;
   ok(r.status === 200 && d.attention.find((a) => a.key === warn.key).snoozedUntil === null, 'it can be shown again');
 
+  // leave an uploaded logo and provider logo in place: the next suite restarts the server and checks them
+  const cfgNow = (await req('GET', '/api/admin/config')).json.settings;
+  r = await req('PUT', '/api/admin/settings', { appearance: { ...cfgNow.appearance, logo: { kind: 'file', id: png } }, dashboard: { ...cfgNow.dashboard, carrierLogo: { kind: 'file', id: png } } });
+  ok(r.status === 200 && r.json.settings.appearance.logo.id === png && r.json.settings.dashboard.carrierLogo.id === png, 'an uploaded logo and provider logo are saved');
+
   console.log(failures ? `\n${failures} FAILED` : '\nALL BRANDING TESTS PASSED');
   process.exit(failures ? 1 : 0);
 })().catch((e) => {
