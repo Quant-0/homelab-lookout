@@ -603,7 +603,7 @@ const Rack = (() => {
       out.push(lcm(26, mid - 7, 16, 14, info.ud));
       x = 50;
     } else x = 30;
-    if (m.console) {
+    if (m.console && m.consoleSide !== 'right') {
       // the console port (RJ45, light blue on Cisco) and a mode/reset button
       out.push(g({ class: 'console' }, tip('Console'), r(x, mid - 5.2, 12.4, 10.4, '#7fb2d9', { rx: 0.8 }), r(x + 2, mid - 3.2, 8.4, 6.4, '#0c0d0f', { rx: 0.5 })), c(x + 19, mid, 2, '#0c0d0f', { stroke: '#6b7079', 'stroke-width': 0.5 }));
       x += 28;
@@ -646,8 +646,18 @@ const Rack = (() => {
       // and USW-24-PoE; a gateway's drive bay sits just left of them. Other makes start at the left.
       const sfpCols = Math.ceil(sfps.length / 2);
       const portsWidth = (m.rj ? jackBlocks(rj.slice(0, m.rj), 0, y0, block).width + 6 : 0) + (m.wan ? 17 : 0) + sfpCols * 17;
-      const rightAligned = Boolean(m.screen) && !nvr && portsWidth > 0;
-      if (rightAligned) px = Math.max(x, right - 4 - portsWidth);
+      // where the ports sit on the real front: UniFi (a display on the left) and models marked so at
+      // the right end, some (Cisco Catalyst, Aruba) in the middle, the rest from the left
+      const align = m.align || (m.screen ? 'right' : 'left');
+      const rightAligned = align === 'right' && !nvr && portsWidth > 0;
+      const consoleRight = m.console && m.consoleSide === 'right';
+      const endRoom = consoleRight ? 30 : 4;
+      if (rightAligned) px = Math.max(x, right - endRoom - portsWidth);
+      else if (align === 'center' && !nvr && portsWidth > 0) px = Math.max(x, (W - portsWidth) / 2);
+      if (consoleRight) {
+        const cx = right - 22;
+        out.push(g({ class: 'console' }, tip('Console'), r(cx, mid - 5.2, 12.4, 10.4, '#7fb2d9', { rx: 0.8 }), r(cx + 2, mid - 3.2, 8.4, 6.4, '#0c0d0f', { rx: 0.5 })));
+      }
       const portsStart = px;
       if (m.rj) {
         const lan = jackBlocks(rj.slice(0, m.rj), px, y0, block);
@@ -670,15 +680,16 @@ const Rack = (() => {
         let bw;
         if (nvr || !rightAligned) {
           bx = nvr ? Math.max(px, x + 6) : 236;
-          const cols = Math.ceil(m.bays / (nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1));
+          const cols = Math.ceil(m.bays / (m.bayRows || (nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1)));
           bw = (right - bx - (cols - 1) * 2) / cols;
         } else {
           bw = Math.min(118, (portsStart - x - 40 - (m.bays - 1) * 2) / m.bays);
           bx = portsStart - 18 - (m.bays * bw + (m.bays - 1) * 2);
         }
-        const rows = nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1;
+        const rows = m.bayRows || (nvr ? Math.max(1, Math.ceil(m.bays / 8)) : 1);
         const cols = Math.ceil(m.bays / rows);
         const bh = (h - 10 - (rows - 1) * 2) / rows;
+        if (m.bayRows) bw = (right - bx - (cols - 1) * 2) / cols;
         for (let i = 0; i < m.bays; i++) out.push(uBay(bx + (i % cols) * (bw + 2), 5 + Math.floor(i / cols) * (bh + 2), bw, bh, i + 1, on, darkChassis(m)));
       }
     }
@@ -689,8 +700,8 @@ const Rack = (() => {
   // A desktop UniFi device placed in the rack stands on a shelf: its shape, at the bottom
   function onShelf(item, info, h, m) {
     const sh = SHAPES[m.shape] || SHAPES['gateway-small'];
-    const s = Math.min(1, (h - 2) / sh.h);
-    const g0 = g({ transform: `translate(${(W - shW(sh, m) * s) / 2} ${h - sh.h * s - 0.5}) scale(${s})` }, ...sh.draw(statusColor(info), m));
+    const s = Math.min(1, (h - 2) / shH(sh, m));
+    const g0 = g({ transform: `translate(${(W - shW(sh, m) * s) / 2} ${h - shH(sh, m) * s - 0.5}) scale(${s})` }, ...sh.draw(statusColor(info), m));
     return [g0];
   }
 
@@ -699,58 +710,167 @@ const Rack = (() => {
   // --- Shapes of devices that aren't rack-mounted, in millimetres (front or below view) ---
   const WHITE = '#f3f4f6';
   const EDGE = '#c8ccd2';
+  // the U logo on UniFi gear, in light grey
+  const uLogo = (cx, cy, sz, color = '#c4c9d0') => S('path', { d: `M${cx - sz} ${cy - sz}v${sz}a${sz} ${sz} 0 0 0 ${2 * sz} 0v${-sz}`, fill: 'none', stroke: color, 'stroke-width': sz * 0.42, 'stroke-linecap': 'round' });
+  // a UniFi light ring or bar is blue, unless the device has a problem
+  const ringColor = (st) => (st === RED || st === AMBER ? st : '#3d84ff');
+  const deskSwitchW = (m) => {
+    const rows = m?.rows === 2 ? 2 : 1;
+    const ports = (m?.ports || 8) / rows;
+    // the Lite and Flex models leave the right part of the front plain; with SFP cages the ports fill it
+    return Math.round(((m?.screen ? 26 : 0) + 12 + ports * 17 + (m?.sfp ? Math.ceil(m.sfp) * 19 + 6 : 0)) / (m?.sfp ? 0.86 : 0.62));
+  };
+  function deskSwitch(st, m) {
+    const rows = m?.rows === 2 ? 2 : 1;
+    const per = (m?.ports || 8) / rows;
+    const w = deskSwitchW(m);
+    const h = rows === 2 ? 50 : 38;
+    const out = [r(0, 0, w, h - 2, WHITE, { rx: 7, stroke: EDGE, 'stroke-width': 1.5 }), r(4, h - 8, w - 8, 5, '#dde0e4', { rx: 2.5 })];
+    let x = 12;
+    if (m?.screen) {
+      out.push(r(x, h / 2 - 9, 16, 16, '#0b1220', { rx: 2, stroke: '#9aa0a8', 'stroke-width': 0.5 }));
+      x += 26;
+    }
+    const y0 = rows === 2 ? 8 : 11;
+    for (let row = 0; row < rows; row++) for (let i = 0; i < per; i++) out.push(r(x + i * 17, y0 + row * 16, 14, 13, m?.silver ? '#8b929a' : '#16181b', { rx: 1.2 }), m?.silver ? r(x + i * 17 + 2, y0 + row * 16 + 3, 10, 8, '#16181b', { rx: 0.8 }) : null);
+    x += per * 17 + 6;
+    for (let i = 0; i < (m?.sfp || 0); i++) out.push(r(x + i * 19, h / 2 - 6, 16, 10, '#3a3e44', { rx: 1 }), r(x + i * 19 + 2, h / 2 - 4, 12, 6, '#0c0d0f'));
+    out.push(c(w - 12, h / 2 - 2, 2.4, st));
+    return out.filter(Boolean);
+  }
+
   const SHAPES = {
-    'ap-square': { w: 206, h: 206, draw: (st) => [r(0, 0, 206, 206, WHITE, { rx: 34, stroke: EDGE, 'stroke-width': 2 }), r(14, 14, 178, 178, 'none', { rx: 26, stroke: '#e3e6ea', 'stroke-width': 2 }), c(103, 103, 30, 'none', { stroke: st, 'stroke-width': 3.5, opacity: 0.9 }), c(103, 103, 5, '#b9bec5')] },
-    'ap-round': { w: 160, h: 160, draw: (st) => [c(80, 80, 79, WHITE, { stroke: EDGE, 'stroke-width': 2 }), c(80, 80, 62, 'none', { stroke: '#e3e6ea', 'stroke-width': 2 }), c(80, 80, 13, 'none', { stroke: st, 'stroke-width': 4 })] },
-    'ap-wall': { w: 120, h: 190, draw: (st) => [r(0, 0, 120, 190, WHITE, { rx: 18, stroke: EDGE, 'stroke-width': 2 }), r(40, 160, 40, 4, st, { rx: 2 })] },
-    'in-wall': { w: 86, h: 150, draw: (st) => [r(0, 0, 86, 150, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 2 }), r(33, 18, 20, 3, st, { rx: 1.5 }), ...[0, 1, 2, 3].map((i) => r(9 + i * 18, 122, 14, 12, '#16181b', { rx: 1.5 }))] },
-    mesh: { w: 46, h: 180, draw: (st) => [r(0, 0, 46, 180, WHITE, { rx: 23, stroke: EDGE, 'stroke-width': 2 }), c(23, 26, 4, st)] },
-    outdoor: { w: 110, h: 240, draw: (st) => [r(0, 0, 110, 240, WHITE, { rx: 22, stroke: EDGE, 'stroke-width': 2 }), ...[0, 1, 2, 3].map((i) => r(20, 40 + i * 40, 70, 2, '#e1e4e8')), c(55, 214, 4, st)] },
-    cylinder: { w: 110, h: 184, draw: (st) => [r(0, 10, 110, 174, WHITE, { rx: 30, stroke: EDGE, 'stroke-width': 2 }), S('ellipse', { cx: 55, cy: 14, rx: 50, ry: 10, fill: '#fbfbfc', stroke: EDGE, 'stroke-width': 1.5 }), r(34, 60, 42, 26, '#05070b', { rx: 4 }), c(55, 160, 3, st)] },
-    'gateway-small': { w: 141, h: 34, draw: (st) => [r(0, 0, 141, 34, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), r(10, 8, 24, 18, '#05070b', { rx: 2.5 }), ...[0, 1, 2, 3, 4].map((i) => r(46 + i * 16, 10, 12, 13, '#16181b', { rx: 1.2 })), c(130, 17, 2.4, st)] },
-    'gateway-max': { w: 100, h: 132, draw: (st) => [r(0, 0, 100, 132, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 1.8 }), r(26, 22, 48, 30, '#05070b', { rx: 4 }), r(30, 112, 40, 3, st, { rx: 1.5 })] },
-    cube: { w: 100, h: 100, draw: (st) => [r(0, 0, 100, 100, WHITE, { rx: 16, stroke: EDGE, 'stroke-width': 1.8 }), r(24, 26, 52, 32, '#05070b', { rx: 4 }), c(50, 82, 3, st)] },
+    // E7: a light grey rounded square with the U logo, no light ring
+    'ap-square': { w: 180, h: 180, draw: () => [r(0, 0, 180, 180, '#eceef1', { rx: 40, stroke: EDGE, 'stroke-width': 2 }), r(8, 8, 164, 164, 'none', { rx: 34, stroke: '#f7f8f9', 'stroke-width': 3 }), uLogo(90, 86, 9)] },
+    // ceiling APs (U7 Pro, U6+, AC Pro …): a white disc with the blue light ring around the U logo;
+    // the U6 Enterprise is an oval
+    'ap-round': { w: (m) => (m?.oval ? 132 : 160), h: 160, draw: (st, m) => {
+      const w = m?.oval ? 132 : 160;
+      const rc = ringColor(st);
+      return [S('ellipse', { cx: w / 2, cy: 80, rx: w / 2 - 1, ry: 79, fill: WHITE, stroke: EDGE, 'stroke-width': 2 }),
+        S('ellipse', { cx: w / 2, cy: 80, rx: w / 2 - 9, ry: 71, fill: '#fafbfc' }),
+        c(w / 2, 80, 30, 'none', { stroke: rc, 'stroke-width': 11, opacity: 0.16 }),
+        c(w / 2, 80, 30, 'none', { stroke: rc, 'stroke-width': 3.6 }),
+        uLogo(w / 2, 78, 7)];
+    } },
+    // U7 Pro Wall: a tall white panel, the light bar near the top
+    'ap-wall': { w: 120, h: 190, draw: (st) => [r(0, 0, 120, 190, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 2 }), r(46, 20, 28, 3.4, ringColor(st), { rx: 1.7 }), uLogo(60, 96, 8)] },
+    // in-wall APs: a white plate with a small light at the top (the jacks are underneath)
+    'in-wall': { w: 90, h: 150, draw: (st) => [r(0, 0, 90, 150, WHITE, { rx: 9, stroke: EDGE, 'stroke-width': 2 }), r(37, 15, 16, 2.8, ringColor(st), { rx: 1.4 }), uLogo(45, 66, 7)] },
+    // the Access Hub: a white box with its ports along the bottom
+    'hub-wall': { w: 86, h: 150, draw: (st) => [r(0, 0, 86, 150, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 2 }), r(33, 18, 20, 3, st, { rx: 1.5 }), ...[0, 1, 2, 3].map((i) => r(9 + i * 18, 122, 14, 12, '#16181b', { rx: 1.5 }))] },
+    'mesh': { w: 46, h: 180, draw: (st) => [r(0, 0, 46, 180, WHITE, { rx: 23, stroke: EDGE, 'stroke-width': 2 }), r(9, 5, 28, 3, ringColor(st), { rx: 1.5 }), r(9, 5, 28, 3, ringColor(st), { rx: 1.5, opacity: 0.3, transform: 'translate(0 2)' })] },
+    // U7 Outdoor: a plain rounded white block with the U logo
+    'outdoor': { w: 130, h: 160, draw: (st) => [r(0, 0, 130, 160, WHITE, { rx: 26, stroke: EDGE, 'stroke-width': 2 }), uLogo(65, 58, 9), c(65, 138, 2.2, ringColor(st))] },
+    // Dream Router: a rounded white body, the blue light band at the top and a small screen
+    'cylinder': { w: 120, h: 190, draw: (st) => [S('path', { d: 'M10 50Q10 6 60 6Q110 6 110 50V180Q110 189 101 189H19Q10 189 10 180Z', fill: WHITE, stroke: EDGE, 'stroke-width': 2 }),
+      r(20, 22, 80, 2.8, ringColor(st), { rx: 1.4 }), r(53, 84, 14, 28, '#0b1220', { rx: 7 }), r(56.5, 91, 7, 7, '#4f8dff', { rx: 3.5, opacity: 0.9 })] },
+    // Cloud Gateway Ultra: a low white box, only its small screen on the front (the ports are at the back)
+    'gateway-small': { w: 150, h: 36, draw: () => [r(0, 0, 150, 34, WHITE, { rx: 7, stroke: EDGE, 'stroke-width': 1.5 }), r(3, 29, 144, 4, '#d9dde2', { rx: 2 }), r(38, 11, 24, 11, '#0b1220', { rx: 5.5 }), r(42, 14.5, 9, 4, '#4f8dff', { rx: 2 })] },
+    // Cloud Gateway Max / Fiber, UNVR Instant: a wider low box with the screen in the middle
+    'gateway-max': { w: 210, h: 44, draw: () => [r(0, 0, 210, 42, WHITE, { rx: 9, stroke: EDGE, 'stroke-width': 1.6 }), r(4, 36, 202, 5, '#d9dde2', { rx: 2.5 }), r(89, 13, 32, 14, '#0b1220', { rx: 7 }), r(94, 17.5, 12, 5, '#4f8dff', { rx: 2.5 })] },
+    // Express: a small rounded box with a pill-shaped screen
+    'cube': { w: 130, h: 88, draw: () => [r(0, 0, 130, 86, WHITE, { rx: 16, stroke: EDGE, 'stroke-width': 1.8 }), r(4, 70, 122, 14, '#e3e6ea', { rx: 7 }), r(46, 32, 38, 16, '#0b1220', { rx: 8 }), r(51, 37, 14, 6, '#4f8dff', { rx: 3 })] },
     'dream-wall': { w: 290, h: 470, draw: (st) => [r(0, 0, 290, 470, WHITE, { rx: 20, stroke: EDGE, 'stroke-width': 2 }), r(95, 50, 100, 70, '#05070b', { rx: 6 }), ...Array.from({ length: 12 }, (_, i) => r(55 + (i % 6) * 31, 380 + Math.floor(i / 6) * 30, 24, 22, '#16181b', { rx: 2 })), c(145, 440, 4, st)] },
-    'switch-desk': { w: 200, h: 34, draw: (st) => [r(0, 0, 200, 34, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }), ...Array.from({ length: 8 }, (_, i) => r(14 + i * 20, 10, 15, 14, '#16181b', { rx: 1.2 })), c(186, 17, 2.4, st)] },
-    'switch-small': { w: 120, h: 32, draw: (st) => [r(0, 0, 120, 32, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), ...Array.from({ length: 5 }, (_, i) => r(12 + i * 18, 9, 14, 14, '#16181b', { rx: 1.2 })), c(108, 16, 2.4, st)] },
+    // desk switches (Lite 8/16, Enterprise 8, Pro XG 8, Flex 2.5G): ports from the left, the right part plain
+    'switch-desk': { w: (m) => deskSwitchW(m), h: (m) => (m?.rows === 2 ? 50 : 38), draw: (st, m) => deskSwitch(st, m) },
+    // Switch Ultra: its ports across the front
+    'switch-small': { w: (m) => 30 + (m?.ports || 5) * 18, h: 34, draw: (st, m) => { const n = m?.ports || 5; return [r(0, 0, 30 + n * 18, 34, WHITE, { rx: 7, stroke: EDGE, 'stroke-width': 1.5 }), c(10, 17, 2.2, st), ...Array.from({ length: n }, (_, i) => r(20 + i * 18, 10, 14, 14, '#16181b', { rx: 1.2 }))]; } },
+    // Switch Flex: a white square box on its bracket, the port lights in a row
+    'flex-box': { w: 120, h: 150, draw: (st) => [r(20, 112, 80, 36, '#eef0f2', { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), r(0, 0, 120, 118, WHITE, { rx: 18, stroke: EDGE, 'stroke-width': 2 }), uLogo(60, 30, 7),
+      ...[0, 1, 2, 3, 4].map((i) => c(28 + i * 16, 96, 2.4, i ? AMBER : st))] },
     'flex-mini': { w: 86, h: 22, draw: (st) => [r(0, 0, 86, 22, WHITE, { rx: 5, stroke: EDGE, 'stroke-width': 1.2 }), ...Array.from({ length: 5 }, (_, i) => r(6 + i * 14, 5, 11, 11, '#16181b', { rx: 1 })), c(80, 11, 1.8, st)] },
-    'cam-bullet': { w: 190, h: 120, draw: (st) => [r(20, 20, 150, 56, WHITE, { rx: 28, stroke: EDGE, 'stroke-width': 1.8 }), c(150, 48, 20, '#0b0c0e'), c(150, 48, 9, '#26303d'), r(80, 76, 30, 26, '#e7e9ec', { stroke: EDGE }), r(55, 100, 80, 14, WHITE, { rx: 6, stroke: EDGE }), c(40, 48, 3, st)] },
+    // bullet cameras, from the side: the lens to the left, the arm and wall mount to the right (G6 Bullet
+    // and AI Pro are black; the G5 Pro has a blue ring round the lens)
+    'cam-bullet': { w: 200, h: 110, draw: (st, m) => {
+      const [body, edge] = m?.color === 'black' ? ['#2b2d31', '#16181b'] : [WHITE, EDGE];
+      return [r(166, 18, 30, 74, body, { rx: 8, stroke: edge, 'stroke-width': 1.5 }), ...[0, 1, 2, 3].map((i) => r(170 + i * 6, 24, 2, 62, edge, { opacity: 0.5 })),
+        r(130, 42, 40, 24, body, { rx: 6, stroke: edge, 'stroke-width': 1.5 }),
+        r(18, 20, 128, 70, body, { rx: 30, stroke: edge, 'stroke-width': 1.8 }),
+        S('ellipse', { cx: 34, cy: 55, rx: 18, ry: 34, fill: '#111214' }),
+        m?.ring ? c(38, 55, 20, 'none', { stroke: '#2f7dff', 'stroke-width': 3.2 }) : null,
+        c(38, 55, 15, '#1a2230'), c(38, 55, 7, '#3a5a8a'), c(35, 51, 2.4, '#9db6dd', { opacity: 0.7 }),
+        uLogo(104, 54, 5, m?.color === 'black' ? '#5a5e66' : '#c4c9d0'), c(124, 30, 2.2, st)].filter(Boolean);
+    } },
     'cam-turret': { w: 130, h: 120, draw: (st) => [r(10, 86, 110, 28, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 1.8 }), c(65, 58, 46, WHITE, { stroke: EDGE, 'stroke-width': 1.8 }), c(65, 58, 22, '#0b0c0e'), c(65, 58, 9, '#26303d'), c(65, 99, 3, st)] },
-    'cam-dome': { w: 140, h: 80, draw: (st) => [r(0, 56, 140, 22, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 1.8 }), S('path', { d: 'M18 58a52 52 0 0 1 104 0z', fill: '#1b1d21', stroke: EDGE, 'stroke-width': 1.5 }), c(70, 38, 10, '#26303d'), c(70, 67, 2.6, st)] },
+    // G5 Dome, seen from below: a white dome, the lens window in its lower part
+    'cam-dome': { w: 150, h: 150, draw: (st) => [c(75, 75, 72, WHITE, { stroke: EDGE, 'stroke-width': 2 }), c(75, 75, 64, '#fafbfc'),
+      r(72, 34, 6, 16, '#2b2f35', { rx: 3 }), c(75, 102, 27, '#14161a'), c(75, 102, 13, '#26303d'), c(72, 98, 3, '#9db6dd', { opacity: 0.6 }), c(75, 20, 2, st)] },
+    // AI 360: a black ball with the fisheye lens in the middle
+    'cam-360': { w: 140, h: 140, draw: (st) => [c(70, 70, 68, '#1d1f23', { stroke: '#0a0a0b', 'stroke-width': 1.5 }), S('ellipse', { cx: 52, cy: 46, rx: 26, ry: 14, fill: '#ffffff', opacity: 0.06 }),
+      c(70, 70, 15, '#0b0c0e', { stroke: '#3a3d42', 'stroke-width': 1.2 }), c(70, 70, 6, '#3a4a6a'), c(70, 118, 2, st)] },
     'cam-flex': { w: 80, h: 100, draw: (st) => [r(10, 0, 60, 64, WHITE, { rx: 14, stroke: EDGE, 'stroke-width': 1.8 }), c(40, 30, 15, '#0b0c0e'), c(40, 30, 6, '#26303d'), r(32, 64, 16, 22, '#e7e9ec', { stroke: EDGE }), r(14, 86, 52, 12, WHITE, { rx: 5, stroke: EDGE }), c(40, 54, 2.2, st)] },
-    doorbell: { w: 50, h: 140, draw: (st) => [r(0, 0, 50, 140, '#1b1d21', { rx: 25, stroke: '#3a3d42', 'stroke-width': 1.8 }), c(25, 32, 12, '#0b0c0e', { stroke: '#3a3d42' }), c(25, 32, 5, '#26303d'), c(25, 108, 11, 'none', { stroke: st, 'stroke-width': 2.5 })] },
-    'ups-tower': { w: 150, h: 230, draw: (st) => [r(0, 0, 150, 230, WHITE, { rx: 12, stroke: EDGE, 'stroke-width': 2 }), r(45, 30, 60, 40, '#05070b', { rx: 4 }), ...Array.from({ length: 6 }, (_, i) => r(30, 100 + i * 18, 90, 3, '#e1e4e8')), c(75, 205, 6, 'none', { stroke: st, 'stroke-width': 2.4 })] },
+    // G4 Doorbell Pro: camera at the top, the ring button in the middle, the small display below it
+    'doorbell': { w: 56, h: 150, draw: (st) => [r(0, 0, 56, 150, '#1b1d21', { rx: 14, stroke: '#3a3d42', 'stroke-width': 1.8 }),
+      c(28, 26, 11, '#0b0c0e', { stroke: '#3a3d42' }), c(28, 26, 5, '#26303d'), c(18, 46, 2, '#0b0c0e'), c(38, 46, 2, '#0b0c0e'),
+      c(28, 70, 10, 'none', { stroke: ringColor(st), 'stroke-width': 2.6 }), c(28, 70, 6, '#2a2d32'),
+      r(15, 90, 26, 22, '#0e1830', { rx: 2 }), r(19, 96, 18, 2, '#4f8dff', { opacity: 0.7 }), r(19, 101, 12, 2, '#4f8dff', { opacity: 0.5 }), c(28, 130, 5, '#0b0c0e', { stroke: '#3a3d42' })] },
+    // UniFi UPS Tower: a slim white tower with grooves down the sides and its status ring at the top
+    'ups-tower': { w: 80, h: 240, draw: (st) => [r(0, 0, 80, 240, WHITE, { rx: 10, stroke: EDGE, 'stroke-width': 2 }), r(6, 12, 2.4, 216, '#e1e4e8'), r(71.6, 12, 2.4, 216, '#e1e4e8'),
+      c(40, 34, 7, 'none', { stroke: ringColor(st), 'stroke-width': 1.6 }), ...[0, 1, 2, 3, 4].map((i) => c(32 + i * 4, 56, 0.9, '#b9bec5')), uLogo(40, 196, 4)] },
     plug: { w: 70, h: 70, draw: (st) => [r(0, 0, 70, 70, WHITE, { rx: 14, stroke: EDGE, 'stroke-width': 1.8 }), c(35, 35, 20, '#e7e9ec'), c(27, 35, 3.2, '#16181b'), c(43, 35, 3.2, '#16181b'), c(58, 12, 2.4, st)] },
     // desktop NAS: black, a tray per bay (width follows the bays)
-    'nas-desk': { w: (m) => 34 + (m?.bays || 4) * 36, h: 166, draw: (st, m) => {
+    // desktop NAS: a dark case, the trays in a recessed front; Synology and TrueNAS have the LEDs, USB
+    // and power button in a strip on the right, QNAP on the left
+    'nas-desk': { w: (m) => 44 + (m?.bays || 4) * 36, h: 166, draw: (st, m) => {
       const n = m?.bays || 4;
-      const w = 34 + n * 36;
-      return [r(0, 0, w, 166, '#1b1c1f', { rx: 8, stroke: '#0a0a0b', 'stroke-width': 1 }), c(15, 20, 3, st), c(15, 34, 2.4, '#3ee07a'), c(15, 140, 5, 'none', { stroke: '#4a90ff', 'stroke-width': 1.4 }),
-        ...Array.from({ length: n }, (_, i) => [r(30 + i * 36, 8, 33, 150, '#141517', { rx: 2, stroke: '#0a0a0b' }), r(36 + i * 36, 18, 21, 104, '#1f2125', { rx: 1.5 }), r(38 + i * 36, 132, 17, 6, '#2c2f34', { rx: 2 })]).flat()];
+      const w = 44 + n * 36;
+      const left = m?.brand === 'QNAP';
+      const sx = left ? 18 : w - 18;
+      const tx = left ? 36 : 10;
+      return [r(0, 0, w, 166, '#2a2c30', { rx: 8, stroke: '#0a0a0b', 'stroke-width': 1 }), r(6, 8, w - 12, 150, '#17181b', { rx: 4 }),
+        c(sx, 22, 2.4, st), ...[0, 1, 2, 3].slice(0, Math.min(4, n)).map((i) => c(sx, 34 + i * 10, 1.8, '#3ee07a')),
+        r(sx - 3, 108, 6, 10, '#0b0c0d', { stroke: '#3d7fd9', 'stroke-width': 0.6 }), c(sx, 140, 5, 'none', { stroke: '#4a90ff', 'stroke-width': 1.4 }),
+        ...Array.from({ length: n }, (_, i) => [r(tx + i * 36, 14, 33, 138, '#26282c', { rx: 2, stroke: '#0a0a0b' }), r(tx + 3 + i * 36, 16, 27, 1, '#34373c'), c(tx + 16.5 + i * 36, 114, 3, '#141517', { stroke: '#4a4f56' })]).flat()];
     } },
-    'mini-pc': { w: 112, h: 38, draw: (st) => [r(0, 0, 112, 38, '#1c1e22', { rx: 5, stroke: '#0b0c0e', 'stroke-width': 1 }), c(12, 19, 3.2, 'none', { stroke: st, 'stroke-width': 1.4 }), r(30, 14, 10, 10, '#08090a', { rx: 1 }), r(46, 14, 10, 10, '#08090a', { rx: 1 }), r(70, 16, 30, 3, '#2b2e33', { rx: 1.5 })] },
-    pi: { w: 98, h: 34, draw: (st) => [r(0, 10, 98, 24, '#d6283c', { rx: 4 }), r(0, 0, 98, 14, '#f3f4f6', { rx: 4, stroke: '#d4d6da' }), r(8, 20, 14, 10, '#c8ccd2', { rx: 1 }), r(28, 20, 14, 10, '#c8ccd2', { rx: 1 }), r(52, 22, 16, 8, '#1b1d21', { rx: 1 }), c(88, 24, 2, st)] },
-    'router-small': { w: 150, h: 40, draw: (st) => [r(0, 6, 150, 34, WHITE, { rx: 8, stroke: EDGE, 'stroke-width': 1.5 }), ...[0, 1, 2, 3, 4].map((i) => r(14 + i * 20, 18, 15, 13, '#16181b', { rx: 1.2 })), c(134, 22, 2.4, st)] },
+    // mini PCs, from the front: power button, USB ports and the audio jack (a vent at the top on HP/Lenovo/Dell)
+    'mini-pc': { w: (m) => (m?.brand === 'Minisforum' ? 140 : 112), h: (m) => (m?.brand === 'Minisforum' ? 48 : 38), draw: (st, m) => {
+      const w = m?.brand === 'Minisforum' ? 140 : 112;
+      const h = m?.brand === 'Minisforum' ? 48 : 38;
+      const body = { Intel: '#2b2e33', Minisforum: '#3a3d42', Beelink: '#4b4f56' }[m?.brand] || '#1c1e22';
+      const vent = ['HP', 'Lenovo', 'Dell'].includes(m?.brand);
+      return [r(0, 0, w, h, body, { rx: 5, stroke: '#0b0c0e', 'stroke-width': 1 }), vent ? r(8, 4, w - 16, 4, '#121315', { rx: 1 }) : null,
+        c(12, h / 2 + 2, 3.2, 'none', { stroke: st, 'stroke-width': 1.4 }), r(26, h / 2 - 2, 9, 6, '#08090a', { rx: 0.8, stroke: '#3d7fd9', 'stroke-width': 0.5 }), r(39, h / 2 - 2, 9, 6, '#08090a', { rx: 0.8, stroke: '#3d7fd9', 'stroke-width': 0.5 }),
+        r(52, h / 2 - 1.5, 6, 5, '#08090a', { rx: 1 }), c(64, h / 2 + 1, 1.6, '#08090a'), S('text', { x: w - 10, y: h / 2 + 3, 'text-anchor': 'end', 'font-size': 6, fill: '#6b7079', 'font-weight': 600 }, (m?.brand || '').toUpperCase())].filter(Boolean);
+    } },
+    // Raspberry Pi in the official case, from the USB/Ethernet end: red base, white lid
+    pi: { w: 98, h: 34, draw: (st) => [r(0, 10, 98, 24, '#d6283c', { rx: 4 }), r(0, 0, 98, 14, '#f3f4f6', { rx: 4, stroke: '#d4d6da' }),
+      r(8, 18, 14, 13, '#c8ccd2', { rx: 1 }), r(10, 20, 10, 4, '#3d7fd9'), r(28, 18, 14, 13, '#c8ccd2', { rx: 1 }), r(30, 20, 10, 4, '#1b1d21'), r(54, 17, 18, 14, '#c8ccd2', { rx: 1 }), r(57, 20, 12, 8, '#1b1d21', { rx: 1 }), c(88, 24, 2, st)] },
+    // MikroTik hAP ax³: a white tower standing in its teal stand, the ports down one side
+    'router-small': { w: 90, h: 180, draw: (st) => [S('path', { d: 'M8 176L22 120H68L82 176Z', fill: '#5f9e8f' }), r(18, 0, 54, 160, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }),
+      ...[0, 1, 2, 3, 4].map((i) => r(22, 24 + i * 20, 12, 15, '#16181b', { rx: 1.2 })), c(60, 14, 2.4, st)] },
     'switch-metal': { w: (m) => 40 + (m?.ports || 8) * 17, h: 32, draw: (st, m) => {
       const n = m?.ports || 8;
       const w = 40 + n * 17;
-      return [r(0, 0, w, 32, m?.color || '#2a2d31', { rx: 4, stroke: '#0b0c0e', 'stroke-width': 1 }), ...Array.from({ length: n }, (_, i) => r(12 + i * 17, 9, 14, 14, '#0c0d0f', { rx: 1.2, stroke: '#5a5f66', 'stroke-width': 0.6 })), c(w - 12, 16, 2.4, st)];
+      // metal desk switches and routers: TP-Link Omada keep the ports at the right with the status LEDs
+      // on the left, Netgear and Cisco run them across the front from the left
+      const right = m?.align === 'right';
+      const x0 = right ? w - 12 - n * 17 : 12;
+      const light = /^#[c-f]/i.test(m?.color || '');
+      return [r(0, 0, w, 32, m?.color || '#2a2d31', { rx: 4, stroke: '#0b0c0e', 'stroke-width': 1 }), r(2, 1, w - 4, 1.2, light ? '#ffffff' : '#4a4f57', { opacity: 0.5 }),
+        ...Array.from({ length: n }, (_, i) => r(x0 + i * 17, 9, 14, 14, '#0c0d0f', { rx: 1.2, stroke: light ? '#8a9098' : '#5a5f66', 'stroke-width': 0.6 })),
+        right ? [0, 1, 2].map((i) => c(12 + i * 6, 16, 1.4, i ? '#3ee07a' : st)) : c(w - 8, 16, 2.4, st)].flat();
     } },
     'ups-desk': { w: 100, h: 200, draw: (st) => [r(0, 0, 100, 200, '#1b1c1f', { rx: 10, stroke: '#0a0a0b', 'stroke-width': 1 }), r(20, 26, 60, 34, '#10283b', { rx: 3 }), r(26, 34, 34, 3, '#5fb4e8'), r(26, 42, 22, 3, '#5fb4e8', { opacity: 0.6 }), c(50, 90, 8, 'none', { stroke: st, 'stroke-width': 2 }), ...Array.from({ length: 5 }, (_, i) => r(18, 120 + i * 14, 64, 3, '#2a2d32'))] },
-    'oc-small': { w: 100, h: 28, draw: (st) => [r(0, 0, 100, 28, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.4 }), r(12, 8, 12, 12, '#16181b', { rx: 1 }), r(28, 8, 12, 12, '#16181b', { rx: 1 }), c(88, 14, 2.4, st)] },
+    // TP-Link OC200: a small dark grey metal box, two ports and USB on the front
+    'oc-small': { w: 110, h: 40, draw: (st) => [r(0, 0, 110, 40, '#2e3135', { rx: 4, stroke: '#0b0c0e', 'stroke-width': 1 }), r(2, 1, 106, 1.2, '#4a4f57', { opacity: 0.5 }),
+      ...[0, 1, 2].map((i) => c(10, 12 + i * 7, 1.4, i ? '#3ee07a' : st)), r(24, 14, 15, 14, '#0c0d0f', { rx: 1.2, stroke: '#5a5f66', 'stroke-width': 0.6 }), r(44, 14, 15, 14, '#0c0d0f', { rx: 1.2, stroke: '#5a5f66', 'stroke-width': 0.6 }), r(66, 17, 12, 6, '#0b0c0d', { stroke: '#3d7fd9', 'stroke-width': 0.6 })] },
     tower: { w: 180, h: 430, draw: (st) => [r(0, 0, 180, 430, '#1b1d21', { rx: 6, stroke: '#0a0a0b', 'stroke-width': 1 }), r(14, 18, 152, 120, '#141518', { rx: 3 }), ...Array.from({ length: 4 }, (_, i) => r(20, 24 + i * 28, 140, 24, '#202226', { rx: 1.5, stroke: '#0a0a0b' })), ...Array.from({ length: 12 }, (_, i) => r(30, 160 + i * 20, 120, 4, '#26292e')), c(160, 410, 6, 'none', { stroke: st, 'stroke-width': 2 })] },
     microserver: { w: 240, h: 240, draw: (st) => [r(0, 0, 240, 240, '#1b1d21', { rx: 10, stroke: '#0a0a0b' }), ...Array.from({ length: 10 }, (_, i) => r(20, 20 + i * 20, 200, 10, '#25282d', { rx: 5 })), c(220, 220, 5, 'none', { stroke: st, 'stroke-width': 2 })] },
-    'cloud-key': { w: 120, h: 34, draw: (st) => [r(0, 0, 120, 34, WHITE, { rx: 6, stroke: EDGE, 'stroke-width': 1.5 }), r(10, 7, 30, 20, '#05070b', { rx: 2.5 }), c(108, 17, 2.4, st)] },
+    // Cloud Key Gen2 Plus, from the front: silver, a black front with the screen on the right
+    'cloud-key': { w: 150, h: 36, draw: (st) => [r(0, 0, 150, 36, '#c9cdd2', { rx: 5, stroke: '#9aa0a8', 'stroke-width': 1.2 }), r(2, 2, 146, 32, '#16181b', { rx: 4 }),
+      r(96, 7, 36, 22, '#0e1a2b', { rx: 2 }), r(100, 12, 20, 2, '#cfe6ff', { opacity: 0.7 }), r(100, 17, 14, 2, '#cfe6ff', { opacity: 0.5 }), r(140, 7, 2.6, 22, ringColor(st), { rx: 1.3 })] },
   };
 
   const shW = (sh, m) => (typeof sh.w === 'function' ? sh.w(m) : sh.w);
+  const shH = (sh, m) => (typeof sh.h === 'function' ? sh.h(m) : sh.h);
 
   // The shape of a device that isn't in the rack (for the cards beside it and the catalog)
   function productShape(m, info = {}) {
     const sh = SHAPES[m?.shape];
     if (!sh) return null;
     const pad = 4;
-    return S('svg', { class: `product-shape shape-${m.shape}`, viewBox: `${-pad} ${-pad} ${shW(sh, m) + pad * 2} ${sh.h + pad * 2}`, role: 'img', 'aria-label': m.name },
+    return S('svg', { class: `product-shape shape-${m.shape}`, viewBox: `${-pad} ${-pad} ${shW(sh, m) + pad * 2} ${shH(sh, m) + pad * 2}`, role: 'img', 'aria-label': m.name },
       ...sh.draw(statusColor(info), m));
   }
 
@@ -778,31 +898,31 @@ const Rack = (() => {
     const y0 = h - dh - 0.5;
     const disks = info.syno?.disks || [];
     const online = Boolean(info.syno);
-    const out = [r(x0, y0, dw, dh, '#1b1c1f', { rx: 6 * s, stroke: '#0a0a0b', 'stroke-width': 0.6 }), r(x0 + 4 * s, y0 + 0.6, dw - 8 * s, 1.2 * s, '#34373c')];
-    // left panel: status, LAN and disk LEDs, USB and the power button
-    const lx = x0 + 15 * s;
-    const ledsY = [18, 28, 38, 52, 62, 72, 82];
+    // like the real one: a dark grey case, a recessed front holding four trays on the left and a
+    // strip on the right with the status and disk LEDs, then USB and the power button at the bottom
+    const out = [r(x0, y0, dw, dh, '#2a2c30', { rx: 6 * s, stroke: '#0a0a0b', 'stroke-width': 0.6 }), r(x0 + 4 * s, y0 + 0.6, dw - 8 * s, 1.2 * s, '#3c3f45'),
+      r(x0 + 7 * s, y0 + 9 * s, dw - 14 * s, dh - 18 * s, '#17181b', { rx: 3 * s })];
     const diskSt = (i) => {
       const d = disks[i];
       if (!d) return null;
       return ['Critical', 'Failing'].includes(d.health) || d.status === 'Crashed' ? RED : d.health === 'Warning' ? AMBER : GREEN;
     };
-    out.push(led(lx, y0 + ledsY[0] * s, 1.6 * s, info.status === 'critical' ? AMBER : GREEN, online));
-    out.push(led(lx, y0 + ledsY[1] * s, 1.6 * s, GREEN, online), led(lx, y0 + ledsY[2] * s, 1.6 * s, GREEN, false));
-    for (let i = 0; i < 4; i++) out.push(led(lx, y0 + ledsY[3 + i] * s, 1.6 * s, diskSt(i) || GREEN, Boolean(diskSt(i))));
-    out.push(r(lx - 4.5 * s, y0 + 112 * s, 9 * s, 4 * s, '#0b0c0d', { stroke: '#4a4f56', 'stroke-width': 0.4 }));
-    out.push(c(lx, y0 + 140 * s, 5 * s, '#17181b', { stroke: online ? BLUE : '#4a4f56', 'stroke-width': 1.1 }));
-    // four trays standing up
-    const tx = x0 + 32 * s;
-    const tw = (dw - 40 * s - 3 * 3 * s) / 4;
+    const lx = x0 + dw - 22 * s;
+    out.push(led(lx, y0 + 22 * s, 1.5 * s, info.status === 'critical' ? AMBER : GREEN, online));
+    for (let i = 0; i < 4; i++) out.push(led(lx, y0 + (34 + i * 10) * s, 1.5 * s, diskSt(i) || GREEN, Boolean(diskSt(i))));
+    out.push(r(lx - 3 * s, y0 + 112 * s, 6 * s, 10 * s, '#0b0c0d', { stroke: '#3d7fd9', 'stroke-width': 0.6 }));
+    out.push(r(lx - 5 * s, y0 + 134 * s, 10 * s, 10 * s, '#202226', { rx: 1.5 * s, stroke: '#4a4f56', 'stroke-width': 0.5 }), c(lx, y0 + 139 * s, 2.4 * s, 'none', { stroke: online ? BLUE : '#4a4f56', 'stroke-width': 0.9 }));
+    // four trays standing up, each with its lock
+    const tx = x0 + 14 * s;
+    const tw = (dw - 50 * s - 3 * 3 * s) / 4;
     for (let i = 0; i < 4; i++) {
       const d = disks[i];
       const st = d ? (['Critical', 'Failing'].includes(d.health) || d.status === 'Crashed' ? 'critical' : d.health === 'Warning' ? 'warning' : 'good') : '';
-      out.push(g({ class: `drive${d ? ` on ${st}` : ''}`, transform: `translate(${tx + i * (tw + 3 * s)} ${y0 + 8 * s})` },
+      out.push(g({ class: `drive${d ? ` on ${st}` : ''}`, transform: `translate(${tx + i * (tw + 3 * s)} ${y0 + 15 * s})` },
         tip(d ? `${d.id} · ${d.model || ''} · ${d.temp ?? '–'} °C · ${d.health || d.status || ''}` : `Bay ${i + 1}`),
-        r(0, 0, tw, dh - 16 * s, '#141517', { rx: 1.5 * s, stroke: '#0a0a0b', 'stroke-width': 0.5 }),
-        r(tw * 0.18, 8 * s, tw * 0.64, dh - 40 * s, '#1d1f22', { rx: 1 * s }),
-        r(tw * 0.25, dh - 28 * s, tw * 0.5, 7 * s, '#2c2f34', { rx: 1.5 * s })));
+        r(0, 0, tw, dh - 34 * s, '#26282c', { rx: 1.5 * s, stroke: '#0a0a0b', 'stroke-width': 0.5 }),
+        r(tw * 0.08, 2 * s, tw * 0.84, 1 * s, '#34373c'),
+        c(tw / 2, dh - 58 * s, 3 * s, '#141517', { stroke: '#4a4f56', 'stroke-width': 0.5 })));
     }
     return out;
   }
