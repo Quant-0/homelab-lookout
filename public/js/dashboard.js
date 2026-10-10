@@ -1324,6 +1324,52 @@ let rackSel = null;
 const rackWide = matchMedia('(min-width: 1100px)');
 rackWide.addEventListener('change', () => lastData && currentView() === 'rack' && render(lastData));
 
+// Patching in the rack (signed in): pick two ports; a cable picked shows its colour, label and Remove
+let cableEdit = false;
+const cableState = { pending: null, color: 'blue', selected: null, error: null };
+const sameEnd = (x, y) => x && y && x.item === y.item && x.port === y.port;
+const CABLE_NAMES = { blue: 'Blue', yellow: 'Yellow', red: 'Red', green: 'Green', white: 'White', black: 'Black', orange: 'Orange', purple: 'Purple', grey: 'Grey' };
+
+function cableBar(d, save) {
+  const sel = cableState.selected && d.cables.find((c) => sameEnd(c.a, cableState.selected.a));
+  const swatches = (current, onPick) => el('span', { class: 'cable-swatches', role: 'group', 'aria-label': 'Cable colour' }, Object.entries(Rack.CABLE_HEX).map(([k, hex]) => {
+    const b = el('button', { type: 'button', title: CABLE_NAMES[k], 'aria-label': CABLE_NAMES[k], 'aria-pressed': String(current === k), onclick: () => onPick(k) });
+    b.style.setProperty('--c', hex);
+    return b;
+  }));
+  if (sel) {
+    const label = el('input', { type: 'text', id: 'cable-label', maxlength: 40, placeholder: 'Label (optional)', value: sel.label || '', 'aria-label': 'Cable label' });
+    const commit = () => {
+      if ((sel.label || '') === label.value.trim()) return;
+      label.blur();
+      save(d.cables.map((c) => (c === sel ? { ...c, label: label.value.trim() } : c)));
+    };
+    label.addEventListener('keydown', (e) => e.key === 'Enter' && commit());
+    label.addEventListener('blur', commit);
+    return el('div', { class: 'cable-bar' },
+      el('span', { class: 'hint-text', text: 'This cable:' }),
+      swatches(sel.color, (k) => {
+        cableState.color = k;
+        save(d.cables.map((c) => (c === sel ? { ...c, color: k } : c)));
+      }),
+      label,
+      el('button', { type: 'button', class: 'danger', onclick: () => {
+        cableState.selected = null;
+        save(d.cables.filter((c) => c !== sel));
+      } }, HD.icon('trash'), 'Remove'),
+      el('button', { type: 'button', class: 'ghost', text: 'New cable', onclick: () => {
+        cableState.selected = null;
+        renderRackView(d);
+      } }));
+  }
+  return el('div', { class: 'cable-bar' },
+    el('span', { class: 'hint-text', text: cableState.error || (cableState.pending ? 'Now click the port at the other end (or the same port to cancel).' : 'Click a port, then the port it connects to. Click a cable to change or remove it.') }),
+    swatches(cableState.color, (k) => {
+      cableState.color = k;
+      renderRackView(d);
+    }));
+}
+
 function renderRackView(d) {
   const rack = d.rack;
   const box = $('rack-view');
@@ -1339,10 +1385,49 @@ function renderRackView(d) {
     renderRackView(lastData);
     HD.fillSparks();
   };
-  const draw = () => Rack.render(inner, rack, d, { onSelect: (item) => pick(item.id), selectedId: side ? rackSel : null });
+  if (document.activeElement?.closest?.('.cable-bar')) return; // not while the label is being typed
+  if (!d.loggedIn) cableEdit = false;
+  const cables = d.cables || [];
+  const saveCables = async (list) => {
+    try {
+      const r = await HD.api('PUT', '/api/admin/cables', { cables: list });
+      d.cables = r.cables;
+      cableState.selected = cableState.selected ? r.cables.find((c) => sameEnd(c.a, cableState.selected.a)) || null : null;
+    } catch (e) {
+      cableState.error = e.message;
+    }
+    renderRackView(d);
+  };
+  const draw = () => Rack.render(inner, rack, d, {
+    onSelect: (item) => pick(item.id),
+    selectedId: side ? rackSel : null,
+    mode: cableEdit ? 'realistic' : undefined, // the schematic has no ports to patch
+    cables,
+    cablesShow: Rack.cablesShown(),
+    cableEdit,
+    cableState,
+    onCablesChange: (list) => {
+      cableState.selected = list[list.length - 1];
+      saveCables(list);
+    },
+    onCableSelect: (c) => {
+      cableState.selected = c;
+      cableState.pending = null;
+      renderRackView(d);
+    },
+  });
+  const tools = rack.items.length ? el('span', { class: 'rack-head-tools' },
+    cableEdit ? null : Rack.modeToggle(() => renderRackView(d)),
+    cables.length && !cableEdit ? Rack.cablesToggle(draw) : null,
+    d.loggedIn ? el('button', { type: 'button', class: `cable-toggle${cableEdit ? ' primary' : ''}`, 'aria-pressed': String(cableEdit), title: 'Add, recolour or remove patch cables', onclick: () => {
+      cableEdit = !cableEdit;
+      Object.assign(cableState, { pending: null, selected: null, error: null });
+      renderRackView(d);
+    } }, HD.icon(cableEdit ? 'check' : 'pencil'), el('span', { text: cableEdit ? 'Done' : 'Patch' })) : null) : el('span', { class: 'small muted', text: 'Add equipment in Admin' });
   box.replaceChildren(el('div', { class: `rack-page${side ? ' with-detail' : ''}` },
     el('div', { class: 'card rack-card' },
-      el('div', { class: 'rack-head' }, el('span', { class: 'muted', text: `${rack.units} U, ${inRack} device${inRack === 1 ? '' : 's'}` }), rack.items.length ? Rack.modeToggle(draw) : el('span', { class: 'small muted', text: 'Add equipment in Admin' })),
+      el('div', { class: 'rack-head' }, el('span', { class: 'muted', text: `${rack.units} U, ${inRack} device${inRack === 1 ? '' : 's'}` }), tools),
+      cableEdit ? cableBar(d, saveCables) : null,
       inner),
     side ? el('aside', { class: 'card rack-detail', 'aria-label': `${side.dev.name} details` }, deviceDetail(side)) : null));
   draw();

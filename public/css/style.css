@@ -2076,3 +2076,29 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .spark-tip .tip-when { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .wall-chart { position: relative; }
 .wall-chart .spark-legend { position: absolute; right: 4px; top: 0; font-size: clamp(12px, 1.4vh, 15px); }
+
+/* ---- Patch cables over the rack ---- */
+.rack-figure { position: relative; }
+.cable-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
+.cable-line, .cable-shadow, .cable-hit { fill: none; stroke-linecap: round; }
+.cable-shadow { stroke: rgb(0 0 0 / 0.45); }
+.cable-hit { stroke: transparent; }
+.cable-plug { stroke: rgb(0 0 0 / 0.5); stroke-width: 0.6; }
+.cable-layer.editing .cable { pointer-events: visibleStroke; cursor: pointer; }
+.cable-layer.editing .cable-plug { pointer-events: all; }
+.cable:hover .cable-line, .cable.selected .cable-line { filter: drop-shadow(0 0 4px currentColor) brightness(1.2); }
+.cable.selected .cable-shadow { stroke: var(--accent); }
+.cable-edit .rack-item { cursor: default; }
+.cable-edit [data-port] { cursor: crosshair; }
+.cable-edit [data-port]:hover > rect:first-of-type, .cable-edit [data-port].cable-pick > rect:first-of-type { stroke: var(--accent); stroke-width: 1.4; }
+.cable-edit [data-port].cable-pick > rect:first-of-type { fill: color-mix(in srgb, var(--accent) 45%, #000); }
+.cable-toggle { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px; font-size: 13px; }
+.cable-toggle[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); color: var(--text); }
+.cable-toggle .icon { width: 15px; height: 15px; }
+.cable-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2); font-size: 13.5px; }
+.cable-bar .hint-text { flex: 1 1 260px; min-width: 0; color: var(--text-2); }
+.cable-swatches { display: flex; gap: 6px; }
+.cable-swatches button { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid rgb(0 0 0 / 0.35); background: var(--c); }
+.cable-swatches button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c); }
+.cable-bar input { width: 160px; }
+.rack-head-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

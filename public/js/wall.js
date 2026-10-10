@@ -20,7 +20,7 @@ const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', p
 const SIZE_NAMES = { normal: 'Normal', wide: 'Wide', tall: 'Tall', big: 'Big' };
 const DEFAULT_LAYOUT = {
   panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
-  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, logo: true, vmCount: true,
+  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, logo: true, cables: false, vmCount: true,
 };
 const layout = () => draft || data?.wall || DEFAULT_LAYOUT;
 
@@ -221,7 +221,7 @@ function renderRack() {
   if (section.hidden) return;
   const inner = el('div', { class: 'rack-view' });
   const draw = () => {
-    Rack.render(inner, rack, data, { onSelect: (item) => (location.href = `/#device-${item.id}`) });
+    Rack.render(inner, rack, data, { onSelect: (item) => (location.href = `/#device-${item.id}`), cables: data.cables || [], cablesShow: Boolean(layout().cables) });
     fitRack();
   };
   if (!rackMode) rackMode = Rack.modeToggle(draw);
@@ -368,6 +368,8 @@ function openCustomize() {
       el('ol', { class: 'wall-panels' }, rows),
       el('h4', { text: 'Top bar' }),
       el('div', { class: 'wall-picks' }, toggle('logo', 'Logo and title'), toggle('clock', 'Clock'), toggle('vmCount', 'VMs running')),
+      el('h4', { text: 'Rack panel' }),
+      el('div', { class: 'wall-picks' }, toggle('cables', 'Patch cables')),
       el('h4', { text: 'Services along the bottom' }),
       toggle('showServices', 'Show services'),
       ...(draft.showServices ? chooser('services', 'The same as Home', 'The ones I pick (up to 10 show)', svcItems) : []),

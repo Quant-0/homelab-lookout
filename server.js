@@ -451,6 +451,7 @@ function loadConfig() {
     backgrounds: Array.isArray(raw.backgrounds) ? raw.backgrounds : [], // [{ id, mime, bytes, name, uploadedAt }]
     layout: raw.layout && Array.isArray(raw.layout.items) ? raw.layout : null,
     wall: raw.wall && typeof raw.wall === 'object' ? raw.wall : null,
+    cables: Array.isArray(raw.cables) ? raw.cables : [], // patch cables in the rack: [{ id, a: { item, port }, b, color, label }]
     rack: {
       enabled: raw.rack?.enabled !== false,
       units: Number.isInteger(raw.rack?.units) ? raw.rack.units : DEFAULT_RACK.units,
@@ -969,9 +970,41 @@ const DEFAULT_WALL = {
   services: null, // null = the same as Home
   devices: null, // null = every device
   clock: true,
+  cables: false, // patch cables drawn over the rack
   logo: true, // the dashboard's logo and title beside the clock
   vmCount: true,
 };
+
+// --- Patch cables: from a port on one thing in the rack to a port on another (devices or patch
+// panels), with a colour and an optional label. Only what is in the rack can be patched; cables to
+// something that has been removed are dropped.
+const CABLE_COLORS = ['blue', 'yellow', 'red', 'green', 'white', 'black', 'orange', 'purple', 'grey'];
+const CABLE_PORT = /^(rj|sfp|pp)\d{1,3}$/;
+function rackThings() {
+  return new Set([...config.devices.filter((d) => d.location === 'rack' && !d.hidden).map((d) => d.id), ...(config.rack.passive || []).filter((p) => p.kind === 'patch').map((p) => p.id)]);
+}
+function validateCables(list, strict = true) {
+  if (!Array.isArray(list) || list.length > 500) throw new UserError('Invalid cable list');
+  const things = rackThings();
+  const used = new Set();
+  const out = [];
+  for (const c of list) {
+    const end = (e) => (e && typeof e.item === 'string' && things.has(e.item) && typeof e.port === 'string' && CABLE_PORT.test(e.port) ? { item: e.item, port: e.port } : null);
+    const a = end(c?.a);
+    const b = end(c?.b);
+    const bad = !a || !b || (a.item === b.item && a.port === b.port) || used.has(`${a.item}/${a.port}`) || used.has(`${b.item}/${b.port}`);
+    if (bad) {
+      if (strict) throw new UserError('A cable needs two free ports on things in the rack');
+      continue;
+    }
+    used.add(`${a.item}/${a.port}`);
+    used.add(`${b.item}/${b.port}`);
+    const label = String(c.label ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40);
+    out.push({ id: UUID.test(c.id) ? c.id : crypto.randomUUID(), a, b, color: CABLE_COLORS.includes(c.color) ? c.color : 'blue', ...(label ? { label } : {}) });
+  }
+  return out;
+}
+const currentCables = () => validateCables(config.cables || [], false);
 
 function validateWall(b) {
   if (!b || typeof b !== 'object') throw new UserError('Invalid wall layout');
@@ -992,6 +1025,7 @@ function validateWall(b) {
     services: ids(b.services, config.services, 60),
     devices: ids(b.devices, config.devices, 100),
     clock: b.clock !== false,
+    cables: b.cables === true,
     logo: b.logo !== false,
     vmCount: b.vmCount !== false,
   };
@@ -5333,6 +5367,7 @@ function dashboardPayload() {
     vms: s.vms,
     layout: config.layout,
     wall: wallLayout(),
+    cables: currentCables(),
     generatedAt: Date.now(),
     idrac: group('idrac'),
     proxmox: group('proxmox'),
@@ -5762,6 +5797,25 @@ async function handleApi(req, res, url, session, viewer = null) {
     return sendJson(res, 200, { layout: config.layout });
   }
 
+  if (p === '/api/admin/cables' && m === 'PUT') {
+    const before = currentCables();
+    config.cables = validateCables((await readBody(req)).cables);
+    saveConfig();
+    const name = (e) => {
+      const d = config.devices.find((x) => x.id === e.item);
+      const pp = (config.rack.passive || []).find((x) => x.id === e.item);
+      return `${d ? d.name : pp ? `Patch panel U${pp.u}` : '?'} ${e.port.replace(/^rj/, 'port ').replace(/^sfp/, 'SFP ').replace(/^pp/, 'port ')}`;
+    };
+    const key = (c) => `${c.a.item}/${c.a.port}-${c.b.item}/${c.b.port}`;
+    const added = config.cables.filter((c) => !before.some((o) => key(o) === key(c)));
+    const removed = before.filter((o) => !config.cables.some((c) => key(o) === key(c)));
+    const changed = config.cables.filter((c) => before.some((o) => key(o) === key(c) && (o.color !== c.color || (o.label || '') !== (c.label || ''))));
+    for (const c of added) event('devices', `Patch cable added: ${name(c.a)} → ${name(c.b)}`, [c.color, c.label].filter(Boolean).join(' · '));
+    for (const c of removed) event('devices', `Patch cable removed: ${name(c.a)} → ${name(c.b)}`);
+    for (const c of changed) event('devices', `Patch cable changed: ${name(c.a)} → ${name(c.b)}`, [c.color, c.label].filter(Boolean).join(' · '));
+    if (!added.length && !removed.length && !changed.length) requestCtx.getStore().logged = true;
+    return sendJson(res, 200, { cables: config.cables });
+  }
   if (p === '/api/admin/wall' && m === 'PUT') {
     const body = await readBody(req);
     config.wall = body === null || body.reset === true ? null : validateWall(body);
@@ -7559,6 +7613,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     backgrounds: restoredImages.backgrounds.map((x) => x.rec),
     layout: c.layout?.items ? c.layout : null,
     wall: c.wall && typeof c.wall === 'object' ? c.wall : null,
+    cables: Array.isArray(c.cables) ? c.cables : [],
     rack: { ...DEFAULT_RACK, ...(c.rack || {}), passive: cleanPassive(c.rack?.passive) },
     devices: arr(c.devices).map((d) => {
       // brand/model and front are re-checked like in Admin

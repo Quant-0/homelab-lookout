@@ -456,7 +456,7 @@ const Rack = (() => {
     const speed = p.speed ? (p.speed >= 1000 ? `${p.speed / 1000} Gbps` : `${p.speed} Mbps`) : '';
     const title = [`${p.name || `Port ${p.idx}`}`, p.up ? speed || 'up' : 'down', p.poeW > 0 ? `PoE ${fmt.n(p.poeW, 1)} W` : '', p.uplink ? 'uplink' : ''].filter(Boolean).join(' · ');
     const ly = flip ? 9.2 : 0.4;
-    return g({ class: ['port', p.up ? 'up' : 'down', p.poeW > 0 ? 'poe' : '', p.uplink ? 'uplink' : ''].filter(Boolean).join(' '), transform: `translate(${x} ${y})` }, tip(title),
+    return g({ class: ['port', p.up ? 'up' : 'down', p.poeW > 0 ? 'poe' : '', p.uplink ? 'uplink' : ''].filter(Boolean).join(' '), transform: `translate(${x} ${y})`, 'data-port': `rj${p.idx}`, 'data-port-name': p.name || `Port ${p.idx}` }, tip(title),
       r(0, 0, 12.4, 10.4, '#0c0d0f', { rx: 0.7, stroke: p.uplink ? BLUE : '#000', 'stroke-width': 0.5 }),
       r(4, flip ? -1.2 : 9.6, 4.4, 2, '#0c0d0f'),
       r(2, flip ? 6.2 : 2.2, 8.4, 2, '#24272c'),
@@ -465,7 +465,7 @@ const Rack = (() => {
   }
 
   function sfp(x, y, p) {
-    return g({ class: `port sfp ${p.up ? 'up' : 'down'}`, transform: `translate(${x} ${y})` }, tip(`${p.name || `SFP ${p.idx}`} · ${p.up ? 'up' : 'down'}`),
+    return g({ class: `port sfp ${p.up ? 'up' : 'down'}`, transform: `translate(${x} ${y})`, 'data-port': `sfp${p.idx}`, 'data-port-name': p.name || `SFP ${p.idx}` }, tip(`${p.name || `SFP ${p.idx}`} · ${p.up ? 'up' : 'down'}`),
       r(0, 0, 14.4, 9, '#3a3e44', { rx: 0.6 }), r(1.4, 1.4, 11.6, 6.2, '#0c0d0f', { rx: 0.4 }), r(0.6, -1.6, 2.4, 0.9, p.up ? GREEN : '#2a2d31'));
   }
 
@@ -1041,7 +1041,10 @@ const Rack = (() => {
             const gx = x0 + gI * (gw + 8);
             const gy = y0 + rI * rowH;
             out.push(r(gx, gy, gw, 3.4, '#e8e6dc', { rx: 0.6, opacity: 0.85 }));
-            for (let j = 0; j < 6; j++) out.push(g({ class: 'jack' }, r(gx + j * 12.9, gy + 5.2, 11.4, rows === 2 ? 10 : 11.5, '#050607', { rx: 0.6, stroke: '#3a3e45', 'stroke-width': 0.5 })));
+            for (let j = 0; j < 6; j++) {
+              const n = rI * perRow + gI * 6 + j + 1;
+              out.push(g({ class: 'jack', 'data-port': `pp${n}`, 'data-port-name': `Port ${n}` }, r(gx + j * 12.9, gy + 5.2, 11.4, rows === 2 ? 10 : 11.5, '#050607', { rx: 0.6, stroke: '#3a3e45', 'stroke-width': 0.5 })));
+            }
           }
         }
         return out;
@@ -1268,9 +1271,14 @@ const Rack = (() => {
         [...l.querySelectorAll('small')].forEach((sm, i) => (sm.hidden = i + 1 >= lines));
       }
     };
+    // patch cables over the front (realistic view only: the schematic has no ports)
+    const cables = mode !== 'schematic' && opts.cables && (opts.cableEdit || opts.cablesShow) ? cableLayer(figure, opts) : null;
     container.rackFit?.disconnect();
     if (mode !== 'schematic' && typeof ResizeObserver !== 'undefined') {
-      container.rackFit = new ResizeObserver(fitLabels);
+      container.rackFit = new ResizeObserver(() => {
+        fitLabels();
+        cables?.draw();
+      });
       container.rackFit.observe(figure);
     }
     const off = rack.items.filter(outside);
@@ -1278,6 +1286,117 @@ const Rack = (() => {
       el('div', { class: `rack2 ${mode}` }, figure, mode === 'schematic' ? null : labels),
       off.length ? el('div', { class: 'offrack' }, el('div', { class: 'card-type', text: 'Outside the rack' }), off.map((it) => offRackCard(it, data, opts))) : null,
     ].filter(Boolean)); // replaceChildren would turn null into the text "null"
+    if (cables) requestAnimationFrame(() => cables.draw());
+  }
+
+  // --- Patch cables: curved, coloured, from port to port, drawn over the rack front ---
+  const CABLE_HEX = { blue: '#3d84ff', yellow: '#f2c230', red: '#e5484d', green: '#2fbf71', white: '#e9ecef', black: '#2a2c30', orange: '#f08a24', purple: '#9d6bff', grey: '#8a9098' };
+  const CABLES_KEY = 'hd.rackCables';
+  function cablesShown() {
+    try {
+      return localStorage.getItem(CABLES_KEY) === 'on';
+    } catch {
+      return false;
+    }
+  }
+  // The "Cables" button: on or off in this browser (off at first)
+  function cablesToggle(onChange) {
+    const b = el('button', { type: 'button', class: 'cable-toggle', 'aria-pressed': String(cablesShown()), title: 'Show patch cables' }, HD.icon('cable'), el('span', { text: 'Cables' }));
+    b.addEventListener('click', () => {
+      const on = !cablesShown();
+      try {
+        localStorage.setItem(CABLES_KEY, on ? 'on' : 'off');
+      } catch {
+        /* only a convenience */
+      }
+      b.setAttribute('aria-pressed', String(on));
+      onChange(on);
+    });
+    return b;
+  }
+
+  // opts: cables (list), cableEdit (pick ports), cableState ({ pending, color, selected } kept by the
+  // caller across redraws), onCablesChange(list), onCableSelect(cable | null)
+  function cableLayer(figure, opts) {
+    const layer = S('svg', { class: `cable-layer${opts.cableEdit ? ' editing' : ''}`, 'aria-hidden': opts.cableEdit ? null : 'true' });
+    figure.append(layer);
+    const st = opts.cableState || {};
+    const portNode = (e) => figure.querySelector(`.rack-item[data-id="${CSS.escape(e.item)}"] [data-port="${CSS.escape(e.port)}"]`);
+    const nameOf = (e) => {
+      const it = figure.querySelector(`.rack-item[data-id="${CSS.escape(e.item)}"]`);
+      const port = portNode(e);
+      return `${it?.getAttribute('aria-label')?.split(',')[0] || it?.dataset.label || '?'} ${port?.dataset.portName || e.port}`;
+    };
+    if (opts.cableEdit) {
+      figure.classList.add('cable-edit');
+      // a click on a port picks it (instead of opening the device)
+      figure.addEventListener('click', (e) => {
+        // a port under the pointer wins, also when a cable lies across it
+        const under = document.elementsFromPoint(e.clientX, e.clientY).find((n) => n.closest?.('.rack-item [data-port]'));
+        const port = under?.closest('[data-port]');
+        const item = port?.closest('.rack-item');
+        if (!port || !item) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const end = { item: item.dataset.id, port: port.dataset.port };
+        const busy = opts.cables.find((c) => [c.a, c.b].some((x) => x.item === end.item && x.port === end.port));
+        if (busy) return opts.onCableSelect?.(busy);
+        if (!st.pending) {
+          st.pending = end;
+          draw();
+          return;
+        }
+        if (st.pending.item === end.item && st.pending.port === end.port) {
+          st.pending = null;
+          draw();
+          return;
+        }
+        const cable = { a: st.pending, b: end, color: st.color || 'blue' };
+        st.pending = null;
+        opts.onCablesChange?.([...opts.cables, cable]);
+      }, true);
+    }
+    function draw() {
+      const fr = figure.getBoundingClientRect();
+      if (!fr.width) return;
+      layer.setAttribute('viewBox', `0 0 ${fr.width} ${fr.height}`);
+      const k = fr.width / 640; // cables and plugs scale with the drawing
+      const center = (n) => {
+        const b = n.getBoundingClientRect();
+        return [b.left + b.width / 2 - fr.left, b.top + b.height / 2 - fr.top];
+      };
+      for (const n of figure.querySelectorAll('[data-port].cable-pick, [data-port].cabled')) n.classList.remove('cable-pick', 'cabled');
+      const parts = [];
+      for (const c of opts.cables) {
+        const na = portNode(c.a);
+        const nb = portNode(c.b);
+        if (!na || !nb) continue;
+        na.classList.add('cabled');
+        nb.classList.add('cabled');
+        const [x1, y1] = center(na);
+        const [x2, y2] = center(nb);
+        // hangs a little below the two ports, more for longer runs
+        const sag = (10 + Math.abs(x2 - x1) * 0.08 + Math.abs(y2 - y1) * 0.25) * Math.max(0.6, k);
+        const d = `M${x1.toFixed(1)} ${y1.toFixed(1)}C${x1.toFixed(1)} ${(y1 + sag).toFixed(1)} ${x2.toFixed(1)} ${(y2 + sag).toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+        const color = CABLE_HEX[c.color] || CABLE_HEX.blue;
+        const w = Math.max(1.6, 3 * k);
+        const selected = st.selected && st.selected.a.item === c.a.item && st.selected.a.port === c.a.port;
+        const gEl = S('g', { class: `cable${selected ? ' selected' : ''}` },
+          S('title', null, `${nameOf(c.a)} → ${nameOf(c.b)}${c.label ? ` · ${c.label}` : ''}`),
+          S('path', { class: 'cable-hit', d, 'stroke-width': Math.max(10, w * 4) }),
+          S('path', { class: 'cable-shadow', d, 'stroke-width': w + 2 }),
+          S('path', { class: 'cable-line', d, stroke: color, 'stroke-width': w }),
+          ...[[x1, y1], [x2, y2]].map(([x, y]) => S('rect', { class: 'cable-plug', x: x - 2.6 * Math.max(0.7, k), y: y - 3 * Math.max(0.7, k), width: 5.2 * Math.max(0.7, k), height: 6 * Math.max(0.7, k), rx: 1, fill: color })));
+        if (opts.cableEdit) gEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          opts.onCableSelect?.(c);
+        });
+        parts.push(gEl);
+      }
+      if (st.pending) portNode(st.pending)?.classList.add('cable-pick');
+      layer.replaceChildren(...parts);
+    }
+    return { draw };
   }
 
   // Admin: drag an item up/down; it snaps to units and only lands on free space.
@@ -1320,5 +1439,5 @@ const Rack = (() => {
     });
   }
 
-  return { render, modeToggle, resolve, itemInfo, deviceArt, linkStatus, inRack, frontOf, productShape, unifiOf, SHAPES, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
+  return { render, modeToggle, cablesToggle, cablesShown, CABLE_HEX, resolve, itemInfo, deviceArt, linkStatus, inRack, frontOf, productShape, unifiOf, SHAPES, KIND_LABELS, KIND_ICONS, FRONT_LABELS, DRIVE_LABELS, PASSIVE_LABELS, WITH_DRIVES };
 })();

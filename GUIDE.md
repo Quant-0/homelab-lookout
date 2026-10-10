@@ -80,6 +80,10 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
 
 The rack is drawn to scale, like the real hardware, with live lights: the drives your servers really have (blanks for empty bays, amber when a drive is about to fail), switch ports lit by link and PoE, power buttons. A device with a problem gets a red or amber outline. The names stand beside it. **Realistic / Schematic** switches to a plain view with names, status and power inside the blocks. Click a device to open its details. Devices outside the rack are listed below it.
 
+### Patch cables
+
+On the **Rack** page, **Cables** shows or hides the patch cables in this browser (off at first). When you are signed in, **Patch** lets you draw them: click a port on a switch, gateway or patch panel, then the port at the other end. Pick the colour first in the bar above the rack. Click a cable to change its colour, give it a label (shown when you point at it) or **Remove** it; **Done** leaves patch mode. Every change is in the Log. Removing a device or panel from the rack removes its cables. The wall display shows them when **Patch cables** is ticked under Customize → Rack panel.
+
 ### Wall display
 
 **Wall display** (top right on Home, or **More** on a phone) is one screen for a tablet or TV on the wall, at `/wall`. It never scrolls, and is readable from across the room:
