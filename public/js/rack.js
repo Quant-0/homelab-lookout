@@ -1292,6 +1292,12 @@ const Rack = (() => {
   // --- Patch cables: curved, coloured, from port to port, drawn over the rack front ---
   const CABLE_HEX = { blue: '#3d84ff', yellow: '#f2c230', red: '#e5484d', green: '#2fbf71', white: '#e9ecef', black: '#2a2c30', orange: '#f08a24', purple: '#9d6bff', grey: '#8a9098' };
   const CABLES_KEY = 'hd.rackCables';
+  // lighter (f > 0) or darker (f < 0) shade of a #rrggbb colour
+  function shade(hex, f) {
+    const n = parseInt(hex.slice(1), 16);
+    const ch = [n >> 16, (n >> 8) & 255, n & 255].map((v) => Math.round(f > 0 ? v + (255 - v) * f : v * (1 + f)));
+    return `#${ch.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  }
   function cablesShown() {
     try {
       return localStorage.getItem(CABLES_KEY) === 'on';
@@ -1361,32 +1367,68 @@ const Rack = (() => {
       if (!fr.width) return;
       layer.setAttribute('viewBox', `0 0 ${fr.width} ${fr.height}`);
       const k = fr.width / 640; // cables and plugs scale with the drawing
-      const center = (n) => {
-        const b = n.getBoundingClientRect();
-        return [b.left + b.width / 2 - fr.left, b.top + b.height / 2 - fr.top];
-      };
       for (const n of figure.querySelectorAll('[data-port].cable-pick, [data-port].cabled')) n.classList.remove('cable-pick', 'cabled');
-      const parts = [];
+      const box = (n) => {
+        const b = n.getBoundingClientRect();
+        return { x: b.left + b.width / 2 - fr.left, y: b.top + b.height / 2 - fr.top, w: b.width, h: b.height, top: b.top - fr.top, bottom: b.bottom - fr.top };
+      };
+      // each cable leaves its port straight down (or up), runs along a lane in the gap between the two
+      // devices and comes back to the other port; cables sharing a gap get their own lane
+      const routes = [];
       for (const c of opts.cables) {
         const na = portNode(c.a);
         const nb = portNode(c.b);
         if (!na || !nb) continue;
         na.classList.add('cabled');
         nb.classList.add('cabled');
-        const [x1, y1] = center(na);
-        const [x2, y2] = center(nb);
-        // hangs a little below the two ports, more for longer runs
-        const sag = (10 + Math.abs(x2 - x1) * 0.08 + Math.abs(y2 - y1) * 0.25) * Math.max(0.6, k);
-        const d = `M${x1.toFixed(1)} ${y1.toFixed(1)}C${x1.toFixed(1)} ${(y1 + sag).toFixed(1)} ${x2.toFixed(1)} ${(y2 + sag).toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+        let [A, B] = [box(na), box(nb)];
+        if (A.y > B.y) [A, B] = [B, A];
+        const sameRow = Math.abs(A.y - B.y) < Math.max(A.h, B.h);
+        // the lane: below both ports when they sit side by side, else in the gap below the upper one
+        const base = sameRow ? Math.max(A.bottom, B.bottom) + Math.max(A.h, B.h) * 0.9 : (A.bottom + B.top) / 2;
+        routes.push({ c, A, B, sameRow, base, chan: Math.round(base / 4) });
+      }
+      const channels = new Map();
+      for (const rt of routes) (channels.get(rt.chan) || channels.set(rt.chan, []).get(rt.chan)).push(rt);
+      const step = Math.max(2.2, 3.4 * k);
+      for (const list of channels.values()) {
+        list.sort((p, q) => Math.min(p.A.x, p.B.x) - Math.min(q.A.x, q.B.x));
+        list.forEach((rt, i) => (rt.lane = rt.base + (i - (list.length - 1) / 2) * step));
+      }
+      const w = Math.max(1.8, 3.2 * k);
+      const parts = [];
+      for (const rt of routes) {
+        const { c, A, B, lane } = rt;
         const color = CABLE_HEX[c.color] || CABLE_HEX.blue;
-        const w = Math.max(1.6, 3 * k);
+        // the boot covers the lower (or upper) part of the jack; the cable starts where it ends
+        const bootLen = Math.max(A.h, B.h) * 0.85;
+        const dirA = lane >= A.y ? 1 : -1;
+        const dirB = lane >= B.y ? 1 : -1;
+        const ya = A.y + dirA * (A.h * 0.15 + bootLen);
+        const yb = B.y + dirB * (B.h * 0.15 + bootLen);
+        const rad = Math.max(1, Math.min(6 * k, Math.abs(lane - ya) - 0.5, Math.abs(lane - yb) - 0.5, Math.abs(B.x - A.x) / 2));
+        const sx = Math.sign(B.x - A.x) || 1;
+        const f = (v) => v.toFixed(1);
+        const d = Math.abs(B.x - A.x) < 1
+          ? `M${f(A.x)} ${f(ya)}V${f(yb)}`
+          : `M${f(A.x)} ${f(ya)}V${f(lane - Math.sign(lane - ya) * rad)}Q${f(A.x)} ${f(lane)} ${f(A.x + sx * rad)} ${f(lane)}H${f(B.x - sx * rad)}Q${f(B.x)} ${f(lane)} ${f(B.x)} ${f(lane + Math.sign(yb - lane) * rad)}V${f(yb)}`;
+        const boot = (P, dir) => {
+          const bw = P.w * 0.72;
+          const y0 = dir > 0 ? P.y + P.h * 0.15 : P.y - P.h * 0.15 - bootLen;
+          return S('g', { class: 'cable-boot' },
+            S('rect', { x: P.x - bw / 2, y: y0, width: bw, height: bootLen, rx: bw * 0.28, fill: shade(color, -0.18), stroke: shade(color, -0.45), 'stroke-width': 0.6 }),
+            S('rect', { x: P.x - bw * 0.18, y: dir > 0 ? y0 + bootLen * 0.12 : y0 + bootLen * 0.58, width: bw * 0.36, height: bootLen * 0.3, rx: 0.8, fill: shade(color, 0.35), opacity: 0.6 }),
+            S('rect', { x: P.x - bw / 2 + 0.6, y: y0 + 0.6, width: bw * 0.22, height: bootLen - 1.2, rx: 0.8, fill: '#ffffff', opacity: 0.18 }));
+        };
         const selected = st.selected && st.selected.a.item === c.a.item && st.selected.a.port === c.a.port;
         const gEl = S('g', { class: `cable${selected ? ' selected' : ''}` },
           S('title', null, `${nameOf(c.a)} → ${nameOf(c.b)}${c.label ? ` · ${c.label}` : ''}`),
-          S('path', { class: 'cable-hit', d, 'stroke-width': Math.max(10, w * 4) }),
-          S('path', { class: 'cable-shadow', d, 'stroke-width': w + 2 }),
-          S('path', { class: 'cable-line', d, stroke: color, 'stroke-width': w }),
-          ...[[x1, y1], [x2, y2]].map(([x, y]) => S('rect', { class: 'cable-plug', x: x - 2.6 * Math.max(0.7, k), y: y - 3 * Math.max(0.7, k), width: 5.2 * Math.max(0.7, k), height: 6 * Math.max(0.7, k), rx: 1, fill: color })));
+          S('path', { class: 'cable-hit', d, 'stroke-width': Math.max(10, w * 3.5) }),
+          S('path', { class: 'cable-shadow', d, 'stroke-width': w + 1.6, transform: `translate(${(0.8 * k).toFixed(2)} ${(1.6 * k).toFixed(2)})` }),
+          S('path', { class: 'cable-edge', d, stroke: shade(color, -0.42), 'stroke-width': w }),
+          S('path', { class: 'cable-line', d, stroke: color, 'stroke-width': w * 0.7 }),
+          S('path', { class: 'cable-shine', d, stroke: shade(color, 0.55), 'stroke-width': Math.max(0.6, w * 0.18), transform: `translate(${(-0.35 * w).toFixed(2)} 0)` }),
+          boot(A, dirA), boot(B, dirB));
         if (opts.cableEdit) gEl.addEventListener('click', (e) => {
           e.stopPropagation();
           opts.onCableSelect?.(c);

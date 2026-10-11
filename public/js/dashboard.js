@@ -1385,7 +1385,7 @@ function renderRackView(d) {
     renderRackView(lastData);
     HD.fillSparks();
   };
-  if (document.activeElement?.closest?.('.cable-bar')) return; // not while the label is being typed
+  if (document.activeElement?.matches?.('.cable-bar input')) return; // not while the label is being typed
   if (!d.loggedIn) cableEdit = false;
   const cables = d.cables || [];
   const saveCables = async (list) => {
