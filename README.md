@@ -48,7 +48,7 @@ It is built from one Node.js server file (`server.js`, Node 18+; use a supported
   - Not meant for passwords: link to your password manager instead.
 - **History graphs**: small graphs on the device cards and in their Details, with the value and time on hover and a **24 h / 7 d / 30 d** choice in the power card (remembered per browser). A graph appears once it has data.
   - Recorded: total measured power; iDRAC watts, inlet and hottest temperature; Proxmox node CPU and memory; Synology temperature, CPU and memory; TrueNAS load; UniFi device CPU, temperature, clients and PoE draw.
-  - Stored in `history.json` in the data directory: 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. That's roughly 75 kB per graph once full. Graphs for removed devices are dropped after 30 days.
+  - 1-minute averages for 25 hours, 15-minute averages for 8 days, 2-hour averages for 92 days. Graphs for removed devices are dropped after 30 days. On Node 22.5 and newer they are stored in `history.db` in the data directory (SQLite, built into Node): a point is added when its minute, quarter or two hours are over, and nothing is rewritten. On older Node it's `history.json`, rewritten every 5 minutes (roughly 75 kB per graph once full). An existing `history.json` is moved into the database once (and kept as `history.json.imported`). Backups contain the history either way.
   - Only numbers are kept (no names or addresses). The graphs follow the dashboard's visibility: they need login unless the dashboard is public.
 - **Alerts** (Admin → Alerts): messages to **ntfy**, **Telegram**, **Discord** and **e-mail (SMTP)**. You can add several channels of each kind and tick which alerts go to which channel.
   - Alerts: device offline, service down, hardware fault (PSUs, fans, system health), storage problem (degraded pools, failing disks), high temperature, storage almost full, TrueNAS alerts, high power draw (off by default), and failed automatic backups.
@@ -152,6 +152,21 @@ sudo -n /usr/local/sbin/homelab-dashboard-deploy                       # then, a
 - logs the commit to the journal (`journalctl -t homelab-dashboard-deploy`) and writes it to `/opt/homelab-dashboard/VERSION`.
 
 The systemd unit, config, key and certificates are never changed by it: the command says when `install.sh` is needed. Note what this permission means: whoever can deploy can change the code that holds your credentials. Today that's also true in practice whenever you run `install.sh` with new code.
+
+### Updating Node.js
+
+Use a Node.js release that still gets security fixes; **Admin → System** shows the version and when its support ends. Debian 13 ships Node.js 20, whose support ended in April 2026. `install.sh` installs Node.js 24 LTS from NodeSource when it finds anything older than 22; on a server that is already installed, do it by hand:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list
+sudo apt update && sudo apt install nodejs
+node --version   # v24.x
+sudo systemctl restart homelab-dashboard
+```
+
+After the restart the graph history moves from `history.json` into `history.db` by itself.
 
 ### HTTPS and the local CA
 

@@ -98,6 +98,11 @@ async function run() {
   r = await hist(['power:total'], '24h', 120, { anon: true });
   ok(r.status === 401, 'private again: history needs login');
 
+  // --- where it's stored: SQLite where Node has it (the seeded history.json was moved into it) ---
+  const want = (() => { try { require('node:sqlite'); return 'sqlite'; } catch { return 'json'; } })();
+  const rt = (await req('GET', '/api/admin/config')).json.runtime;
+  ok(rt?.history === want && rt.node === process.versions.node && typeof rt.nodeSupported === 'boolean', `history stored as ${rt?.history} on Node ${rt?.node}`);
+
   // --- the dashboard page asks for the right keys ---
   r = await req('GET', '/static/js/dashboard.js');
   ok(/idrac:\$\{h\.id\}:watts/.test(r.text) && /power:total/.test(r.text), 'dashboard script requests iDRAC and total power history');

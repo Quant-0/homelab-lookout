@@ -4047,6 +4047,59 @@ const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{3
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
+// Where the points live: SQLite (node:sqlite, Node 22.5 and newer), one row per point, written when
+// its bucket is full, so nothing is rewritten; `history` then only holds each series' open buckets.
+// Without it (older Node, or HISTORY_JSON=1) they stay in memory and history.json is rewritten every
+// 5 minutes. A history.json from before is imported once and kept as history.json.imported.
+let sqlite = null;
+try {
+  if (!process.env.HISTORY_JSON) sqlite = require('node:sqlite');
+} catch {}
+const HISTORY_DB = path.join(DATA_DIR, 'history.db');
+let histDb = null;
+let histSql = null;
+
+function openHistoryDb() {
+  const db = new sqlite.DatabaseSync(HISTORY_DB);
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;
+    CREATE TABLE IF NOT EXISTS points (key TEXT NOT NULL, tier TEXT NOT NULL, t INTEGER NOT NULL, v REAL NOT NULL, PRIMARY KEY (key, tier, t)) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS series (key TEXT PRIMARY KEY, seen INTEGER NOT NULL, acc TEXT NOT NULL) WITHOUT ROWID;`);
+  fs.chmodSync(HISTORY_DB, 0o600);
+  histSql = {
+    add: db.prepare('INSERT OR REPLACE INTO points (key, tier, t, v) VALUES (?, ?, ?, ?)'),
+    range: db.prepare('SELECT t, v FROM points WHERE key = ? AND tier = ? AND t >= ? ORDER BY t'),
+    all: db.prepare('SELECT tier, t, v FROM points WHERE key = ? ORDER BY tier, t'),
+    prune: db.prepare('DELETE FROM points WHERE tier = ? AND t < ?'),
+    put: db.prepare('INSERT OR REPLACE INTO series (key, seen, acc) VALUES (?, ?, ?)'),
+    drop: db.prepare('DELETE FROM series WHERE key = ?'),
+    dropPoints: db.prepare('DELETE FROM points WHERE key = ?'),
+    list: db.prepare('SELECT key, seen, acc FROM series'),
+  };
+  return db;
+}
+
+function histTransaction(fn) {
+  histDb.exec('BEGIN');
+  try {
+    fn();
+    histDb.exec('COMMIT');
+  } catch (e) {
+    histDb.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+// Replaces everything in the database with `h` (a cleaned history.json or backup)
+function importHistory(h) {
+  histTransaction(() => {
+    histDb.exec('DELETE FROM points; DELETE FROM series;');
+    for (const [k, v] of Object.entries(h.series)) {
+      histSql.put.run(k, v.seen || 0, JSON.stringify(v.acc || {}));
+      for (const tier of HIST_TIERS) for (const [t, val] of v[tier.name]) histSql.add.run(k, tier.name, t, val);
+    }
+  });
+}
+
 // Only well-formed series with known keys are kept (the file may come from a backup)
 function cleanHistory(h) {
   const out = { series: {} };
@@ -4064,14 +4117,89 @@ function cleanHistory(h) {
 }
 
 function loadHistory() {
+  if (sqlite) {
+    try {
+      histDb = openHistoryDb();
+      if (fs.existsSync(HISTORY_FILE)) {
+        importHistory(cleanHistory(readJson(HISTORY_FILE, null)));
+        fs.renameSync(HISTORY_FILE, `${HISTORY_FILE}.imported`);
+        log('Graph history moved from history.json into history.db');
+      }
+      history = { series: {} };
+      for (const r of histSql.list.all()) {
+        if (!HIST_KEY.test(r.key)) continue;
+        const acc = cleanHistory({ series: { [r.key]: { acc: JSON.parse(r.acc || '{}') } } }).series[r.key].acc;
+        history.series[r.key] = { acc, seen: r.seen };
+      }
+      return;
+    } catch (e) {
+      log('The history database could not be opened, using history.json:', e.message);
+      histDb = null;
+    }
+  }
   history = cleanHistory(readJson(HISTORY_FILE, null));
+}
+
+// What runs the dashboard, for Admin → System. NODE_END: when each Node.js line stops getting
+// security fixes upstream. VERSION is written by the deploy script (commit and time).
+const NODE_END = { 18: '2025-04-30', 19: '2023-06-01', 20: '2026-04-30', 21: '2024-06-01', 22: '2027-04-30', 23: '2025-06-01', 24: '2028-04-30', 25: '2026-06-01' };
+function runtimeInfo() {
+  const end = NODE_END[parseInt(process.versions.node, 10)] || null;
+  const [commit, deployedAt] = String(readText(path.join(__dirname, 'VERSION')) || '').split('\n');
+  return {
+    node: process.versions.node,
+    nodeEnd: end,
+    nodeSupported: !end || Date.now() <= Date.parse(end),
+    history: histDb ? 'sqlite' : 'json',
+    version: /^[0-9a-f]{40}$/.test(commit || '') ? { commit: commit.slice(0, 7), deployedAt: Date.parse(deployedAt) || null } : null,
+  };
+}
+function readText(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').slice(0, 200);
+  } catch {
+    return null;
+  }
+}
+
+// A restored backup's history
+function setHistory(h) {
+  if (histDb) {
+    importHistory(h);
+    history = { series: Object.fromEntries(Object.entries(h.series).map(([k, v]) => [k, { acc: v.acc, seen: v.seen }])) };
+  } else history = h;
+  historyDirty = true;
+  saveHistory();
+}
+
+// The whole history in the history.json shape, for a backup
+function historySnapshot() {
+  if (!histDb) return history;
+  const series = {};
+  for (const [k, s] of Object.entries(history.series)) {
+    const out = { m: [], q: [], h: [], acc: s.acc, seen: s.seen };
+    for (const r of histSql.all.all(k)) out[r.tier]?.push([r.t, r.v]);
+    series[k] = out;
+  }
+  return { series };
 }
 
 function saveHistory() {
   if (!historyDirty) return;
-  const cutoff = Date.now() - 30 * 86400e3;
-  for (const [k, s] of Object.entries(history.series)) if ((s.seen || 0) < cutoff) delete history.series[k]; // removed devices
-  writeJsonAtomic(HISTORY_FILE, history);
+  const now = Date.now();
+  const cutoff = now - 30 * 86400e3;
+  const gone = Object.keys(history.series).filter((k) => (history.series[k].seen || 0) < cutoff); // removed devices
+  for (const k of gone) delete history.series[k];
+  if (histDb) {
+    histTransaction(() => {
+      for (const k of gone) {
+        histSql.drop.run(k);
+        histSql.dropPoints.run(k);
+      }
+      for (const [k, s] of Object.entries(history.series)) histSql.put.run(k, s.seen || 0, JSON.stringify(s.acc));
+      for (const tier of HIST_TIERS) histSql.prune.run(tier.name, now - tier.keep);
+    });
+  } else writeJsonAtomic(HISTORY_FILE, history);
   historyDirty = false;
 }
 
@@ -4079,12 +4207,13 @@ const round2 = (v) => Math.round(v * 100) / 100;
 
 function histRecord(key, value, t = Date.now()) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return;
-  const s = (history.series[key] ||= { m: [], q: [], h: [], acc: {} });
+  const s = (history.series[key] ||= histDb ? { acc: {} } : { m: [], q: [], h: [], acc: {} });
   s.seen = t;
   for (const tier of HIST_TIERS) {
     const bucket = Math.floor(t / tier.step) * tier.step;
     const a = s.acc[tier.name];
-    if (a && a.t !== bucket && a.n) {
+    if (a && a.t !== bucket && a.n && histDb) histSql.add.run(key, tier.name, a.t, round2(a.sum / a.n));
+    else if (a && a.t !== bucket && a.n) {
       s[tier.name].push([a.t, round2(a.sum / a.n)]);
       const from = t - tier.keep;
       let i = 0;
@@ -4104,7 +4233,7 @@ function histQuery(key, rangeMs, points) {
   if (!s) return [];
   const tier = rangeMs <= 26 * 3600e3 ? 'm' : rangeMs <= 8 * 86400e3 ? 'q' : 'h';
   const from = Date.now() - rangeMs;
-  let data = s[tier].filter(([t]) => t >= from);
+  let data = histDb ? histSql.range.all(key, tier, from).map((r) => [r.t, r.v]) : s[tier].filter(([t]) => t >= from);
   const a = s.acc[tier];
   if (a?.n) data = [...data, [a.t, round2(a.sum / a.n)]];
   if (data.length <= points) return data;
@@ -5810,6 +5939,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       backgrounds: config.backgrounds,
       rack: config.rack,
       rackKinds: RACK_KINDS,
+      runtime: runtimeInfo(),
       user: session.user,
     });
   }
@@ -7812,7 +7942,7 @@ function backupBundle() {
     docsHistory,
     events,
     energy,
-    history,
+    history: historySnapshot(),
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
   };
 }
@@ -7942,9 +8072,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   energy = bundle.energy?.buckets ? bundle.energy : { buckets: {} };
   energyDirty = true;
   saveEnergy();
-  history = cleanHistory(bundle.history);
-  historyDirty = true;
-  saveHistory();
+  setHistory(cleanHistory(bundle.history));
   // the change log comes back too (entries checked like when loading), and the restore is added to it
   if (Array.isArray(bundle.events)) {
     const cutoff = Date.now() - EVENT_DAYS * 864e5;
@@ -8515,7 +8643,7 @@ async function main() {
 
   event('system', 'Dashboard started');
   // Node.js lines out of upstream support (no security fixes): 20 ended 2026-04-30
-  const nodeEnd = { 18: '2025-04-30', 19: '2023-06-01', 20: '2026-04-30', 21: '2024-06-01', 22: '2027-04-30', 23: '2025-06-01' }[major];
+  const nodeEnd = NODE_END[major];
   if (nodeEnd && Date.now() > Date.parse(nodeEnd)) event('system', `Node.js ${process.versions.node} no longer gets security updates (support ended ${nodeEnd}); upgrade to Node.js 24`);
   schedulePolling();
   setInterval(pruneEvents, 24 * 3600 * 1000).unref();
@@ -8529,6 +8657,7 @@ async function main() {
     try {
       saveEnergy();
       saveHistory();
+      histDb?.close(); // folds the write-ahead log into history.db
       saveAlertState();
       if (rememberedDirty) saveRemembered();
     } finally {

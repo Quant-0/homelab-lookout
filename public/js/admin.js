@@ -84,12 +84,29 @@ async function load() {
     fillDashboard(state.settings.dashboard);
     appearance = structuredClone(state.settings.appearance);
     renderAppearance();
+    renderRuntime(state.runtime);
     rackData = await api('GET', '/api/dashboard').catch(() => null);
     renderDevicesTab();
   } catch (e) {
     $('global-error').textContent = e.message;
     $('global-error').classList.remove('hidden');
   }
+}
+
+// What runs the dashboard: its version, Node.js (and whether that still gets security fixes),
+// and where the graph history is stored
+function renderRuntime(rt) {
+  if (!rt) return;
+  const v = rt.version;
+  const rows = [
+    ['Homelab Lookout', v ? `${v.commit}${v.deployedAt ? `, deployed ${new Date(v.deployedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}` : 'Not deployed with the deploy script'],
+    ['Node.js', `${rt.node}${rt.nodeEnd ? ` · security fixes ${rt.nodeSupported ? 'until' : 'ended'} ${rt.nodeEnd}` : ''}`],
+    ['Graph history', rt.history === 'sqlite' ? 'SQLite database (history.db)' : 'history.json (Node.js 22.5 or newer stores it in a database instead)'],
+  ];
+  $('runtime').replaceChildren(
+    el('div', { class: 'kv' }, rows.map(([k, val]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: val })))),
+    rt.nodeSupported ? null : el('p', { class: 'banner', role: 'alert' },
+      `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`));
 }
 
 // ---------------------------------------------------------------------------
