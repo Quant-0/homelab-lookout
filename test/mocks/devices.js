@@ -225,9 +225,11 @@ const server = https.createServer(opts, (req, res) => {
       { node: 'pve1', status: 'online', cpu: 0.12, maxcpu: 32, mem: 40e9, maxmem: 128e9, disk: 20e9, maxdisk: 100e9, uptime: 864000 },
       { node: 'pve2', status: 'offline' },
     ] }));
+    // traffic counters that grow 1.25 MB/s in, 0.25 MB/s out
+    const sec = Date.now() / 1000;
     if (u === '/api2/json/cluster/resources?type=vm') return res.end(R({ data: [
-      { vmid: 100, name: 'truenas', type: 'qemu', status: 'running', node: 'pve1', cpu: 0.05, maxcpu: 8, mem: 32e9, maxmem: 34e9, uptime: 86400 },
-      { vmid: 101, name: 'docker', type: 'lxc', status: 'running', node: 'pve1', cpu: 0.2, maxcpu: 4, mem: 2e9, maxmem: 4e9, uptime: 3600 },
+      { vmid: 100, name: 'truenas', type: 'qemu', status: 'running', node: 'pve1', cpu: 0.05, maxcpu: 8, mem: 32e9, maxmem: 34e9, uptime: 86400, disk: 0, maxdisk: 32e9, netin: Math.round(sec * 1.25e6), netout: Math.round(sec * 0.25e6), diskread: Math.round(sec * 2e6), diskwrite: Math.round(sec * 1e6) },
+      { vmid: 101, name: 'docker', type: 'lxc', status: 'running', node: 'pve1', cpu: 0.2, maxcpu: 4, mem: 2e9, maxmem: 4e9, uptime: 3600, disk: 7.6e9, maxdisk: 8e9, netin: Math.round(sec * 1e5), netout: Math.round(sec * 1e5), diskread: 0, diskwrite: 0 },
       { vmid: 102, name: 'win11', type: 'qemu', status: 'stopped', node: 'pve1', maxmem: 8e9 },
       { vmid: 9000, name: 'tmpl', type: 'qemu', status: 'stopped', node: 'pve1', template: 1 },
     ] }));
@@ -240,6 +242,40 @@ const server = https.createServer(opts, (req, res) => {
       { Package: 'qemu-server', CurrentState: 'Installed', OldVersion: '8.2.1', Version: '8.2.1' },
       { Package: 'ceph', CurrentState: 'NotInstalled', Version: '18.2.2-pve1' },
     ] }));
+    if (u === '/api2/json/cluster/resources?type=storage') return res.end(R({ data: [
+      { id: 'storage/pve1/local', storage: 'local', node: 'pve1', status: 'available', plugintype: 'dir', disk: 40e9, maxdisk: 100e9, shared: 0 },
+      { id: 'storage/pve1/local-zfs', storage: 'local-zfs', node: 'pve1', status: 'available', plugintype: 'zfspool', disk: 500e9, maxdisk: 1000e9, shared: 0 },
+      { id: 'storage/pve1/nas', storage: 'nas', node: 'pve1', status: 'available', plugintype: 'nfs', disk: 9.3e12, maxdisk: 10e12, shared: 1 },
+      { id: 'storage/pve2/nas', storage: 'nas', node: 'pve2', status: 'available', plugintype: 'nfs', disk: 9.3e12, maxdisk: 10e12, shared: 1 },
+      { id: 'storage/pve2/local', storage: 'local', node: 'pve2', status: 'unknown', plugintype: 'dir' },
+    ] }));
+    if (u === '/api2/json/nodes/pve1/disks/list') return res.end(R({ data: [
+      { devpath: '/dev/nvme0n1', model: 'Samsung SSD 980 PRO 1TB', serial: 'S5GXNX0T', size: 1e12, type: 'nvme', health: 'PASSED', wearout: 8, used: 'ZFS' },
+      { devpath: '/dev/sda', model: 'WDC WD40EFRX', serial: 'WD-WCC7K1', size: 4e12, type: 'hdd', health: 'FAILED', wearout: 'N/A' },
+      { devpath: '/dev/sdb', model: 'WDC WD40EFRX', serial: 'WD-WCC7K2', size: 4e12, type: 'hdd', health: 'PASSED', wearout: 'N/A' },
+    ] }));
+    if (u === '/api2/json/nodes/pve1/disks/zfs') return res.end(R({ data: [
+      { name: 'rpool', health: 'ONLINE', size: 1e12, alloc: 5e11, free: 5e11, frag: 12, dedup: 1 },
+      { name: 'tank', health: 'DEGRADED', size: 8e12, alloc: 2e12, free: 6e12, frag: 3, dedup: 1 },
+    ] }));
+    if (u === '/api2/json/cluster/tasks') return res.end(R({ data: [
+      { upid: 'UPID:pve1:1', node: 'pve1', type: 'vzdump', status: 'job errors', starttime: Math.round(sec) - 7200, endtime: Math.round(sec) - 3600, user: 'root@pam' },
+      { upid: 'UPID:pve1:2', node: 'pve1', type: 'vzdump', status: 'OK', starttime: Math.round(sec) - 93600, endtime: Math.round(sec) - 90000, user: 'root@pam' },
+      { upid: 'UPID:pve1:3', node: 'pve1', type: 'qmstart', status: 'OK', starttime: Math.round(sec) - 600, endtime: Math.round(sec) - 590, id: '100' },
+    ] }));
+    // the QEMU guest agent in VM 100
+    if (u === '/api2/json/nodes/pve1/qemu/100/agent/get-fsinfo') return res.end(R({ data: { result: [
+      { name: 'sda1', mountpoint: '/', type: 'ext4', 'total-bytes': 30e9, 'used-bytes': 12e9, disk: [] },
+      { name: 'sdb1', mountpoint: '/srv/data', type: 'xfs', 'total-bytes': 500e9, 'used-bytes': 470e9, disk: [] },
+      { name: 'tmpfs', mountpoint: '/run', type: 'tmpfs', 'total-bytes': 1e9, 'used-bytes': 1e6 },
+      { name: 'sda15', mountpoint: '/boot/efi', type: 'vfat', 'total-bytes': 1e8, 'used-bytes': 6e6 },
+    ] } }));
+    if (u === '/api2/json/nodes/pve1/qemu/100/agent/network-get-interfaces') return res.end(R({ data: { result: [
+      { name: 'lo', 'ip-addresses': [{ 'ip-address': '127.0.0.1' }] },
+      { name: 'eth0', 'ip-addresses': [{ 'ip-address': '192.168.1.50' }, { 'ip-address': 'fe80::1' }] },
+      { name: 'docker0', 'ip-addresses': [{ 'ip-address': '172.17.0.1' }] },
+    ] } }));
+    if (u === '/api2/json/nodes/pve1/qemu/100/agent/get-osinfo') return res.end(R({ data: { result: { 'pretty-name': 'Debian GNU/Linux 12 (bookworm)', name: 'Debian GNU/Linux' } } }));
     if (u === '/api2/json/nodes/pve1/version') return res.end(R({ data: { version: '8.2.4', release: '8.2' } }));
   }
   res.writeHead(404);

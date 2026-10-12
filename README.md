@@ -9,7 +9,8 @@ It is built from one Node.js server file (`server.js`, Node 18+; use a supported
 ## What it shows
 
 - **Redfish** (Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro BMC): power draw (W), PSU status, temperatures, and fans. Each fan spins at a rate proportional to its RPM (6000 rpm = 1 rotation/s). The drives in the front bays (model, size, health, "predicted to fail") are read from Redfish every 15 minutes: they're drawn in the rack, listed on the Docs sheet, and a failing drive raises a *Storage problem* alert.
-- **Proxmox**: nodes (CPU, memory, root disk, uptime) on the Overview; VMs/containers with their status on the Services page.
+- **Proxmox**: nodes (CPU, memory, root disk, uptime), storage, ZFS pools, SMART health and SSD wear of the node's disks, and the last backup job (`vzdump`); VMs and containers with their status, network and disk traffic, a container's disk use, and with the QEMU guest agent the filesystems, addresses and OS inside a VM.
+- **Ping**: devices without an API (a printer, a Pi) as online/offline with their response time; services can be checked by ping or TCP port instead of a web page, and an `https://` service warns two weeks before its certificate expires.
 - **TrueNAS**: system info, pools (usage, health) and active alerts. It uses JSON-RPC 2.0 over WebSocket (`wss://host/api/current`) and requires TrueNAS 25.04 or newer.
 - **Synology** (any DSM model, via SNMPv3): temperature, system/fan/power status, CPU/RAM, volumes, storage pools, and disks with health and temperature.
 - **UniFi** (UniFi OS consoles such as the UDM Pro): WAN/internet status, clients, and every adopted device (gateway, switches, APs) with CPU/RAM, temperatures, PoE per port and uptime.
@@ -187,6 +188,12 @@ How the file is encrypted: secrets are decrypted with the server key and travel 
   pveum acl modify / --users dashboard@pve --roles PVEAuditor
   pveum user token add dashboard@pve monitor --privsep 0
   ```
+  That covers nodes, guests, storage, ZFS pools, SMART health of the node's disks and backup jobs. To also see **inside VMs** (disk use per filesystem, addresses, OS), install `qemu-guest-agent` in each VM, switch on *QEMU Guest Agent* under the VM's Options, and allow the token to ask the agent. On Proxmox 9 that is a read-only privilege:
+  ```sh
+  pveum role add GuestAgentAudit --privs VM.GuestAgent.Audit
+  pveum acl modify /vms --users dashboard@pve --roles GuestAgentAudit
+  ```
+  Proxmox 8 has no such privilege; there it is `VM.Monitor`, which also opens the QEMU monitor of each VM. Grant that only if you accept it. Containers need none of this: their disk use comes with the guest list.
 - **Synology**: DSM → Control Panel → Terminal & SNMP → SNMP. Enable the **SNMPv3** service with a user, protocol **SHA** (or SHA-256), and privacy **AES** with its own password. In Admin, use "Fetch engine ID from device" to pin the NAS's engine ID; authenticated requests are only sent if it matches.
 - **UniFi**: create a local user on the console (UniFi OS → Admins & Users) with the **View Only** role for Network and no MFA ("Restrict to local access only"). The session is kept in memory only. After a failed login the dashboard waits 15 minutes before trying again, so the account isn't locked.
 - **SNMPv3** (switches, routers, QNAP, UPS network cards): a user with authentication (SHA or SHA-256) and privacy (AES), read-only view. Pin the engine ID like for Synology.

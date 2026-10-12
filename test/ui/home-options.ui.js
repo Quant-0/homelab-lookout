@@ -82,7 +82,10 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.locator('#devices .dtile', { hasText: 'titan' }).click();
   await page.waitForSelector('dialog.drawer[open] .guest-table');
   const heads = await page.locator('dialog.drawer .guest-table th').allTextContents();
-  check(heads.join() === 'Name,Type,Status,CPU,Memory' && await page.locator('dialog.drawer .guest-table tbody tr').count() === 2, `host details: guests with CPU and memory (${heads})`);
+  check(heads.join() === 'Name,Type,Status,CPU,Memory,Disk' && await page.locator('dialog.drawer .guest-table tbody tr').count() === 2, `host details: guests with CPU, memory and disk (${heads})`);
+  // a guest's row opens its disks and graphs
+  await page.locator('dialog.drawer .guest-table tr.guest-row', { hasText: 'docker' }).click();
+  check(await page.locator('dialog.drawer .guest-table tr.guest-row[aria-expanded="true"]').count() === 1 && /95 %/.test(await page.textContent('dialog.drawer .guest-more')), 'a guest opens its disk use');
   await page.screenshot({ path: `${S}/home-options-drawer.png` });
   await page.keyboard.press('Escape');
 

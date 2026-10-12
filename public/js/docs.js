@@ -320,6 +320,18 @@ function switchPortOf(dev) {
   return null;
 }
 
+// The guests on a Proxmox node; address and OS come from the QEMU guest agent, where it runs
+function vmTable(vms) {
+  const ips = vms.some((g) => g.ips?.length);
+  const os = vms.some((g) => g.os);
+  return [el('h3', { text: `VMs and containers (${vms.length})` }), el('div', { class: 'table-wrap' }, el('table', null,
+    el('thead', null, el('tr', null, el('th', { class: 'r', text: 'ID' }), ['Name', 'Type', 'Status'].map((t) => el('th', { text: t })), ['vCPU', 'Memory', 'Disk'].map((t) => el('th', { class: 'r', text: t })),
+      ips ? el('th', { text: 'Address' }) : null, os ? el('th', { text: 'OS' }) : null)),
+    el('tbody', null, vms.map((g) => el('tr', null, el('td', { class: 'r', text: g.vmid }), el('td', { text: g.name }), el('td', { text: g.type === 'lxc' ? 'Container' : 'VM' }),
+      el('td', { text: g.status }), el('td', { class: 'r', text: g.maxcpu ?? '–' }), el('td', { class: 'r', text: fmt.bytes(g.maxmem) }), el('td', { class: 'r', text: g.maxdisk ? fmt.bytes(g.maxdisk) : '–' }),
+      ips ? el('td', { class: 'num', text: g.ips?.join(', ') || '–' }) : null, os ? el('td', { text: g.os || '–' }) : null)))))];
+}
+
 function serverView(id) {
   const dev = D.auto.devices.find((d) => d.id === id);
   if (!dev) return show(el('p', { class: 'empty', text: 'Device not found.' }));
@@ -344,10 +356,7 @@ function serverView(id) {
     dev.connections.length ? [el('h3', { text: 'Management' }), el('div', { class: 'table-wrap' }, el('table', null,
       el('thead', null, el('tr', null, el('th', { text: 'Interface' }), el('th', { text: 'Address' }))),
       el('tbody', null, dev.connections.map((c) => el('tr', null, el('td', { text: c.label }), el('td', { class: 'num', text: c.address }))))))] : null,
-    dev.vms.length ? [el('h3', { text: `VMs and containers (${dev.vms.length})` }), el('div', { class: 'table-wrap' }, el('table', null,
-      el('thead', null, el('tr', null, el('th', { class: 'r', text: 'ID' }), ['Name', 'Type', 'Status'].map((t) => el('th', { text: t })), ['vCPU', 'Memory'].map((t) => el('th', { class: 'r', text: t })))),
-      el('tbody', null, dev.vms.map((g) => el('tr', null, el('td', { class: 'r', text: g.vmid }), el('td', { text: g.name }), el('td', { text: g.type === 'lxc' ? 'Container' : 'VM' }),
-        el('td', { text: g.status }), el('td', { class: 'r', text: g.maxcpu ?? '–' }), el('td', { class: 'r', text: fmt.bytes(g.maxmem) }))))))] : null,
+    dev.vms.length ? vmTable(dev.vms) : null,
     dev.services.length ? [el('h3', { text: 'Services' }), el('ul', null, dev.services.map((s) => el('li', null, s.href ? el('a', { href: s.href, target: '_blank', rel: 'noopener noreferrer', text: s.name }) : s.name)))] : null,
     el('h3', { text: 'Your notes' }),
     yours,

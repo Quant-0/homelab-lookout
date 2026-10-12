@@ -362,29 +362,128 @@ function guestNumbers(g, vs) {
   ].filter(Boolean);
 }
 
-function guestTable(guests, vs) {
+// A guest's fullest disk: a container's root disk, or the fullest filesystem the guest agent reports
+function guestDisk(g) {
+  if (g.disk != null && g.maxdisk) return { used: g.disk, size: g.maxdisk, mount: '/' };
+  const fs = g.agent?.fs || [];
+  return fs.length ? fs.reduce((a, f) => (f.used / f.size > a.used / a.size ? f : a)) : null;
+}
+const bitsText = (bps) => (bps == null ? '–' : bps * 8 >= 1e6 ? `${fmt.n((bps * 8) / 1e6, 1)} Mbit/s` : `${fmt.n((bps * 8) / 1e3, 0)} kbit/s`);
+
+// Opened from a guest's row: traffic and disk graphs, its filesystems and addresses
+function guestDetail(g, hostId) {
+  const k = `pveg:${hostId}:${g.vmid}`;
+  const fsRows = (g.agent?.fs || (g.disk != null ? [{ mount: '/', used: g.disk, size: g.maxdisk }] : [])).map((f) => {
+    const fr = f.size ? f.used / f.size : 0;
+    return el('div', { class: 'meter-row' },
+      el('span', { class: 'label', text: f.mount, title: f.type || '' }),
+      el('div', null, meter(fr, usageClass(fr)), el('div', { class: 'small muted num', text: `${fmt.bytes(f.used)} of ${fmt.bytes(f.size)} used` })),
+      el('span', { class: 'value', text: fmt.pct(fr) }));
+  });
+  return el('div', { class: 'guest-detail' },
+    sparks([
+      [`${k}:rx`, 'Network', ' Mbit/s', 1, { key2: `${k}:tx`, names: ['in', 'out'], legend: ['In', 'Out'], zero: true }],
+      [`${k}:read`, 'Disk activity', ' MB/s', 1, { key2: `${k}:write`, names: ['read', 'write'], legend: ['Read', 'Write'], zero: true }],
+    ]),
+    fsRows.length ? fsRows : null,
+    g.type === 'qemu' && g.agent && !g.agent.running
+      ? el('p', { class: 'small muted', text: 'Install the QEMU guest agent in this VM (apt install qemu-guest-agent) and switch it on under Options in Proxmox to see its disks and addresses.' })
+      : null,
+    kv([
+      ['Address', g.agent?.ips?.join(', ') || null],
+      ['Operating system', g.agent?.os || null],
+      ['Network now', g.rxBps != null ? `${bitsText(g.rxBps)} in · ${bitsText(g.txBps)} out` : null],
+    ]));
+}
+
+function guestTable(guests, vs, hostId) {
   const shown = guests.filter((g) => vs.stopped || g.status === 'running');
   if (!shown.length) return el('p', { class: 'small muted', text: guests.length ? 'No running VMs or containers' : 'No VMs or containers' });
-  const cols = [['cpu', 'CPU'], ['ram', 'Memory'], ['uptime', 'Uptime']].filter(([k]) => vs[k]);
+  const cols = [['cpu', 'CPU'], ['ram', 'Memory'], ['disk', 'Disk'], ['uptime', 'Uptime']].filter(([k]) => (k === 'disk' ? shown.some(guestDisk) : vs[k]));
+  const span = 3 + cols.length;
   return el('div', { class: 'table-wrap' }, el('table', { class: 'guest-table' },
     el('thead', null, el('tr', null, ['Name', 'Type', 'Status'].map((t) => el('th', { text: t })), cols.map(([, t]) => el('th', { class: 'r', text: t })))),
     el('tbody', null, [...shown].sort((a, b) => (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || String(a.name).localeCompare(String(b.name))).map((g) => {
       const on = g.status === 'running';
       const memF = g.maxmem ? g.mem / g.maxmem : null;
-      const val = { cpu: on ? `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` : '–', ram: on ? `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` : '–', uptime: on ? fmt.uptime(g.uptime) : '–' };
-      return el('tr', { class: on ? null : 'muted' },
+      const dk = on ? guestDisk(g) : null;
+      const dkF = dk?.size ? dk.used / dk.size : null;
+      const val = {
+        cpu: on ? `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}` : '–',
+        ram: on ? `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}` : '–',
+        disk: dk ? `${fmt.pct(dkF)}${dk.mount !== '/' ? ` ${dk.mount}` : ''}` : '–',
+        uptime: on ? fmt.uptime(g.uptime) : '–',
+      };
+      const row = el('tr', { class: [on ? 'guest-row' : 'muted'].join(' '), tabindex: on ? 0 : null, 'aria-expanded': on ? 'false' : null, title: on ? 'Show graphs and disks' : null },
         el('td', null, el('strong', { text: g.name || String(g.vmid) }), el('span', { class: 'small muted num', text: ` ${g.vmid}` })),
         el('td', { text: g.type === 'lxc' ? 'Container' : 'VM' }),
         el('td', null, el('span', { class: `dot ${on ? 'good' : 'off'}` }), ` ${g.status}`),
-        cols.map(([k]) => el('td', { class: 'r num', text: val[k] })));
+        cols.map(([k]) => el('td', { class: `r num${k === 'disk' && dkF != null ? ` ${usageClass(dkF)}` : ''}`, text: val[k] })));
+      if (!on) return row;
+      const toggle = () => {
+        const open = row.getAttribute('aria-expanded') === 'true';
+        row.setAttribute('aria-expanded', String(!open));
+        if (open) row.nextElementSibling?.classList.contains('guest-more') && row.nextElementSibling.remove();
+        else {
+          row.after(el('tr', { class: 'guest-more' }, el('td', { colspan: span }, guestDetail(g, hostId))));
+          HD.fillSparks();
+        }
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle()));
+      return row;
     }))));
+}
+
+// Storage, ZFS, the node's disks and its last backup job: what Proxmox reads every 5 minutes
+function pveStorage(d) {
+  const out = [];
+  const stRows = (d.storage || []).map((st) => {
+    const f = st.size ? st.used / st.size : 0;
+    return el('div', { class: 'meter-row' },
+      el('span', { class: 'label', text: st.name, title: [st.type, st.node ? `node ${st.node}` : 'shared'].filter(Boolean).join(' · ') }),
+      el('div', null, meter(f, usageClass(f)), el('div', { class: 'small muted num', text: `${fmt.bytes(st.used)} of ${fmt.bytes(st.size)} used${st.type ? ` · ${st.type}` : ''}` })),
+      el('span', { class: 'value', text: fmt.pct(f) }));
+  });
+  if (stRows.length) out.push(el('h4', { text: 'Storage' }), stRows);
+  const pools = d.nodes.flatMap((n) => (n.zfs || []).map((z) => ({ ...z, node: n.name })));
+  if (pools.length) {
+    out.push(el('h4', { text: 'ZFS pools' }), pools.map((z) => el('div', { class: 'meter-row' },
+      el('span', { class: 'label', text: z.name }),
+      el('div', null, status(z.health || 'unknown', z.health === 'ONLINE' ? 'good' : z.health === 'DEGRADED' ? 'warning' : 'critical'),
+        el('span', { class: 'small muted num', text: ` ${fmt.bytes(z.alloc)} of ${fmt.bytes(z.size)}${z.frag != null ? ` · ${z.frag} % fragmented` : ''}` })),
+      el('span', { class: 'value', text: z.size ? fmt.pct(z.alloc / z.size) : '' }))));
+  }
+  const disks = d.nodes.flatMap((n) => (n.disks || []).map((x) => ({ ...x, node: n.name })));
+  if (disks.length) {
+    const many = d.nodes.filter((n) => n.disks?.length).length > 1;
+    out.push(el('h4', { text: 'Disks' }), el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, ['Disk', 'Model', 'Type', 'SMART'].map((t) => el('th', { text: t })), ['Size', 'Wear left'].map((t) => el('th', { class: 'r', text: t })))),
+      el('tbody', null, disks.map((x) => {
+        const bad = x.health && !['PASSED', 'OK', 'UNKNOWN'].includes(x.health.toUpperCase());
+        return el('tr', null,
+          el('td', { class: 'num', text: many ? `${x.node} ${x.dev}` : x.dev }),
+          el('td', { text: x.model || '–' }),
+          el('td', { text: x.kind ? x.kind.toUpperCase() : '–' }),
+          el('td', null, status(x.health || 'unknown', bad ? 'critical' : x.health === 'UNKNOWN' || !x.health ? '' : 'good')),
+          el('td', { class: 'r num', text: x.size ? fmt.bytes(x.size) : '–' }),
+          el('td', { class: `r num${x.wearLeft != null && x.wearLeft <= 10 ? ' warning' : ''}`, text: x.wearLeft != null ? `${x.wearLeft} %` : '–' }));
+      })))));
+  }
+  for (const b of d.backups || []) {
+    out.push(el('p', { class: 'small' }, el('strong', { text: 'Last backup job' }), d.backups.length > 1 ? ` (${b.node})` : '', ': ',
+      status(b.ok ? 'OK' : b.warnings ? 'Warnings' : 'Failed', b.ok ? 'good' : b.warnings ? 'warning' : 'critical'),
+      ` ${fmt.ago(b.at)}${b.ok ? '' : ` · ${b.status}`}`));
+  }
+  for (const n of d.notes || []) out.push(el('p', { class: 'small muted', text: n }));
+  return out;
 }
 
 function renderProxmox(hosts, nodeFor = () => null, vs = VM_DEFAULTS) {
   return hosts.map((h0) => {
     const node = nodeFor(h0.id);
     const h = h0.data && node
-      ? { ...h0, data: { ...h0.data, nodes: h0.data.nodes.filter((n) => n.name === node), guests: h0.data.guests.filter((g) => g.node === node) } }
+      ? { ...h0, data: { ...h0.data, nodes: h0.data.nodes.filter((n) => n.name === node), guests: h0.data.guests.filter((g) => g.node === node), storage: (h0.data.storage || []).filter((st) => !st.node || st.node === node), backups: (h0.data.backups || []).filter((b) => b.node === node) } }
       : h0;
     const d = h.data;
     const running = d ? d.guests.filter((g) => g.status === 'running').length : 0;
@@ -412,7 +511,8 @@ function renderProxmox(hosts, nodeFor = () => null, vs = VM_DEFAULTS) {
           [`pve:${h0.id}:${n.name}:cpu`, d.nodes.length > 1 ? `${n.name} CPU` : 'CPU', ' %'],
           [`pve:${h0.id}:${n.name}:mem`, d.nodes.length > 1 ? `${n.name} memory` : 'Memory', ' %'],
         ])),
-        vs.host ? [el('h4', { text: `VMs and containers · ${up} of ${d.guests.length} running` }), guestTable(d.guests, vs)] : null,
+        pveStorage(d),
+        vs.host ? [el('h4', { text: `VMs and containers · ${up} of ${d.guests.length} running` }), guestTable(d.guests, vs, h0.id)] : null,
         vs.host && vs.services ? el('p', { class: 'small muted' }, el('a', { href: '/services#vms', text: 'All VMs on the Services tab' })) : null,
       ];
     });

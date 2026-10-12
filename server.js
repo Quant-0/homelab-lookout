@@ -1906,11 +1906,28 @@ async function collectIdrac(h, secret, poll = false) {
   return out;
 }
 
-async function collectProxmox(h, secret) {
+// Proxmox. Every poll: nodes, guests (with LXC disk use and traffic counters) and storage, three
+// requests in all. Every 5 minutes, in the background like the iDRAC drives: SMART health of the
+// node disks, ZFS pools, the last backup job per node, and for VMs with the QEMU guest agent their
+// filesystems, addresses and OS. Everything is read-only (PVEAuditor; the guest agent needs
+// VM.GuestAgent.Audit on Proxmox 9, VM.Monitor on 8).
+const PVE_EXTRA_MS = (Number(process.env.PVE_EXTRA_S) || 300) * 1000;
+const pveExtra = new Map(); // host id -> { at, running, nodes: { name: { disks, zfs } }, backups, agents, notes }
+const pveCounters = new Map(); // `${host id}:${vmid}` -> { t, netin, netout, diskread, diskwrite }
+const SKIP_FS = /^(tmpfs|devtmpfs|squashfs|overlay|iso9660|udf|proc|sysfs|cgroup2?|autofs|fuse\..*|nsfs|ramfs)$/i;
+
+async function collectProxmox(h, secret, poll = false) {
   const headers = { Authorization: `PVEAPIToken=${h.username}=${secret}` };
   const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers }).then((r) => r.data);
-  const [nodes, guests] = await Promise.all([get('/api2/json/nodes'), get('/api2/json/cluster/resources?type=vm')]);
-  return {
+  const [nodes, guests, storage] = await Promise.all([
+    get('/api2/json/nodes'),
+    get('/api2/json/cluster/resources?type=vm'),
+    get('/api2/json/cluster/resources?type=storage').catch(() => null),
+  ]);
+  const now = Date.now();
+  // bytes per second from the counters Proxmox keeps since the guest started
+  const rate = (g, prev, k) => (prev && g[k] >= prev[k] && now > prev.t ? (1000 * (g[k] - prev[k])) / (now - prev.t) : null);
+  const out = {
     nodes: (nodes || [])
       .map((n) => ({
         name: n.node,
@@ -1925,21 +1942,137 @@ async function collectProxmox(h, secret) {
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     guests: (guests || [])
-      .map((g) => ({
-        vmid: g.vmid,
-        name: g.name || `${g.type}-${g.vmid}`,
-        type: g.type === 'lxc' ? 'lxc' : 'qemu',
-        status: g.status,
-        node: g.node,
-        template: Boolean(g.template),
-        cpu: g.cpu ?? null,
-        maxcpu: g.maxcpu ?? null,
-        mem: g.mem ?? null,
-        maxmem: g.maxmem ?? null,
-        uptime: g.uptime ?? null,
-      }))
       .filter((g) => !g.template)
+      .map((g) => {
+        const type = g.type === 'lxc' ? 'lxc' : 'qemu';
+        const running = g.status === 'running';
+        const key = `${h.id}:${g.vmid}`;
+        const prev = pveCounters.get(key);
+        if (running && poll) pveCounters.set(key, { t: now, netin: g.netin, netout: g.netout, diskread: g.diskread, diskwrite: g.diskwrite });
+        return {
+          vmid: g.vmid,
+          name: g.name || `${g.type}-${g.vmid}`,
+          type,
+          status: g.status,
+          node: g.node,
+          template: false,
+          cpu: g.cpu ?? null,
+          maxcpu: g.maxcpu ?? null,
+          mem: g.mem ?? null,
+          maxmem: g.maxmem ?? null,
+          uptime: g.uptime ?? null,
+          // a VM's "disk" is always 0 (Proxmox can't see inside it); a container's is its root disk
+          disk: type === 'lxc' && running && g.maxdisk ? g.disk ?? null : null,
+          maxdisk: g.maxdisk ?? null,
+          rxBps: running ? rate(g, prev, 'netin') : null,
+          txBps: running ? rate(g, prev, 'netout') : null,
+          readBps: running ? rate(g, prev, 'diskread') : null,
+          writeBps: running ? rate(g, prev, 'diskwrite') : null,
+        };
+      })
       .sort((a, b) => a.vmid - b.vmid),
+    // shared storage (NFS, Ceph…) is listed once per node: keep one
+    storage: (storage || [])
+      .filter((x) => x.status === 'available' && x.maxdisk > 0)
+      .filter((x, i, all) => !x.shared || all.findIndex((y) => y.storage === x.storage && y.shared) === i)
+      .map((x) => ({ name: x.storage, node: x.shared ? null : x.node, type: x.plugintype || null, used: x.disk ?? null, size: x.maxdisk, shared: Boolean(x.shared) }))
+      .sort((a, b) => String(a.node).localeCompare(String(b.node)) || a.name.localeCompare(b.name)),
+  };
+  for (const k of pveCounters.keys()) if (k.startsWith(`${h.id}:`) && !out.guests.some((g) => k === `${h.id}:${g.vmid}`)) pveCounters.delete(k);
+
+  const known = pveExtra.get(h.id);
+  if (poll && (!known || now - known.at >= PVE_EXTRA_MS) && !known?.running) {
+    pveExtra.set(h.id, { ...(known || {}), at: known?.at || 0, running: true });
+    setImmediate(() => pveDetails(get, out)
+      .then((ex) => {
+        pveExtra.set(h.id, { ...ex, at: Date.now() });
+        const r = results.get(h.id);
+        if (r?.data && config.hosts.some((x) => x.id === h.id)) {
+          r.data = withPveExtra(r.data, ex);
+          alertsSoon();
+        }
+      })
+      .catch(() => pveExtra.set(h.id, { ...(known || {}), at: Date.now() }))
+      .finally(() => delete pveExtra.get(h.id)?.running));
+  }
+  return withPveExtra(out, known);
+}
+
+// The slow part: a few requests per node and three per VM with the guest agent, four at a time
+async function pveDetails(get, data) {
+  const notes = new Set();
+  const denied = (e) => /\b403\b|permission/i.test(e.message || '');
+  const nodes = {};
+  for (const n of data.nodes.filter((x) => x.status === 'online')) {
+    const p = `/api2/json/nodes/${encodeURIComponent(n.name)}/disks`;
+    const [disks, zfs] = await Promise.all([
+      get(`${p}/list`).catch((e) => (denied(e) && notes.add('Disk health needs Sys.Audit on /nodes (the PVEAuditor role has it).'), null)),
+      get(`${p}/zfs`).catch(() => null),
+    ]);
+    nodes[n.name] = {
+      disks: Array.isArray(disks)
+        ? disks.map((x) => ({
+          dev: String(x.devpath || ''),
+          model: x.model || null,
+          serial: x.serial || null,
+          size: x.size ?? null,
+          kind: x.type || null, // hdd, ssd, nvme
+          health: x.health || null, // PASSED, FAILED, OK, UNKNOWN
+          wearLeft: typeof x.wearout === 'number' ? x.wearout : Number.isFinite(Number(x.wearout)) ? Number(x.wearout) : null,
+        }))
+        : null,
+      zfs: Array.isArray(zfs) ? zfs.map((z) => ({ name: z.name, health: z.health || null, size: z.size ?? null, alloc: z.alloc ?? null, frag: z.frag ?? null })) : null,
+    };
+  }
+  // the last backup job (vzdump) per node, from the cluster's recent tasks
+  const backups = [];
+  const tasks = await get('/api2/json/cluster/tasks').catch(() => null);
+  for (const t of (Array.isArray(tasks) ? tasks : []).filter((x) => x.type === 'vzdump' && x.endtime).sort((a, b) => b.endtime - a.endtime)) {
+    if (backups.some((b) => b.node === t.node)) continue;
+    backups.push({ node: t.node, at: t.endtime * 1000, status: String(t.status || ''), ok: t.status === 'OK', warnings: /^WARNINGS/i.test(t.status || ''), vmid: t.id || null });
+  }
+  // inside the VMs, through the QEMU guest agent (where it's installed and switched on)
+  const agents = {};
+  const vms = data.guests.filter((g) => g.type === 'qemu' && g.status === 'running');
+  for (let i = 0; i < vms.length; i += 4) {
+    await Promise.all(vms.slice(i, i + 4).map(async (g) => {
+      const p = `/api2/json/nodes/${encodeURIComponent(g.node)}/qemu/${g.vmid}/agent`;
+      const fsInfo = await get(`${p}/get-fsinfo`).catch((e) => e);
+      if (fsInfo instanceof Error) {
+        if (denied(fsInfo)) notes.add('To see inside VMs, give the token VM.GuestAgent.Audit (Proxmox 9) or VM.Monitor (Proxmox 8) on /vms.');
+        agents[`${g.node}/${g.vmid}`] = { running: false };
+        return;
+      }
+      const [net, os] = await Promise.all([get(`${p}/network-get-interfaces`).catch(() => null), get(`${p}/get-osinfo`).catch(() => null)]);
+      const seen = new Set();
+      agents[`${g.node}/${g.vmid}`] = {
+        running: true,
+        fs: (fsInfo?.result || [])
+          .filter((f) => !SKIP_FS.test(f.type || '') && f['total-bytes'] > 0 && !/^\/(boot\/efi|snap\/)/.test(f.mountpoint || ''))
+          .filter((f) => !seen.has(f.mountpoint) && seen.add(f.mountpoint))
+          .map((f) => ({ mount: String(f.mountpoint || f.name || '').slice(0, 120), type: f.type || null, used: f['used-bytes'] ?? null, size: f['total-bytes'] }))
+          .slice(0, 20),
+        ips: (net?.result || [])
+          .filter((n) => n.name !== 'lo' && !/^(docker|br-|veth|virbr|tailscale)/.test(n.name || ''))
+          .flatMap((n) => (n['ip-addresses'] || []).map((a) => a['ip-address']))
+          .filter((a) => a && !/^(127\.|::1$|fe80:)/i.test(a))
+          .slice(0, 8),
+        os: os?.result?.['pretty-name'] || os?.result?.name || null,
+      };
+    }));
+  }
+  return { nodes, backups, agents, notes: [...notes] };
+}
+
+// The last background details on top of a poll's numbers
+function withPveExtra(data, ex) {
+  if (!ex?.nodes) return { ...data, backups: data.backups || [], notes: data.notes || [] };
+  return {
+    ...data,
+    nodes: data.nodes.map((n) => ({ ...n, disks: ex.nodes[n.name]?.disks ?? null, zfs: ex.nodes[n.name]?.zfs ?? null })),
+    guests: data.guests.map((g) => ({ ...g, agent: g.type === 'qemu' && g.status === 'running' ? ex.agents?.[`${g.node}/${g.vmid}`] ?? null : null })),
+    backups: ex.backups || [],
+    notes: ex.notes || [],
   };
 }
 
@@ -3611,7 +3744,10 @@ function vmsPayload() {
     for (const g of r?.data?.guests || []) {
       // two connections to the same cluster report the same guests: list each once
       if (items.some((x) => x.vmid === g.vmid && x.node === g.node)) continue;
-      items.push({ key: `${h.id}:${g.vmid}`, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime });
+      // the fullest disk: a container's root disk, or the fullest filesystem the guest agent reports
+      const fs = g.agent?.fs?.length ? g.agent.fs.reduce((a, f) => (f.used / f.size > a.used / a.size ? f : a)) : null;
+      const disk = g.disk != null && g.maxdisk ? { used: g.disk, size: g.maxdisk, mount: '/' } : fs ? { used: fs.used, size: fs.size, mount: fs.mount } : null;
+      items.push({ key: `${h.id}:${g.vmid}`, host: h.id, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime, disk, rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, agent: g.agent?.running ? { ips: g.agent.ips, os: g.agent.os, fs: g.agent.fs } : null });
     }
   }
   const v = config.settings.dashboard.vms;
@@ -3866,9 +4002,11 @@ async function docsAuto() {
       disks: [
         ...(idrac?.drives || []).map((x) => `Bay ${x.bay}: ${[x.model, x.capacityBytes ? `${Math.round(x.capacityBytes / 1e11) / 10} TB` : null, x.mediaType].filter(Boolean).join(' ')} (${x.failurePredicted ? 'predicted to fail' : x.health || 'unknown'})`),
         ...(syno?.disks || []).map((x) => `${x.id}: ${x.model || ''} (${x.health || x.status || ''})`),
+        // what Proxmox sees, when the controller doesn't list the drives itself
+        ...(idrac?.drives?.length ? [] : nodeInfo?.disks || []).map((x) => `${x.dev}: ${[x.model, x.size ? `${Math.round(x.size / 1e11) / 10} TB` : null, x.kind].filter(Boolean).join(' ')} (${x.health || 'unknown'}${x.wearLeft != null ? `, ${x.wearLeft} % wear left` : ''})`),
       ],
-      pools: [...(syno?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(tn?.pools || []).map((p) => `${p.name}: ${p.status}`)],
-      vms: pve ? pve.guests.filter((g) => !node || g.node === node).map((g) => ({ vmid: g.vmid, name: g.name, type: g.type, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu })) : [],
+      pools: [...(syno?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(tn?.pools || []).map((p) => `${p.name}: ${p.status}`), ...(nodeInfo?.zfs || []).map((z) => `${z.name}: ${z.health} (ZFS)`)],
+      vms: pve ? pve.guests.filter((g) => !node || g.node === node).map((g) => ({ vmid: g.vmid, name: g.name, type: g.type, status: g.status, maxmem: g.maxmem, maxcpu: g.maxcpu, maxdisk: g.maxdisk ?? null, ips: g.agent?.ips || [], os: g.agent?.os || null })) : [],
       services: config.services.filter((s) => s.deviceId === d.id).map((s) => ({ name: s.name, href: safeLink(s.href) })),
       unifiMac: d.unifi?.mac || null,
     };
@@ -3905,7 +4043,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms)$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -3990,6 +4128,14 @@ function recordHistory(h, data, t) {
     for (const n of data.nodes.filter((x) => x.status === 'online')) {
       histRecord(`pve:${h.id}:${n.name}:cpu`, typeof n.cpu === 'number' ? n.cpu * 100 : null, t);
       histRecord(`pve:${h.id}:${n.name}:mem`, pct(n.mem, n.maxmem), t);
+    }
+    // per guest: network in Mbit/s, disk in MB/s
+    for (const g of data.guests.filter((x) => x.status === 'running')) {
+      const k = `pveg:${h.id}:${g.vmid}`;
+      if (g.rxBps != null) histRecord(`${k}:rx`, (g.rxBps * 8) / 1e6, t);
+      if (g.txBps != null) histRecord(`${k}:tx`, (g.txBps * 8) / 1e6, t);
+      if (g.readBps != null) histRecord(`${k}:read`, g.readBps / 1e6, t);
+      if (g.writeBps != null) histRecord(`${k}:write`, g.writeBps / 1e6, t);
     }
   } else if (h.type === 'synology') {
     histRecord(`syno:${h.id}:temp`, data.system.temp, t);
@@ -6700,17 +6846,17 @@ const ALERT_TYPES = {
   offline: { label: 'Device offline', hint: 'A connection stops answering, a Proxmox node goes offline or a UniFi device disconnects.', delay: 5 },
   service: { label: 'Service down', hint: 'A service status check fails, or a service card reports a problem (a UPS on battery, Tailscale keys about to expire).', delay: 5 },
   hardware: { label: 'Hardware fault', hint: 'Power supplies, fans and system health (iDRAC, Synology).', delay: 0 },
-  storage: { label: 'Storage problem', hint: 'Degraded or crashed pools and failing disks.', delay: 0 },
+  storage: { label: 'Storage problem', hint: 'Degraded or crashed pools (also ZFS on Proxmox), failing disks and worn-out SSDs.', delay: 0 },
   temperature: {
     label: 'High temperature',
     hint: 'iDRAC sensors use their own warning limits; other sensors use these.',
     delay: 5,
     params: { diskC: { label: 'Disks at', unit: '°C', min: 30, max: 90, def: 55 }, otherC: { label: 'Other sensors at', unit: '°C', min: 30, max: 120, def: 80 } },
   },
-  space: { label: 'Storage almost full', hint: 'A pool or volume is fuller than the limit.', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
+  space: { label: 'Storage almost full', hint: 'A pool, volume or Proxmox storage is fuller than the limit, or a disk inside a container or VM (with the guest agent).', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
   nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
   power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
-  backup: { label: 'Backup failed', hint: 'An automatic backup or one of its destinations failed.', delay: null },
+  backup: { label: 'Backup failed', hint: 'An automatic backup of the dashboard or one of its destinations failed, or a Proxmox backup job did.', delay: null },
 };
 const SEVERITY_RANK = { warning: 1, critical: 2 };
 const REPEAT_HOURS = [0, 1, 4, 12, 24];
@@ -7103,6 +7249,30 @@ function alertConditions(all = false) {
       const dev = config.devices.find((x) => x.id === h.deviceId);
       const mine = dev ? effectiveNode(h, dev) : null;
       for (const n of d.nodes) if (n.status !== 'online' && (!mine || n.name === mine)) add('offline', `${h.id}:node:${n.name}`, 'critical', `${name}: Proxmox node ${n.name} is ${n.status || 'offline'}`, '', own);
+      const ours = (nodeName) => !mine || !nodeName || nodeName === mine;
+      const full = (key, what, used, size) => {
+        const f = pct(used, size);
+        if (over('space', `${h.id}:${key}`, f, space.pct, 2)) add('space', `${h.id}:${key}`, 'warning', `${name}: ${what} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+      };
+      for (const st of d.storage || []) if (ours(st.node)) full(`st:${st.node || ''}:${st.name}`, `storage ${st.name}`, st.used, st.size);
+      for (const n of d.nodes.filter((x) => ours(x.name))) {
+        for (const z of n.zfs || []) {
+          if (z.health && z.health !== 'ONLINE') add('storage', `${h.id}:zfs:${n.name}:${z.name}`, z.health === 'DEGRADED' ? 'warning' : 'critical', `${name}: ZFS pool ${z.name} is ${z.health.toLowerCase()}`, `Node ${n.name}`, own);
+          full(`zfs:${n.name}:${z.name}`, `ZFS pool ${z.name}`, z.alloc, z.size);
+        }
+        for (const x of n.disks || []) {
+          const id = `${h.id}:disk:${n.name}:${x.dev}`;
+          if (x.health && !['PASSED', 'OK', 'UNKNOWN'].includes(x.health.toUpperCase())) add('storage', id, 'critical', `${name}: disk ${x.dev} failed its SMART check`, [x.model, x.serial].filter(Boolean).join(' · '), own);
+          else if (x.wearLeft != null && x.wearLeft <= 10) add('storage', `${id}:wear`, 'warning', `${name}: SSD ${x.dev} is worn out (${x.wearLeft} % left)`, [x.model, x.serial].filter(Boolean).join(' · '), own);
+        }
+      }
+      for (const g of d.guests.filter((x) => x.status === 'running' && ours(x.node))) {
+        if (g.disk != null) full(`ct:${g.vmid}`, `${g.name}'s disk`, g.disk, g.maxdisk);
+        for (const f of g.agent?.fs || []) full(`vm:${g.vmid}:${f.mount}`, `${g.name} ${f.mount}`, f.used, f.size);
+      }
+      for (const b of (d.backups || []).filter((x) => ours(x.node) && !x.ok)) {
+        add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${new Date(b.at).toISOString().slice(0, 16).replace('T', ' ')} UTC`, own);
+      }
     } else if (h.type === 'truenas') {
       for (const p of d.pools) {
         if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, 'critical', `${name}: pool ${p.name} is ${p.status}`, p.detail || '', own);

@@ -2104,3 +2104,16 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .cable-swatches button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c); }
 .cable-bar input { width: 160px; }
 .rack-head-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Proxmox guests: a row opens graphs, filesystems and addresses */
+.guest-table tr.guest-row { cursor: pointer; }
+.guest-table tr.guest-row:hover td, .guest-table tr.guest-row[aria-expanded="true"] td { background: var(--accent-wash); }
+.guest-table tr.guest-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.guest-table tr.guest-row td:first-child strong::before { content: '▸'; display: inline-block; width: 1em; color: var(--muted); transition: transform 0.15s; }
+.guest-table tr.guest-row[aria-expanded="true"] td:first-child strong::before { transform: rotate(90deg); }
+.guest-table tr.guest-more > td { padding: 4px 8px 14px; }
+.guest-table td.warning { color: var(--warning); }
+.guest-table td.critical { color: var(--critical); }
+.guest-detail { display: grid; gap: 10px; }
+.guest-detail .sparks { margin: 0; }
+.guest-table td.r { white-space: nowrap; }

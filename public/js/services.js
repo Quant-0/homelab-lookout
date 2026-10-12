@@ -139,12 +139,14 @@ function vmCard(g, show = { cpu: true, ram: true, uptime: true }) {
       el('span', { class: `vm-type ${g.type}`, text: g.type === 'lxc' ? 'CT' : 'VM', title: g.type === 'lxc' ? 'Container' : 'Virtual machine' }),
       el('div', { class: 'svc-title' },
         el('strong', { text: g.name }),
-        el('span', { class: 'small muted num', text: `${g.vmid} · ${g.node}` })),
+        el('span', { class: 'small muted num', text: [g.vmid, g.node, g.agent?.ips?.[0]].filter(Boolean).join(' · '), title: g.agent?.os || '' })),
       el('span', { class: 'svc-status', title: g.status }, el('span', { class: `led ${running ? 'good' : 'off'}` }), running ? null : el('span', { class: 'small muted', text: g.status }))),
     running && (show.cpu || show.ram || show.uptime) ? el('div', { class: 'vm-stats small muted num' },
       // CPU and memory as bars that warm up when nearly full
       show.cpu ? vmBar('CPU', g.cpu, `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}`) : null,
       show.ram ? vmBar('RAM', memF, `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}`) : null,
+      // a container's root disk, or the fullest disk inside a VM with the guest agent
+      g.disk ? vmBar('Disk', g.disk.used / g.disk.size, `${fmt.pct(g.disk.used / g.disk.size)}${g.disk.mount !== '/' ? ` ${g.disk.mount}` : ''} of ${fmt.bytes(g.disk.size)}`) : null,
       show.uptime ? el('span', { class: 'vm-up', text: `Up ${fmt.uptime(g.uptime)}` }) : null) : null);
 }
 

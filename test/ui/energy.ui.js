@@ -27,6 +27,8 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForFunction(() => document.getElementById('en-period').value === '2026-09');
   const tiles = await page.$$eval('#en-tiles .value', (n) => n.map((x) => x.textContent));
   check(tiles[0] === '180.0 kWh' && /180 kr/.test(tiles[1]) && tiles[2] === '100.0 øre/kWh', `tiles: ${tiles.join(' | ')}`);
+  // the chart is drawn once its box has a size
+  await page.waitForFunction(() => document.querySelectorAll('#en-chart rect.bar').length === 30, null, { timeout: 5000 }).catch(() => {});
   check(await page.locator('#en-chart rect.bar').count() === 30, 'a bar per day');
   const devices = await page.$$eval('.energy-device .label', (n) => n.map((x) => x.textContent));
   check(devices[0] === 'titan' && devices.includes('USW-24-POE'), `per device, largest first (${devices.join(', ')})`);

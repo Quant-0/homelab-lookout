@@ -72,6 +72,7 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
   - its problems first, then up to eight numbers
   - every connection's full view: fans, power supplies, pools, disks, ports, UPS battery, graphs (hover for value and time)
   - **Server sheet** (its Docs page), **Update available**, and **Edit in Admin**
+  - on a **Proxmox** server: its storage, ZFS pools, the disks with their SMART health and SSD wear, and the last backup job. Click a VM or container in the table to open its network and disk graphs, its filesystems and its address. These details are read every 5 minutes; a full disk or storage, a degraded pool, a failing disk or a failed backup job shows under **Needs you**.
 - **At the bottom**, one quiet line: services up, VMs running and updates, each a link. Services and VMs can also be shown as tiles or a list (Admin → Dashboard & look).
 - **Rack** (in the top bar): the rack drawn to scale. On a wide screen the chosen device's details stand beside it.
 - **Customize** (signed in): drag tiles into another order, and use the eye to hide one from Home. It stays in the rack and in search. **Save** keeps it on the server, so it's the same everywhere.
@@ -110,7 +111,7 @@ The **palette** button (top right, or **More** on a phone) changes the look **on
 
 - Cards grouped as you like. Click a card to open the app. The dot shows up/down, and hovering shows the response time.
 - Up to four numbers per card, e.g. what's queued, wanted, streaming or failed.
-- **Virtual machines & containers** from Proxmox are listed here too, with CPU, memory and uptime.
+- **Virtual machines & containers** from Proxmox are listed here too, with CPU, memory, disk and uptime. The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem; the VM's address is shown under its name.
 
 ### Energy report
 
@@ -190,7 +191,7 @@ The device form: name, type, **brand and model**, and where it sits:
 | Connection | For | What to create on the device | In the form |
 |---|---|---|---|
 | Redfish | Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro BMC | A local user with a read-only role | Address, user, password |
-| Proxmox | Proxmox VE | A user `dashboard@pve` with role **PVEAuditor** and an API token (commands in the README) | User = token ID (e.g. `dashboard@pve!monitor`), secret = token UUID |
+| Proxmox | Proxmox VE | A user `dashboard@pve` with role **PVEAuditor** and an API token (commands in the README). To see inside VMs: the QEMU guest agent in each VM, and the token allowed to ask it (README). | User = token ID (e.g. `dashboard@pve!monitor`), secret = token UUID |
 | TrueNAS 25.04+ | TrueNAS | An API key for a user with *Read-only Administrator* | User name, API key |
 | Synology | Synology DSM | DSM → Control Panel → Terminal & SNMP → **SNMPv3**, protocol SHA, privacy AES | User, passwords, then **Fetch engine ID** |
 | UniFi | UniFi OS consoles (UDM, Cloud Gateway) | A local *View Only* user without MFA (UniFi OS → Admins & Users) | User, password |
