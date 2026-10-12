@@ -6972,7 +6972,8 @@ async function handle(req, res) {
 //
 // After each poll the current problems ("conditions") are compared with the active alerts. A
 // condition that lasts longer than its rule's delay is sent to the channels chosen for that rule,
-// and again when it clears. Channels: ntfy, Telegram, Discord webhooks and e-mail (SMTP). Their
+// and again when it clears. Channels: ntfy, Telegram, Discord webhooks, e-mail (SMTP) and iMessage
+// through Sendblue. Their
 // tokens and passwords are encrypted like device credentials, bound to where they are sent, and
 // never returned by the API. Hosts without fresh data keep their alerts as they are, so a NAS that
 // stops answering doesn't "resolve" its degraded pool.
@@ -6980,7 +6981,10 @@ async function handle(req, res) {
 const ALERTS_FILE = path.join(DATA_DIR, 'alerts.json');
 const TELEGRAM_API = process.env.TELEGRAM_API_URL || 'https://api.telegram.org'; // overridable for the tests
 const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com', ...String(process.env.DISCORD_WEBHOOK_HOSTS || '').split(',').filter(Boolean)];
-const CHANNEL_TYPES = { ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)' };
+const SENDBLUE_API = process.env.SENDBLUE_API_URL || 'https://api.sendblue.com'; // overridable for the tests
+const CHANNEL_TYPES = { ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)', sendblue: 'iMessage (Sendblue)' };
+const PHONE_RE = /^\+[1-9]\d{6,14}$/; // E.164
+const phoneNumber = (v) => String(v).replace(/[\s().-]/g, '');
 const ALERT_TYPES = {
   offline: { label: 'Device offline', hint: 'A connection stops answering, a Proxmox node goes offline or a UniFi device disconnects.', delay: 5 },
   service: { label: 'Service down', hint: 'A service status check fails, or a service card reports a problem (a UPS on battery, Tailscale keys about to expire).', delay: 5 },
@@ -7066,6 +7070,15 @@ function validateChannel(b) {
     out.tlsMode = out.security !== 'none' && b.tlsMode === 'pin' ? 'pin' : 'verify';
     out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
   }
+  if (type === 'sendblue') {
+    // the key ID says which account; the secret key is the secret
+    out.keyId = str(b.keyId, 128, 'API key ID', { required: true });
+    if (!/^[A-Za-z0-9._-]+$/.test(out.keyId)) throw new UserError('API key ID: letters, digits, . _ and - only');
+    out.from = phoneNumber(str(b.from, 32, 'Your Sendblue line', { required: true }));
+    out.to = [...new Set((Array.isArray(b.to) ? b.to : String(b.to ?? '').split(/[,;\n]+/)).map((x) => phoneNumber(x)).filter(Boolean))];
+    if (!out.to.length || out.to.length > 10) throw new UserError('Enter 1 to 10 phone numbers');
+    for (const n of [out.from, ...out.to]) if (!PHONE_RE.test(n)) throw new UserError(`Phone numbers need the country code, like +4791234567 (${n.slice(0, 32)})`);
+  }
   return out;
 }
 
@@ -7088,13 +7101,14 @@ function channelSecret(c, s) {
   if (!v || !channelNeedsSecret(c)) return null;
   if (c.type === 'telegram' && !/^\d{3,20}:[A-Za-z0-9_-]{20,100}$/.test(v)) throw new UserError('That does not look like a bot token (123456789:AA…)');
   if (c.type === 'discord') parseDiscordWebhook(v);
+  if (c.type === 'sendblue' && /\s/.test(v)) throw new UserError('That does not look like an API secret key');
   return v;
 }
 
 // Where the secret is sent: changing any of this without re-entering it deletes the stored one
 function channelIdentity(c) {
-  const address = c.type === 'ntfy' ? c.url : c.type === 'email' ? `${c.security}://${c.host}:${c.port}` : c.type === 'telegram' ? TELEGRAM_API : 'discord';
-  const username = c.type === 'ntfy' ? `${c.auth}:${c.username || ''}` : c.type === 'email' ? c.username : '';
+  const address = c.type === 'ntfy' ? c.url : c.type === 'email' ? `${c.security}://${c.host}:${c.port}` : c.type === 'telegram' ? TELEGRAM_API : c.type === 'sendblue' ? SENDBLUE_API : 'discord';
+  const username = c.type === 'ntfy' ? `${c.auth}:${c.username || ''}` : c.type === 'email' ? c.username : c.type === 'sendblue' ? c.keyId : '';
   return { id: c.id, type: `alert:${c.type}`, address, username, tlsMode: c.tlsMode || '', fingerprint: c.fingerprint || '' };
 }
 const channelHost = (c) => ({ ...channelIdentity(c), secret: c.secret });
@@ -7140,6 +7154,21 @@ function sendDiscord(c, webhook, m) {
     embeds: [{ title: m.title.slice(0, 256), description: m.text ? m.text.slice(0, 4000) : undefined, color: { critical: 0xd03b3b, warning: 0xfab219, resolved: 0x0ca30c }[m.severity] ?? 0x2a78d6, timestamp: new Date().toISOString() }],
   });
   return checkedSend(connRequest({ url: hook.url, tlsMode: 'verify' }, hook.path, { method: 'POST', body, full: true }), 'Discord', (r) => r.json?.message);
+}
+
+// iMessage through Sendblue (SMS where the phone has no iMessage): one request per recipient
+async function sendSendblue(c, secret, m) {
+  const content = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}\n— ${m.site}`.trim().slice(0, 4000);
+  const headers = { 'sb-api-key-id': c.keyId, 'sb-api-secret-key': secret };
+  const why = (r) => r.json?.error_message || r.json?.message || r.json?.error;
+  for (const number of c.to) {
+    const r = await connRequest({ url: SENDBLUE_API, tlsMode: 'verify' }, '/api/send-message', {
+      method: 'POST', headers, body: JSON.stringify({ number, from_number: c.from, content }), full: true,
+    });
+    // a refused message can come back as 200 with status ERROR
+    if (r.status >= 200 && r.status < 300 && r.json?.status === 'ERROR') throw new UserError(`Sendblue (${number}): ${String(why(r) || 'message refused').slice(0, 160)}`);
+    await checkedSend(Promise.resolve(r), `Sendblue (${number})`, why);
+  }
 }
 
 // RFC 2047 encoded words for non-ASCII header text, folded so each stays short
@@ -7264,7 +7293,7 @@ async function sendEmail(c, password, m) {
   }
 }
 
-const CHANNEL_SENDERS = { ntfy: sendNtfy, telegram: sendTelegram, discord: sendDiscord, email: sendEmail };
+const CHANNEL_SENDERS = { ntfy: sendNtfy, telegram: sendTelegram, discord: sendDiscord, email: sendEmail, sendblue: sendSendblue };
 const channelSends = new Map(); // channel id -> send times in the last hour (rate limit)
 
 // `secret` overrides the stored one (testing a channel before it is saved)

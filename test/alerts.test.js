@@ -18,7 +18,8 @@ const NTFY_TOKEN = 'tk_secretntfytoken123456';
 const TG_TOKEN = '123456789:AAHsecretTelegramToken_abcdefghij';
 const HOOK = 'https://127.0.0.1:18449/api/webhooks/1234567890/secretDiscordWebhookToken_xyz';
 const SMTP_PW = 'smtp-secret-pw-42';
-const SECRETS = [NTFY_TOKEN, TG_TOKEN, 'secretDiscordWebhookToken', SMTP_PW];
+const SB_SECRET = 'sb-secret-key-0123456789abcdef';
+const SECRETS = [NTFY_TOKEN, TG_TOKEN, 'secretDiscordWebhookToken', SMTP_PW, SB_SECRET];
 
 let failures = 0;
 const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) failures++; };
@@ -60,6 +61,12 @@ const handle = (scheme) => (rq, rs) => {
       return rs.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
     }
     if (rq.url.startsWith('/api/webhooks/')) return rs.writeHead(204).end();
+    // Sendblue: two key headers; an unknown recipient comes back as status ERROR
+    if (rq.url === '/api/send-message') {
+      if (rq.headers['sb-api-key-id'] !== 'sbkey123' || rq.headers['sb-api-secret-key'] !== SB_SECRET) return rs.writeHead(401, { 'Content-Type': 'application/json' }).end('{"status":"ERROR","error_message":"Invalid API credentials"}');
+      if (json?.number === '+4700000000') return rs.writeHead(200, { 'Content-Type': 'application/json' }).end('{"status":"ERROR","error_message":"Number is not valid"}');
+      return rs.writeHead(200, { 'Content-Type': 'application/json' }).end('{"status":"QUEUED","message_handle":"abc"}');
+    }
     if (rq.headers.authorization && rq.headers.authorization !== `Bearer ${NTFY_TOKEN}`) return rs.writeHead(401, { 'Content-Type': 'application/json' }).end('{"error":"unauthorized"}');
     rs.writeHead(200, { 'Content-Type': 'application/json' }).end('{"id":"x"}');
   });
@@ -285,6 +292,26 @@ const smtpServers = [smtpMock(18025), smtpMock(18026, { starttls: false }), smtp
   ok(r.json.channels.length === 5 && r.json.channels.filter((c) => c.hasSecret).length === 4 && r.json.rules.temperature.channels.length === 2, 'channels, secrets and routing restored');
   t = await test(r.json.channels.find((c) => c.type === 'telegram'));
   ok(t.ok, 'restored Telegram token decrypts and sends');
+
+  // --- iMessage through Sendblue ---
+  await bad({ type: 'sendblue', keyId: 'sbkey123', from: '+15551234567', to: '91234567', secret: SB_SECRET }, /country code/, 'Sendblue: a number without country code is refused');
+  await bad({ type: 'sendblue', keyId: 'sbkey123', from: '+15551234567', to: '', secret: SB_SECRET }, /1 to 10/, 'Sendblue: needs a recipient');
+  r = await req('POST', '/api/admin/alerts/channels', { type: 'sendblue', name: 'iMessage', keyId: 'sbkey123', from: '+1 (555) 123-4567', to: ['+47 912 34 567', '+4798765432'], secret: SB_SECRET });
+  const sb = r.json?.channel;
+  ok(r.status === 201 && sb.hasSecret && sb.from === '+15551234567' && sb.to.join() === '+4791234567,+4798765432', `Sendblue channel; numbers tidied (${r.json?.error || sb?.to})`);
+  noSecrets(r.text, 'Sendblue create response');
+  const nSb = posts.length;
+  t = await test(sb);
+  const sent = posts.slice(nSb);
+  ok(t.ok && sent.length === 2 && sent.every((x) => x.path === '/api/send-message' && x.headers['sb-api-key-id'] === 'sbkey123' && x.headers['sb-api-secret-key'] === SB_SECRET && x.json.from_number === '+15551234567' && /Test notification/.test(x.json.content))
+    && sent.map((x) => x.json.number).join() === '+4791234567,+4798765432', `Sendblue: one message per number, from the line (${t.error || 'ok'})`);
+  await req('PUT', `/api/admin/alerts/channels/${sb.id}`, { name: 'iMessage', keyId: 'sbkey123', from: '+15551234567', to: '+4700000000' });
+  t = await test(sb);
+  ok(!t.ok && t.error === 'Sendblue (+4700000000): Number is not valid' && !t.error.includes(SB_SECRET), `Sendblue error is shown: ${t.error}`);
+  r = await req('PUT', `/api/admin/alerts/channels/${sb.id}`, { name: 'iMessage', keyId: 'otherkey', from: '+15551234567', to: '+4791234567' });
+  ok(r.status === 200 && !r.json.channel.hasSecret, 'a new API key ID without the secret deletes the stored secret');
+  noSecrets(fs.readFileSync(path.join(process.env.DATA_DIR, 'config.json'), 'utf8'), 'config file with Sendblue (encrypted)');
+  await req('DELETE', `/api/admin/alerts/channels/${sb.id}`);
 
   // --- delete ---
   r = await req('DELETE', `/api/admin/alerts/channels/${dc.id}`);

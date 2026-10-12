@@ -259,6 +259,7 @@ To arrange the page, press **Customize** on the Services page:
    - **Telegram**: bot token and chat ID ("How to get a bot token and chat ID" explains it)
    - **Discord**: webhook URL
    - **E-mail**: SMTP server, encryption (TLS or STARTTLS; a login is never sent unencrypted), user, password, from and to
+   - **iMessage (Sendblue)**: API key ID and secret key from the Sendblue dashboard, your Sendblue line, and up to 10 phone numbers with country code (+47…). Phones without iMessage get an SMS. Each alert is one message per number, which counts toward your Sendblue plan.
 
    Press **Test** before saving.
 2. **What to send where** has a row per alert: offline, service down, hardware fault, storage problem, temperature, storage almost full, TrueNAS alerts, high power, and failed backup. For each one, choose the channels and a wait time, so short blips stay quiet.

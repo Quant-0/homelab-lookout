@@ -1489,7 +1489,8 @@ async function loadAlerts() {
 const chanSummary = (c) => (c.type === 'ntfy' ? `${c.url.replace(/^https:\/\//, '')}/${c.topic}`
   : c.type === 'telegram' ? `chat ${c.chatId}`
     : c.type === 'discord' ? (c.hasSecret ? 'webhook set' : 'no webhook')
-      : `to ${c.to.join(', ')} via ${c.host}`);
+      : c.type === 'sendblue' ? `to ${c.to.join(', ')} from ${c.from}`
+        : `to ${c.to.join(', ')} via ${c.host}`);
 
 function renderAlerts() {
   $('al-add').replaceChildren(el('option', { value: '', text: 'Add channel…' }), ...Object.entries(al.channelTypes).map(([k, label]) => el('option', { value: k, text: label })));
@@ -1651,7 +1652,7 @@ function openChannel(c) {
         }
       }
     };
-    input('name', 'Name', { placeholder: { ntfy: 'Phone (ntfy)', telegram: 'Telegram', discord: 'Discord #homelab', email: 'E-mail' }[c.type] });
+    input('name', 'Name', { placeholder: { ntfy: 'Phone (ntfy)', telegram: 'Telegram', discord: 'Discord #homelab', email: 'E-mail', sendblue: 'iMessage' }[c.type] });
     const en = el('input', { type: 'checkbox', checked: chanDraft.enabled });
     en.addEventListener('change', () => (chanDraft.enabled = en.checked));
     fields.push(el('label', { class: 'check' }, en, ' Enabled'));
@@ -1669,6 +1670,12 @@ function openChannel(c) {
       input('chatId', 'Chat ID', { placeholder: '123456789' });
     }
     if (c.type === 'discord') secret('Webhook URL');
+    if (c.type === 'sendblue') {
+      input('keyId', 'API key ID', { placeholder: 'From the Sendblue dashboard' });
+      secret('API secret key');
+      input('from', 'Your Sendblue line', { placeholder: '+15551234567', inputmode: 'tel' }, 'The number messages are sent from, with country code');
+      input('to', 'Send to', { placeholder: '+4791234567, +4798765432', inputmode: 'tel' }, 'Up to 10 phone numbers with country code, separated by commas');
+    }
     if (c.type === 'email') {
       input('host', 'SMTP server', { placeholder: 'smtp.gmail.com' });
       select('security', 'Encryption', [['starttls', 'STARTTLS (usually port 587)'], ['tls', 'TLS (usually port 465)'], ['none', 'None (port 25, local relay without login)']], (v) => {
@@ -1698,6 +1705,7 @@ function openChannel(c) {
       el('li', { text: 'Send any message to your new bot (or add it to a group).' }),
       el('li', { text: 'Open https://api.telegram.org/bot<token>/getUpdates in your browser and copy "chat":{"id": …}. Group IDs start with -100.' }))));
     if (c.type === 'discord') notes.push(el('p', { class: 'hint', text: 'In Discord: Server settings → Integrations → Webhooks → New webhook → Copy webhook URL. The URL is the secret.' }));
+    if (c.type === 'sendblue') notes.push(el('p', { class: 'hint', text: 'Sendblue sends a blue-bubble iMessage, or an SMS to a phone without iMessage. Find the API key ID and secret key under API keys in the Sendblue dashboard; the line is one of the numbers on your account. Each alert is one message per number, which Sendblue counts toward your plan.' }));
     if (c.type === 'email') notes.push(el('p', { class: 'hint', text: 'Gmail: smtp.gmail.com, STARTTLS, port 587, with an app password (Google account → Security → App passwords).' }));
     extra.replaceChildren(...notes);
   };
@@ -1716,7 +1724,8 @@ function openChannel(c) {
     }
   };
   const msg = el('span', { class: 'msg', role: 'status' });
-  const body = () => ({ ...chanDraft, to: String(chanDraft.to || '').split(/[\s,;]+/).filter(Boolean) });
+  // phone numbers may contain spaces; e-mail addresses may be separated by them
+  const body = () => ({ ...chanDraft, to: String(chanDraft.to || '').split(c.type === 'sendblue' ? /[,;\n]+/ : /[\s,;]+/).map((x) => x.trim()).filter(Boolean) });
   box.replaceChildren(
     el('h4', { text: `${c.id ? 'Edit' : 'New'} channel: ${al.channelTypes[c.type]}` }),
     fieldsBox, fpBox, extra,
