@@ -59,8 +59,10 @@ const HOST_TYPES = {
   snmp: { label: 'SNMPv3 (switch, router, NAS, UPS card)', short: 'SNMP', port: 161 },
   nut: { label: 'NUT (UPS over USB)', short: 'NUT', port: 3493 },
   omada: { label: 'Omada controller', short: 'Omada', port: 443 },
+  ping: { label: 'Ping (reachable or not)', short: 'Ping', port: null }, // ICMP: a host without a port
 };
 const SNMP_TYPES = new Set(['synology', 'snmp']); // engine ID instead of a certificate, two passwords
+const NO_SECRET = new Set(['nut', 'ping']); // nothing secret is sent: no password, nothing to pin
 const shortLabel = (type) => HOST_TYPES[type].short || HOST_TYPES[type].label;
 // What a Redfish connection is called on the device itself, from the model it reported
 function controllerName(h, data) {
@@ -577,12 +579,18 @@ function normalizeAddress(input, type) {
       throw new UserError('Invalid hostname');
   }
   if (net.isIPv6(host) === false && v6) throw new UserError('Invalid IPv6 address');
+  if (type === 'ping') {
+    if (port) throw new UserError('Enter only the host or IP here, without a port');
+    return net.isIPv6(host) ? `[${host}]` : host.toLowerCase();
+  }
   const portNum = port ? parseInt(port, 10) : HOST_TYPES[type].port;
   if (!(portNum >= 1 && portNum <= 65535)) throw new UserError('Invalid port');
   return net.isIPv6(host) ? `[${host}]:${portNum}` : `${host.toLowerCase()}:${portNum}`;
 }
 
 function splitAddress(address) {
+  const bare = /^\[(.+)\]$/.exec(address); // a ping address: no port
+  if (bare || !/:\d+$/.test(address)) return { host: bare ? bare[1] : address, port: null };
   const m = address.match(/^\[(.+)\]:(\d+)$/) || address.match(/^(.+):(\d+)$/);
   return { host: m[1], port: parseInt(m[2], 10) };
 }
@@ -611,6 +619,7 @@ function validateHostInput(body, type) {
   if (type === 'proxmox' && !/^[^\s@!=]+@[^\s@!=]+![A-Za-z][A-Za-z0-9._-]*$/.test(username))
     throw new UserError('Proxmox username must be the full token ID, e.g. root@pam!dashboard');
   if (['unifi', 'synology', 'snmp', 'omada'].includes(type) && !username) throw new UserError('Username is required');
+  if (type === 'ping') return { name, address, username: '', tlsMode: 'none', fingerprint: '', options: {} };
   if (type === 'nut') {
     // plain TCP, read-only commands without a login: nothing secret is sent, so nothing to pin
     if (!NUT_NAME.test(username)) throw new UserError('Enter the UPS name from ups.conf (letters, digits, . _ -)');
@@ -630,7 +639,7 @@ function validateHostInput(body, type) {
 
 // Synology stores two SNMPv3 passwords; they are set together as one encrypted secret.
 function secretFromBody(type, body) {
-  if (type === 'nut') return null;
+  if (NO_SECRET.has(type)) return null;
   if (!SNMP_TYPES.has(type)) return validateSecret(body.secret);
   const auth = validateSecret(body.secret);
   const priv = validateSecret(body.secret2);
@@ -2570,7 +2579,26 @@ async function protectDevices(h, password, devices) {
   };
 }
 
-const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada };
+// Ping: three echo requests through the system's ping, which works without privileges where
+// net.ipv4.ping_group_range allows it (Debian's default). The host was checked by normalizeAddress
+// (it can't start with "-") and execFile passes it as one argument, after "--".
+const PING_BIN = process.env.PING_BIN || 'ping';
+function pingHost(host, count = 3) {
+  return new Promise((resolve, reject) => {
+    execFile(PING_BIN, ['-n', '-q', '-c', String(count), '-i', '0.2', '-W', '2', '--', host], { timeout: 12000, maxBuffer: 1 << 16 }, (err, stdout, stderr) => {
+      const out = String(stdout || '');
+      const got = /(\d+) (?:packets )?received/.exec(out);
+      const rtt = /= [\d.]+\/([\d.]+)\//.exec(out);
+      if (got && Number(got[1]) > 0 && rtt) return resolve({ ms: Math.round(Number(rtt[1]) * 100) / 100, loss: Math.round(100 * (1 - Number(got[1]) / count)) });
+      if (err?.code === 'ENOENT') return reject(new UserError('ping is not installed on the dashboard server'));
+      if (/unknown host|not known|resolve|Temporary failure/i.test(String(stderr || ''))) return reject(new UserError(`Unknown host: ${host}`));
+      reject(new UserError('No reply to ping'));
+    });
+  });
+}
+const collectPing = (h) => pingHost(splitAddress(h.address).host);
+
+const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada, ping: collectPing };
 
 function safeErrorMessage(e, secret) {
   let msg = e instanceof UserError ? e.message : 'Unexpected error while collecting data';
@@ -3245,14 +3273,75 @@ function integrationDefs() {
 
 const serviceResults = new Map(); // service id -> { check, stats, error, updatedAt }
 
+// Up or down: the connection URL answers (any HTTP status below 500), or with a status check of
+// its own, a ping or a TCP connection. An https:// URL also tells when its certificate expires.
 async function checkService(svc) {
-  if (!svc.connection?.url) return null;
+  const mon = svc.monitor;
   const t0 = Date.now();
+  const down = (via, e, fallback) => ({ up: false, via, code: null, ms: null, error: e instanceof UserError ? e.message : fallback });
+  if (mon?.type === 'ping') {
+    try {
+      const r = await pingHost(splitAddress(mon.host).host);
+      return { up: true, via: 'ping', ms: r.ms, loss: r.loss };
+    } catch (e) {
+      return down('ping', e, 'No reply to ping');
+    }
+  }
+  if (mon?.type === 'tcp') {
+    try {
+      (await plainConnect(splitAddress(mon.host).host, mon.port, 5000)).destroy();
+      return { up: true, via: 'tcp', port: mon.port, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ...down('tcp', e, 'Unreachable'), port: mon.port };
+    }
+  }
+  if (!svc.connection?.url) return null;
+  const cert = certExpiry(svc).catch(() => null);
   try {
     const r = await connRequest(svc.connection, '/', { method: 'GET', headOnly: true, timeoutMs: 8000 });
-    return { up: r.status < 500, code: r.status, ms: Date.now() - t0 };
+    return { up: r.status < 500, via: 'http', code: r.status, ms: Date.now() - t0, cert: await cert };
   } catch (e) {
-    return { up: false, code: null, ms: null, error: e instanceof UserError ? e.message : 'Unreachable' };
+    return { ...down('http', e, 'Unreachable'), cert: await cert };
+  }
+}
+
+// When an https:// service's certificate expires, read from a TLS handshake (nothing is sent),
+// at most every 6 hours. Self-signed and pinned certificates expire too, so none are skipped.
+const certCache = new Map(); // service id -> { href, at, validTo }
+async function certExpiry(svc) {
+  const u = parseServiceUrl(svc.connection.url);
+  if (!u.https) return null;
+  const c = certCache.get(svc.id);
+  if (c && c.href === u.href && Date.now() - c.at < (c.validTo ? 6 * 3600e3 : 1800e3)) return c.validTo;
+  const validTo = await new Promise((resolve) => {
+    const sock = tls.connect({ host: u.host, port: u.port, servername: net.isIP(u.host) ? undefined : u.host, rejectUnauthorized: false, timeout: 8000 }, () => {
+      const cert = sock.getPeerCertificate();
+      sock.destroy();
+      const t = Date.parse(cert?.valid_to || '');
+      resolve(Number.isFinite(t) ? t : null);
+    });
+    sock.on('error', () => resolve(null));
+    sock.on('timeout', () => {
+      sock.destroy();
+      resolve(null);
+    });
+  });
+  certCache.set(svc.id, { href: u.href, at: Date.now(), validTo });
+  return validTo;
+}
+
+// A status check of the service's own: { type: 'ping', host } or { type: 'tcp', host, port }
+function validateMonitor(m) {
+  if (m?.type !== 'ping' && m?.type !== 'tcp') return null;
+  const host = normalizeAddress(m.host, 'ping');
+  return m.type === 'ping' ? { type: 'ping', host } : { type: 'tcp', host, port: num(m.port, 1, 65535, 'Port', { int: true }) };
+}
+// The same for a check that comes from a file (a backup): a valid one or none
+function safeMonitor(m) {
+  try {
+    return validateMonitor(m);
+  } catch {
+    return null;
   }
 }
 
@@ -3303,6 +3392,7 @@ async function pollService(svc) {
   const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc)]);
   if (config.services.find((x) => x.id === svc.id) !== svc) return;
   const prev = serviceResults.get(svc.id);
+  if (check?.up && check.ms != null) histRecord(`svc:${svc.id}:ms`, check.ms, Date.now());
   serviceResults.set(svc.id, {
     check,
     stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
@@ -3314,6 +3404,7 @@ async function pollService(svc) {
 }
 
 function forgetService(id) {
+  certCache.delete(id);
   serviceResults.delete(id);
   for (const k of unifiSessions.keys()) if (k.startsWith(`svc-${id}|`)) unifiSessions.delete(k);
   for (const k of svcSessions.keys()) if (k.startsWith(id + '|')) svcSessions.delete(k);
@@ -3368,6 +3459,7 @@ function validateServiceInput(b) {
     onHome: b.onHome !== false,
     icon: b.icon?.kind === 'file' && config.icons.some((i) => i.id === b.icon.id) ? { kind: 'file', id: b.icon.id } : { kind: 'letter' },
     connection: null,
+    monitor: validateMonitor(b.monitor),
     integration: null,
   };
   const url = str(b.connection?.url, 500, 'Connection URL');
@@ -3446,7 +3538,7 @@ function servicesPayload(admin = false) {
       device: config.devices.find((d) => d.id === svc.deviceId)?.name || null,
       onHome: svc.onHome !== false,
       integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
-      check: svc.connection ? r?.check ?? null : undefined,
+      check: svc.connection || svc.monitor ? r?.check ?? null : undefined,
       stats: shownStats(svc, r?.stats ?? null),
       error: r?.error ?? null,
       updatedAt: r?.updatedAt ?? null,
@@ -3813,7 +3905,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up))$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms)$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -3916,6 +4008,8 @@ function recordHistory(h, data, t) {
       histRecord(`ups:${h.id}:charge`, data.ups.charge, t);
       histRecord(`ups:${h.id}:watts`, data.ups.outputW, t);
     }
+  } else if (h.type === 'ping') {
+    histRecord(`ping:${h.id}:ms`, data.ms, t);
   } else if (h.type === 'omada') {
     for (const d of data.devices.filter((x) => x.online)) {
       histRecord(`omada:${h.id}:${d.mac}:clients`, d.clients, t);
@@ -3958,7 +4052,7 @@ function alertsSoon() {
 async function runCollector(h, plainSecret = null, poll = false) {
   let secret = plainSecret;
   try {
-    if (h.type !== 'nut') {
+    if (!NO_SECRET.has(h.type)) {
       if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
       secret ||= decryptSecret(h);
     }
@@ -5320,7 +5414,7 @@ function snoozedUntil(key, severity) {
 }
 
 function servicesSummary() {
-  const checked = config.services.filter((s) => s.connection && !s.hidden).map((s) => serviceResults.get(s.id)?.check).filter(Boolean);
+  const checked = config.services.filter((s) => (s.connection || s.monitor) && !s.hidden).map((s) => serviceResults.get(s.id)?.check).filter(Boolean);
   return { total: config.services.filter((s) => !s.hidden).length, up: checked.filter((c) => c.up).length, down: checked.filter((c) => !c.up).length };
 }
 
@@ -5377,6 +5471,7 @@ function dashboardPayload() {
     snmp: group('snmp'),
     nut: group('nut'),
     omada: group('omada'),
+    ping: group('ping'),
     devices,
     rack: { ...config.rack }, // its items are `devices` (the page puts them back; not sent twice)
     power: powerSummary(),
@@ -5767,7 +5862,7 @@ async function handleApi(req, res, url, session, viewer = null) {
         throw new UserError('The address or identity changed: enter the secret again to test');
       secret = decryptSecret(old);
     }
-    if (!secret && type !== 'nut') throw new UserError('Enter the password/token/key to test');
+    if (!secret && !NO_SECRET.has(type)) throw new UserError('Enter the password/token/key to test');
     const r = await runCollector(h, secret);
     if (!old) for (const m2 of [unifiSessions, omadaSessions]) for (const k of m2.keys()) if (k.startsWith(h.id + '|')) m2.delete(k);
     if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
@@ -5781,6 +5876,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       snmp: () => [d.system.name, d.ups ? [d.ups.maker, d.ups.model].filter(Boolean).join(' ') || 'UPS' : `${d.ports.length} port${d.ports.length === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
       nut: () => [[d.ups.maker, d.ups.model].filter(Boolean).join(' ') || 'UPS', d.ups.charge != null ? `battery ${d.ups.charge} %` : null].filter(Boolean).join(' · '),
       omada: () => `${d.devices.length} device${d.devices.length === 1 ? '' : 's'} found`,
+      ping: () => `replies in ${d.ms} ms`,
     }[type]();
     return sendJson(res, 200, {
       ok: true,
@@ -6387,7 +6483,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const body = await readBody(req);
     if (!HOST_TYPES[body.type]) throw new UserError('Invalid host type');
     const address = normalizeAddress(body.address, body.type);
-    if (body.type === 'nut') throw new UserError('NUT has no certificate or identity to fetch');
+    if (NO_SECRET.has(body.type)) throw new UserError(`${shortLabel(body.type)} has no certificate or identity to fetch`);
     if (SNMP_TYPES.has(body.type)) {
       // SNMPv3 discovery: unauthenticated, carries no user name or credentials
       const { host, port } = splitAddress(address);
@@ -6974,7 +7070,7 @@ function alertConditions(all = false) {
     const r = results.get(h.id);
     const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
     // "not answering" only after it has failed for a while: one slow or missed poll is not an outage
-    if (r?.ok === false && Date.now() - (r.failingSince ?? 0) >= offlineGraceMs()) add('offline', h.id, 'critical', `${name}: ${controllerName(h, r.data)} not answering`, r.error, h.id, false);
+    if (r?.ok === false && Date.now() - (r.failingSince ?? 0) >= offlineGraceMs()) add('offline', h.id, 'critical', h.type === 'ping' ? `${name} is not answering ping` : `${name}: ${controllerName(h, r.data)} not answering`, r.error, h.id, false);
     if (!r?.ok && !inGrace(r)) continue; // meanwhile its last reading still counts
     const d = r.data;
     const own = h.id;
@@ -7063,6 +7159,12 @@ function alertConditions(all = false) {
   for (const svc of config.services) {
     const c = serviceResults.get(svc.id)?.check;
     if (c && !c.up) add('service', svc.id, 'critical', `${svc.name} is down`, c.error || (c.code ? `HTTP ${c.code}` : ''), svc.id, false);
+    if (c?.cert) {
+      // a certificate that expires soon: a warning two weeks before, critical for the last 3 days
+      const days = Math.floor((c.cert - Date.now()) / 86400e3);
+      const when = days < 0 ? 'has expired' : days === 0 ? 'expires today' : `expires in ${days} day${days === 1 ? '' : 's'}`;
+      if (days < 14) add('service', `${svc.id}:cert`, days < 3 ? 'critical' : 'warning', `${svc.name}: certificate ${when}`, `Valid until ${new Date(c.cert).toISOString().slice(0, 10)}`, svc.id, false);
+    }
     // what an integration reports (a UPS on battery, Tailscale keys about to expire)
     for (const a of serviceResults.get(svc.id)?.alerts || []) add('service', `${svc.id}:${a.key}`, a.severity, a.title, a.detail, svc.id, false);
   }
@@ -7570,7 +7672,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     return out;
   });
   const services = arr(c.services).filter((x) => UUID.test(x?.id)).map(({ secretPlain, ...x }) => {
-    const out = { ...x, href: safeLink(x.href), secret: null };
+    const out = { ...x, href: safeLink(x.href), monitor: safeMonitor(x.monitor), secret: null };
     if (secretPlain) out.secret = encryptSecret(serviceSecretHost(out), secretPlain);
     return out;
   });

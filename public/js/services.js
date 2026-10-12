@@ -8,10 +8,10 @@ let lastAt = null;
 let timer = null;
 
 function statusBadge(svc) {
-  if (svc.check === undefined) return null; // no connection URL: link only
+  if (svc.check === undefined) return null; // no connection URL or status check: link only
   if (!svc.check) return el('span', { class: 'svc-status', title: 'Waiting for the first check' }, el('span', { class: 'led off' }));
   const c = svc.check;
-  const title = c.up ? `Up · HTTP ${c.code} · ${c.ms} ms` : `Down${c.error ? ` · ${c.error}` : c.code ? ` · HTTP ${c.code}` : ''}`;
+  const title = HD.checkText(c);
   return el('span', { class: 'svc-status', title, 'aria-label': c.up ? 'Up' : 'Down' },
     el('span', { class: `led ${c.up ? 'good' : 'critical'}` }),
     c.up ? null : el('span', { class: 'small muted', text: 'Down' }));

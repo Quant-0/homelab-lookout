@@ -357,6 +357,16 @@ const HD = (() => {
     return node;
   }
 
+  // A service's status check in words: "Up · HTTP 200 · 12 ms", "Down · No reply to ping"
+  function checkText(c) {
+    const how = c.via === 'ping' ? 'Ping' : c.via === 'tcp' ? `TCP port ${c.port}` : c.code ? `HTTP ${c.code}` : null;
+    const ms = c.ms != null ? `${fmt.n(c.ms, c.ms < 10 ? 1 : 0)} ms` : null;
+    const parts = c.up ? ['Up', how, ms, c.loss ? `${c.loss} % lost` : null] : ['Down', c.error || how];
+    const days = c.cert ? Math.floor((c.cert - Date.now()) / 86400e3) : null;
+    if (days !== null) parts.push(days < 0 ? 'certificate expired' : `certificate valid ${days} more day${days === 1 ? '' : 's'}`);
+    return parts.filter(Boolean).join(' · ');
+  }
+
   // Integration values: { label, value, unit? }
   function statValue(st) {
     const v = st.value;
@@ -660,7 +670,7 @@ const HD = (() => {
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
       if (!docs.readOnly) items.push({ kind: 'Page', title: 'Log', sub: 'Every change, problem and sign-in', href: '/log', words: 'history changes audit events ip timeline' });
-      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada cisco mikrotik'], ['services', 'Services', 'integration icon'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
+      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada ping cisco mikrotik'], ['services', 'Services', 'integration icon ping tcp port certificate status check'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
         ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public logo internet provider carrier isp'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }
@@ -774,5 +784,5 @@ const HD = (() => {
   // The installable app's service worker (offline screen only; see sw.js)
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, checkText, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

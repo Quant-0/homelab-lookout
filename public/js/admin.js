@@ -46,6 +46,11 @@ const TYPE_TEXT = {
     secret: 'Password',
     address: 'UniFi OS console host or IP (e.g. the UDM Pro, default port 443)',
   },
+  ping: {
+    username: null,
+    secret: null,
+    address: 'Host or IP to ping, without a port. Online while it answers; for things without an API (a printer, a Pi).',
+  },
   truenas: {
     username: 'Username',
     usernameHint: 'Owner of the API key (e.g. truenas_admin). Leave empty only on versions before 25.04.',
@@ -327,7 +332,7 @@ $('pw-form').addEventListener('submit', async (ev) => {
 let rackData = null; // dashboard data, for live faceplates and status LEDs
 let draft = null; // device in the editor; typed secrets live here only until saved
 
-const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway' };
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway', ping: 'other' };
 const SNMP_TYPES = ['synology', 'snmp'];
 const deviceForm = () => $('device-form').elements;
 const hostsOf = (dev) => state.hosts.filter((h) => h.deviceId === dev.id);
@@ -632,6 +637,8 @@ function connCard(c) {
   const t = TYPE_TEXT[c.type];
   const snmp = SNMP_TYPES.includes(c.type);
   const nut = c.type === 'nut';
+  const ping = c.type === 'ping';
+  const plain = nut || ping; // nothing secret is sent: no password and no certificate
   const stored = c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set';
   const result = el('div', { class: 'conn-result', role: 'status' });
   const warn = el('p', { class: 'banner hidden' });
@@ -670,12 +677,12 @@ function connCard(c) {
     ? c.status.ok ? status('OK', 'good') : status('Error', 'critical')
     : c.id ? status('Pending', '') : status('Not saved yet', '');
   const fields = [
-    field('Address', input('address', { placeholder: 'host or IP[:port]' }), t.address),
-    field(t.username, input('username'), t.usernameHint),
-    nut ? null : field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
+    field('Address', input('address', { placeholder: ping ? 'host or IP' : 'host or IP[:port]' }), t.address),
+    ping ? null : field(t.username, input('username'), t.usernameHint),
+    plain ? null : field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
   ].filter(Boolean);
-  if (nut) {
-    // nothing secret is sent and NUT has no TLS here: no secret, no certificate
+  if (plain) {
+    // nothing secret is sent and there's no TLS here: no secret, no certificate
   } else if (snmp) {
     fields.push(field('Privacy password (AES)', input('secret2', { type: 'password', autocomplete: 'new-password', placeholder: stored })));
     fields.push(field('Authentication protocol', select([['sha', 'SHA (SHA-1)'], ['sha256', 'SHA-256']], c.options.snmpAuth || 'sha', (v) => (c.options.snmpAuth = v))));
@@ -697,7 +704,7 @@ function connCard(c) {
     fields.push(field('Which Omada device', select([['', 'The whole controller (all its devices)'], ...found.map((x) => [x.mac, `${x.name}${x.model ? ` · ${x.model}` : ''}`])], c.options.mac || '', (v) => (c.options.mac = v)),
       'Pick the switch, gateway or access point this device is. Press Test to list them.'));
   }
-  if (!nut) fields.push(fpField);
+  if (!plain) fields.push(fpField);
   if (c.hasSecret) {
     const clear = el('input', { type: 'checkbox', checked: c.clearSecret });
     clear.addEventListener('change', () => {
@@ -726,9 +733,9 @@ function connCard(c) {
     c.type === 'unifi' ? el('p', { class: 'hint', text: 'Switches and access points found through this console appear as their own devices automatically.' }) : null,
     el('div', { class: 'form-grid two' }, fields),
     el('div', { class: 'form-actions' },
-      nut ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
+      plain ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
       el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
-      el('span', { class: 'hint', text: nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
     result,
     warn);
   updateWarning();
@@ -798,7 +805,7 @@ $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
 $('device-new').addEventListener('click', openCatalog);
 
 // --- Add device: start from the catalog ---
-const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
+const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
 function presetFrom(x) {
   const desktopNas = x.front === 'synology-ds' || x.unifi?.rackFront === 'synology-ds';
@@ -1014,7 +1021,7 @@ function renderServiceList() {
     ...list.filter((x) => x.group === g).map((svc) => {
       const r = svc.result;
       const st = !svc.connection ? HD.status('Link only', '')
-        : !r?.check ? HD.status('Pending', '') : r.check.up ? HD.status(`Up · ${r.check.ms} ms`, 'good') : HD.status('Down', 'critical');
+        : !r?.check ? HD.status('Pending', '') : r.check.up ? HD.status(HD.checkText(r.check).replace(/ · certificate.*/, ''), 'good') : HD.status('Down', 'critical');
       const integ = svc.integration ? svcState.integrations[svc.integration.type]?.label : null;
       return el('div', { class: `svc-row${svcDraft?.id === svc.id ? ' selected' : ''}` },
         serviceIcon(svc),
@@ -1044,6 +1051,9 @@ function openService(svc) {
   f.url.value = svcDraft.connection?.url || '';
   f.tlsMode.value = svcDraft.connection?.tlsMode || 'verify';
   f.fingerprint.value = svcDraft.connection?.fingerprint || '';
+  f.monitor.value = svcDraft.monitor?.type || 'http';
+  f.monHost.value = svcDraft.monitor?.host?.replace(/^\[|\]$/g, '') || '';
+  f.monPort.value = svcDraft.monitor?.port || '';
   const defs = svcState.integrations;
   const byGroup = {};
   for (const [k, d] of Object.entries(defs)) (byGroup[d.group] ||= []).push([k, d]);
@@ -1168,6 +1178,15 @@ function syncService() {
   const https = /^https:\/\//i.test(url);
   for (const n of document.querySelectorAll('#svc-form .https-only')) n.classList.toggle('hidden', !https);
   for (const n of document.querySelectorAll('#svc-form .pin-only')) n.classList.toggle('hidden', !https || f.tlsMode.value !== 'pin');
+  const mon = f.monitor.value;
+  for (const n of document.querySelectorAll('#svc-form .mon-host')) n.classList.toggle('hidden', mon === 'http');
+  for (const n of document.querySelectorAll('#svc-form .mon-port')) n.classList.toggle('hidden', mon !== 'tcp');
+  // the host of the connection URL is the likely one to ping
+  if (mon !== 'http' && !f.monHost.value.trim() && url) {
+    try {
+      f.monHost.value = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    } catch {}
+  }
   const def = svcState.integrations[f.integration.value];
   const urlOptional = def && (def.noUrl || (def.fromDevice && svcDraft.integration?.options?.device));
   $('svc-url-label').textContent = urlOptional ? 'Connection URL (optional: an up/down check)' : 'Connection URL';
@@ -1192,6 +1211,7 @@ function serviceBody() {
     onHome: f.onHome.checked,
     icon: svcDraft.icon,
     connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
+    monitor: f.monitor.value === 'http' ? null : { type: f.monitor.value, host: f.monHost.value.trim(), port: f.monPort.value },
     integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {}, fields: svcDraft.integration?.type === type ? svcDraft.integration.fields || [] : [] } : null,
     secret: svcDraft.secret,
     clearSecret: svcDraft.clearSecret,
@@ -1305,14 +1325,14 @@ $('svc-test').addEventListener('click', async () => {
   try {
     const r = await api('POST', '/api/admin/services/test', serviceBody());
     const parts = [];
-    if (r.check) parts.push(r.check.up ? HD.status(`Up · HTTP ${r.check.code} · ${r.check.ms} ms`, 'good') : HD.status(`Down${r.check.error ? `: ${r.check.error}` : r.check.code ? ` (HTTP ${r.check.code})` : ''}`, 'critical'));
+    if (r.check) parts.push(HD.status(HD.checkText(r.check), r.check.up ? 'good' : 'critical'));
     if (r.stats) {
       parts.push(el('span', { class: 'small' }, r.stats.map((st) => `${st.label}: ${HD.statValue(st)}`).join(' · ')));
       svcDraft.labels = r.stats.map((st) => st.label);
       renderNumbersChoice();
     }
     if (r.error) parts.push(el('span', { class: 'msg error', text: r.error }));
-    out.replaceChildren(...(parts.length ? parts.flatMap((n) => [n, ' ']) : [el('span', { class: 'small muted', text: 'Nothing to test: add a connection URL.' })]));
+    out.replaceChildren(...(parts.length ? parts.flatMap((n) => [n, ' ']) : [el('span', { class: 'small muted', text: 'Nothing to test: add a connection URL or a status check.' })]));
   } catch (e) {
     out.replaceChildren(el('span', { class: 'msg error', text: e.message }));
   }

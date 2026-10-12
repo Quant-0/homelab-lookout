@@ -197,6 +197,7 @@ The device form: name, type, **brand and model**, and where it sits:
 | SNMPv3 | Switches and routers (Cisco, Aruba, MikroTik, Netgear…), QNAP, UPS network cards (APC, Eaton) | A read-only SNMPv3 user with SHA and AES | User, passwords, then **Fetch engine ID** |
 | NUT | A USB UPS, through the machine it's plugged into | NUT with `upsd` listening on the network (`LISTEN` in upsd.conf) | Address of that machine, the UPS name from ups.conf. No password: only values are read. |
 | Omada | TP-Link Omada gateways, switches and access points | A local *Viewer* account on the Omada controller | User, password; after **Test**, pick which Omada device this is (or the whole controller) |
+| Ping | Anything without an API: a printer, a Raspberry Pi, an access point of another brand | Nothing; it only has to answer ping | Host or IP (no port). The device is *Online* while it answers, with its response time; when it stops, *Device offline* alerts as for any other connection. |
 
 The SNMP connection reads standard values only: the ports (up, speed, traffic), CPU, memory and storage, and for a UPS its battery, runtime, load and output. A UPS running on battery, with a low battery or one that needs replacing shows up under *Needs you*.
 
@@ -225,9 +226,12 @@ More on devices:
 | **Runs on** | Which device it runs on. |
 | **Icon** | Search the icon library, upload your own (JPEG/PNG/WebP), or use a letter. |
 | **Connection URL** | For the status check and numbers. Can differ from the link, e.g. an internal address. |
+| **Status check** | **Web page**: the connection URL answers (any status below 500). **Ping**: the host answers ping. **TCP port**: something listens on the port, e.g. SSH on 22 or a database on 5432; for services that have no web page. The response time is kept as history. |
 | **Integration** and its key | Over plain `http://` the key travels unencrypted on your network; the form warns you. |
 
 Press **Test**, then choose the **Numbers on the card** (up to four), then **Save service**.
+
+**Certificates:** for an `https://` connection URL the dashboard also reads when the certificate expires (also self-signed and pinned ones). Two weeks before, the service gets a warning under **Needs you**; the last three days it is critical. It is a *Service down* alert, so it is sent where those go.
 
 **Infrastructure cards** (the *Infrastructure* group in the Integration list):
 

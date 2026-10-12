@@ -151,9 +151,18 @@
           </div>
           <div class="icon-results" id="icon-results"></div>
           <h4>Status check and integration</h4>
-          <p class="hint">The server uses the connection URL to check that the service is up and, with an integration, to read numbers from it. Leave it empty for a plain link.</p>
+          <p class="hint">The server checks that the service is up, and with an integration reads numbers from the connection URL. With no URL and no status check, the card is a plain link.</p>
           <div class="form-grid two">
             <label class="wide"><span id="svc-url-label">Connection URL</span><input name="url" placeholder="http://192.168.1.30:8096" spellcheck="false"></label>
+            <label><span>Status check</span>
+              <select name="monitor">
+                <option value="http">Web page (the URL)</option>
+                <option value="ping">Ping</option>
+                <option value="tcp">TCP port</option>
+              </select>
+            </label>
+            <label class="mon-host hidden"><span>Host or IP</span><input name="monHost" placeholder="192.168.1.30" spellcheck="false"></label>
+            <label class="mon-port hidden"><span>Port</span><input name="monPort" type="number" min="1" max="65535" inputmode="numeric" placeholder="22"></label>
             <label class="https-only"><span>TLS certificate check</span>
               <select name="tlsMode">
                 <option value="verify">Verify with trusted CAs</option>

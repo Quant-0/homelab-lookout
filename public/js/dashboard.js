@@ -126,6 +126,7 @@ function deviceContext(dev, d) {
   const snmpH = host('snmp');
   const nutH = host('nut');
   const omadaH = host('omada');
+  const pingH = host('ping');
   const omadaMac = conn('omada')?.mac || null;
   const linkHost = dev.unifi && (d.unifi || []).find((h) => h.id === dev.unifi.hostId);
   const ud = linkHost?.data?.devices?.find((x) => x.mac === dev.unifi.mac) || null;
@@ -135,7 +136,8 @@ function deviceContext(dev, d) {
     tnH, tn: tnH?.data, synoH, syno: synoH?.data, uniH, health: uniH?.data?.health, linkHost, ud,
     snmpH, snmp: snmpH?.data, nutH, ups: snmpH?.data?.ups || nutH?.data?.ups || null, upsH: snmpH?.data?.ups ? snmpH : nutH?.data?.ups ? nutH : null,
     omadaH, om, omd: omadaMac && om ? om.devices.find((x) => x.mac === omadaMac) || null : null, omadaMac,
-    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH].filter(Boolean),
+    pingH, ping: pingH?.ok === false ? null : pingH?.data || null,
+    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH, pingH].filter(Boolean),
     showVms: d.vms?.host !== false,
   };
 }
@@ -245,6 +247,10 @@ function keyMetrics(dev, ctx, max = 4) {
     add(temps.length ? fmt.n(Math.max(...temps)) : null, '°C', 'Temperature');
     add(ud.cpu != null ? pctOf(ud.cpu) : null, '%', 'CPU', ud.cpu, load(ud.cpu || 0));
   }
+  if (ctx.ping) {
+    if (!out.length) add('Online', '', 'Status');
+    add(fmt.n(ctx.ping.ms, ctx.ping.ms < 10 ? 1 : 0), 'ms', 'Ping', null, ctx.ping.loss ? 'warning' : '');
+  }
   if (!out.length && dev.estimateW) add(`~${fmt.n(dev.estimateW)}`, 'W', 'Estimated');
   return out;
 }
@@ -278,6 +284,7 @@ function mainSpark(ctx) {
     const k = `unifi:${ctx.linkHost.id}:${ctx.ud.mac}`;
     return ctx.ud.poe ? [`${k}:poe`, 'PoE draw', ' W', 1] : [`${k}:clients`, 'Clients', ''];
   }
+  if (ctx.pingH) return [`ping:${ctx.pingH.id}:ms`, 'Ping', ' ms', 1];
   return null;
 }
 
@@ -669,6 +676,16 @@ function renderNut(hosts) {
   });
 }
 
+function renderPing(hosts) {
+  return hosts.map((h) => {
+    const card = hostCard('Ping', h, '', null, (d) => [
+      sparks([[`ping:${h.id}:ms`, 'Response time', ' ms', 1]]),
+      kv([['Response time', `${fmt.n(d.ms, d.ms < 10 ? 1 : 0)} ms`], ['Lost', `${d.loss} % of 3 pings`]]),
+    ]);
+    return [h.id, { ...card, title: 'Reachability · Ping' }];
+  });
+}
+
 function renderOmada(hosts, macFor) {
   return hosts.map((h) => {
     const mac = macFor(h.id);
@@ -794,6 +811,7 @@ function deviceSections(d) {
     ...renderSnmp(d.snmp || []),
     ...renderNut(d.nut || []),
     ...renderOmada(d.omada || [], (id) => macFor.get(id)),
+    ...renderPing(d.ping || []),
   ]);
 }
 
@@ -801,7 +819,7 @@ function deviceSections(d) {
 function deviceInfos(d) {
   const sections = deviceSections(d);
   const consoles = new Map((d.unifi || []).map((h) => [h.id, h]));
-  const order = { idrac: 0, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5 };
+  const order = { idrac: 0, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5, ping: 6 };
   return d.devices
     .filter((dev) => dev.connections.length || dev.unifi)
     .map((dev) => {
@@ -1552,7 +1570,7 @@ function render(d) {
   refreshDrawer();
   HD.fillSparks();
   pruneFans();
-  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada'].every((k) => !(d[k] || []).length);
+  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada', 'ping'].every((k) => !(d[k] || []).length);
   $('empty-hint').classList.toggle('hidden', !noHosts);
   $('empty-hint').replaceChildren('Nothing is monitored yet. ', d.loggedIn ? el('a', { href: '/admin#devices', text: 'Add your first device in Admin' }) : '');
 }

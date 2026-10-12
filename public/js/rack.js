@@ -34,7 +34,7 @@ const Rack = (() => {
     for (const link of item.links || []) {
       if (link.startsWith('host:')) {
         const id = link.slice(5);
-        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada']) {
+        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada', 'ping']) {
           const host = (data?.[type] || []).find((x) => x.id === id);
           if (host) out.push({ type, host, widget: `${type}:${id}` });
         }
@@ -82,6 +82,8 @@ const Rack = (() => {
         return d.ups?.lowBattery ? 'critical' : d.ups?.onBattery ? 'warning' : 'good';
       case 'omada':
         return 'good';
+      case 'ping':
+        return l.host.ok === false ? 'critical' : 'good';
       default:
         return '';
     }

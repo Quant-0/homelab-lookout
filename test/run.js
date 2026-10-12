@@ -143,6 +143,7 @@ async function main() {
     { file: 'test/branding.test.js', fresh: true },
     { file: 'test/branding-restart.test.js', fresh: false },
     { file: 'test/cables.test.js', fresh: true },
+    { file: 'test/monitor.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0' } },
     { file: 'test/log.test.js', fresh: true, env: { OFFLINE_GRACE_S: '12', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), RDAP_URL: 'https://127.0.0.1:18443/rdap' } },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
