@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Homelab dashboard: single-file server, no external dependencies. Requires Node.js >= 18.
+// Homelab Lookout: single-file server, no external dependencies. Requires Node.js >= 18.
 //
 //   node server.js                    start the server
 //   node server.js set-admin [user]   create/replace the admin account (prompts for password)
@@ -96,7 +96,7 @@ const NORGESPRIS_ORE_EX_VAT = 40; // 50 øre/kWh incl. 25 % VAT
 
 const DEFAULT_SETTINGS = {
   dashboard: {
-    title: 'Homelab',
+    title: 'Homelab Lookout',
     carrier: '', // the internet provider shown on Home; empty = what UniFi reports
     carrierLogo: { kind: 'auto' }, // auto (looked up from the provider's website) | file (uploaded or a link) | none
     refreshSeconds: 30,
@@ -657,7 +657,7 @@ function num(v, min, max, name, { int = false } = {}) {
 const HOME_SERVICES = ['line', 'tiles', 'compact', 'down', 'off'];
 
 function validateDashboard(d) {
-  const title = String(d.title ?? '').trim() || 'Homelab';
+  const title = String(d.title ?? '').trim() || 'Homelab Lookout';
   if (title.length > 60 || hasControlChars(title)) throw new UserError('Title is too long');
   const carrier = String(d.carrier ?? '').trim();
   if (carrier.length > 60 || hasControlChars(carrier)) throw new UserError('Internet provider name is too long');
@@ -5236,14 +5236,14 @@ function appHead() {
 }
 
 // Installable app. The name is the dashboard title for those who may see the dashboard,
-// otherwise just "Homelab"; nothing else in it says anything about the lab.
+// otherwise just "Homelab Lookout"; nothing else in it says anything about the lab.
 function manifest(sees) {
-  const name = sees ? config.settings.dashboard.title : 'Homelab';
+  const name = sees ? config.settings.dashboard.title : 'Homelab Lookout';
   return {
     id: '/',
     name,
-    short_name: name.length > 12 ? 'Homelab' : name,
-    description: 'Homelab dashboard',
+    short_name: name.length > 12 ? 'Lookout' : name,
+    description: 'Homelab Lookout: your homelab at a glance',
     start_url: '/',
     scope: '/',
     display: 'standalone',

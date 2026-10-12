@@ -153,7 +153,7 @@ async function run() {
   const dash = (await call('GET', '/api/admin/config', { cookie: c.session })).json.settings.dashboard;
   await call('PUT', '/api/admin/settings', { cookie: c.session, csrf: scsrf, body: { dashboard: { ...dash, title: 'Ola sin lab' } } });
   r = await call('GET', '/manifest.webmanifest');
-  ok(r.status === 200 && /^application\/manifest\+json/.test(r.headers.get('content-type')) && r.json.name === 'Homelab' && r.json.start_url === '/' && r.json.display === 'standalone', 'manifest: public, and without a login it says only "Homelab"');
+  ok(r.status === 200 && /^application\/manifest\+json/.test(r.headers.get('content-type')) && r.json.name === 'Homelab Lookout' && r.json.start_url === '/' && r.json.display === 'standalone', 'manifest: public, and without a login it says only "Homelab Lookout"');
   ok(r.json.icons.some((i) => i.purpose === 'maskable' && i.sizes === '512x512') && r.json.icons.some((i) => i.sizes === '192x192'), 'manifest icons: 192, 512 and maskable');
   r = await call('GET', '/manifest.webmanifest', { cookie: newest.device });
   ok(r.json.name === 'Ola sin lab' && r.json.short_name === 'Ola sin lab', 'signed in (or remembered): the dashboard title');

@@ -197,7 +197,7 @@ const HD = (() => {
     { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
     { key: 'log', label: 'Log', href: '/log', icon: 'list', admin: true },
   ];
-  let shellState = { active: null, title: 'Homelab', admin: false, viewer: false, updates: 0, rack: true };
+  let shellState = { active: null, title: 'Homelab Lookout', admin: false, viewer: false, updates: 0, rack: true };
   let userName = null;
 
   // opts: { active, title, admin (logged in), viewer (remembered device), updates (count), rack (shown) }

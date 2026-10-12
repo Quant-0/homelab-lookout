@@ -32,7 +32,7 @@ let offline = false; // failed requests are expected while offline
   const { installabilityErrors } = await cdp.send('Page.getInstallabilityErrors');
   check(installabilityErrors.length === 0, `Chrome: installable (${installabilityErrors.map((e) => e.errorId).join(', ') || 'no errors'})`);
   const m = await cdp.send('Page.getAppManifest');
-  check(!m.errors.length && /"name":"Homelab"/.test(m.data.replace(/\s/g, '')), `manifest parses without errors${m.errors.length ? `: ${m.errors.map((e) => e.message).join('; ')}` : ''}`);
+  check(!m.errors.length && /"name":"HomelabLookout"/.test(m.data.replace(/\s/g, '')), `manifest parses without errors${m.errors.length ? `: ${m.errors.map((e) => e.message).join('; ')}` : ''}`);
 
   // two hours later: the session is gone, the device is still remembered
   await context.clearCookies({ name: 'hd_session' });

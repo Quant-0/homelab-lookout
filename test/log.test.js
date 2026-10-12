@@ -41,7 +41,7 @@ const find = (l, re) => l.events.find((e) => re.test(e.text));
   r = await req('PUT', '/api/admin/settings', { dashboard: { ...cfg.settings.dashboard, title: 'My Lab', refreshSeconds: 10, carrierLogo: { kind: 'none' } } });
   l = await log('?cat=settings');
   const st = find(l, /^Settings changed/);
-  ok(st && /Dashboard › title: Homelab → My Lab/.test(st.detail) && st.by === 'admin', `a settings change says what changed (${st?.detail})`);
+  ok(st && /Dashboard › title: Homelab Lookout → My Lab/.test(st.detail) && st.by === 'admin', `a settings change says what changed (${st?.detail})`);
   r = await req('PUT', '/api/admin/settings', { dashboard: { ...cfg.settings.dashboard, title: 'My Lab', refreshSeconds: 10, carrierLogo: { kind: 'none' } } });
   ok((await log('?cat=settings')).events.filter((e) => /^Settings changed/.test(e.text)).length === 1, 'saving without changes adds nothing');
 

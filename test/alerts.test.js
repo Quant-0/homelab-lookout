@@ -181,7 +181,7 @@ const smtpServers = [smtpMock(18025), smtpMock(18026, { starttls: false }), smtp
   let m = mails.at(-1);
   ok(t.ok && m.port === 18025 && m.secure && !m.authBeforeTls && m.to.length === 2, `e-mail via STARTTLS: login only after TLS, 2 recipients (${t.error || 'ok'})`);
   const decoded = Buffer.from(m.body.split('\n\n').slice(1).join('').replace(/\s/g, ''), 'base64').toString();
-  ok(/^Subject: \[Homelab\] Test notification/m.test(m.body) && /Content-Type: text\/plain; charset=utf-8/.test(m.body) && /Test notification/.test(decoded), 'e-mail: headers and base64 body');
+  ok(/^Subject: \[Homelab Lookout\] Test notification/m.test(m.body) && /Content-Type: text\/plain; charset=utf-8/.test(m.body) && /Test notification/.test(decoded), 'e-mail: headers and base64 body');
   t = await test(mailTls);
   ok(t.ok && mails.at(-1).port === 18465 && mails.at(-1).auth === null, `e-mail via implicit TLS without login (${t.error || 'ok'})`);
   noSecrets(JSON.stringify((await req('GET', '/api/admin/alerts')).json), 'status after sends');

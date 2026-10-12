@@ -1,4 +1,4 @@
-# Homelab dashboard: how to use it
+# Homelab Lookout: how to use it
 
 The dashboard runs on **lookout** and lives at **https://192.168.1.140:8443**. It shows your servers, NAS, network, services and power cost in one place. It only *reads*: nothing on the dashboard can switch off, restart or update a device.
 
