@@ -1,3 +1,5 @@
+// Renders the guide to the PDF the dashboard serves at /guide.pdf:
+//   node docs/guide/pdf.js "$PWD/docs/guide/guide.html" public/guide/homelab-lookout-guide.pdf
 const { chromium } = require('playwright');
 (async () => {
   const b = await chromium.launch({ args: ['--allow-file-access-from-files'] });

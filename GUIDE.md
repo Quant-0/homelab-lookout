@@ -153,6 +153,10 @@ One list of what can be updated: Proxmox packages, TrueNAS and its apps, UniFi f
 
 **Log** in the menu (admin only) lists everything that changed, newest first, grouped by day: every change in Admin and Docs (with what changed, e.g. *Title: Homelab → My Lab*, and who did it), devices found, problems starting and clearing, notifications sent, snoozes, the public IP and its changes, sign-ins and failed sign-ins, update checks, backups and restarts. Filter by category or search, and **Download CSV** for the current filter. Entries are kept for a year and are included in backups. Passwords and keys are never written to it; at most it says that one was changed.
 
+### User guide
+
+The illustrated user guide (a PDF with sample data) opens from the **document button** beside Search in the top bar, from **More → User guide (PDF)** on a phone, or by searching for *guide*. Anyone who can see the dashboard can open it, at `/guide.pdf`.
+
 ### Search
 
 Press **Ctrl K** or **/** anywhere. It finds:

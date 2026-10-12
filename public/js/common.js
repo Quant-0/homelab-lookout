@@ -221,6 +221,7 @@ const HD = (() => {
         el('div', { class: 'nav-foot' },
           el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-label': 'Search', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
             icon('search'), el('span', { class: 'label', text: 'Search' }), el('kbd', { text: navigator.platform?.startsWith('Mac') ? '⌘K' : 'Ctrl K' })),
+          el('a', { class: 'icon-button guide-button', href: '/guide.pdf', target: '_blank', rel: 'noopener', title: 'User guide (PDF)', 'aria-label': 'User guide (PDF)' }, icon('file-text')),
           el('button', { type: 'button', class: 'icon-button look-button', title: 'Look on this device', 'aria-label': 'Look on this device', 'aria-haspopup': 'dialog', onclick: (e) => openLook(e.currentTarget) }, icon('palette')),
           signed ? navLink(admin, 'nav-item') : null,
           signed
@@ -259,6 +260,7 @@ const HD = (() => {
       st.admin ? row('list', 'Log', { href: '/log' }) : null,
       row('tv', 'Wall display', { href: '/wall' }),
       row('palette', 'Look on this device', { onclick: () => { close(); openLook(null); } }),
+      row('file-text', 'User guide (PDF)', { href: '/guide.pdf', target: '_blank', rel: 'noopener' }),
       signed ? row('settings', 'Admin', { href: st.admin ? '/admin' : '/login?next=admin' }) : null,
       signed ? row('log-out', 'Log out', { onclick: logout }) : row('log-in', 'Log in', { href: '/login' })));
     dlg.addEventListener('click', (e) => e.target === dlg && close());
@@ -664,13 +666,14 @@ const HD = (() => {
     if (dash) items.push({ kind: 'Page', title: 'Energy report', sub: 'Power & cost per month and year', href: '/energy', words: 'kwh cost csv excel export power' });
     if (dash?.rack?.enabled) items.push({ kind: 'Page', title: 'Rack', sub: 'The rack, drawn to scale', href: '/#rack', words: 'front schematic units' });
     if (dash) items.push({ kind: 'Page', title: 'Wall display', sub: 'One screen for a tablet or TV', href: '/wall', words: 'kiosk tv tablet fullscreen' });
+    items.push({ kind: 'Page', title: 'User guide', sub: 'How to use Homelab Lookout (PDF)', href: '/guide.pdf', words: 'help manual instructions documentation how pdf' });
     if (docs) {
       for (const d of docs.auto.devices) items.push({ kind: 'Docs', title: `${d.name} sheet`, sub: [d.model, ...d.ips].filter(Boolean).join(' · '), href: `/docs#server/${d.id}`, words: [d.name, d.model, d.serviceTag, d.hostName, ...d.ips].join(' ') });
       for (const p of docs.docs.pages) items.push({ kind: 'Page', title: p.title, sub: 'Docs', href: `/docs#page/${p.id}`, words: '', body: p.body });
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
       if (!docs.readOnly) items.push({ kind: 'Page', title: 'Log', sub: 'Every change, problem and sign-in', href: '/log', words: 'history changes audit events ip timeline' });
-      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada ping cisco mikrotik'], ['services', 'Services', 'integration icon ping tcp port certificate status check'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail notifications'],
+      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada ping cisco mikrotik'], ['services', 'Services', 'integration icon ping tcp port certificate status check'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail imessage sendblue sms notifications'],
         ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public logo internet provider carrier isp'], ['system', 'System', 'web server https port certificate backup password account']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }

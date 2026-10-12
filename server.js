@@ -5154,6 +5154,26 @@ function loadStatic() {
   }
 }
 
+// The user guide PDF (about 11 MB), read from disk on each request instead of kept in memory
+const GUIDE_FILE = path.join(PUBLIC_DIR, 'guide', 'homelab-lookout-guide.pdf');
+function sendGuide(req, res) {
+  let st;
+  try {
+    st = fs.statSync(GUIDE_FILE);
+  } catch {
+    return sendError(res, 404, 'The user guide is not installed');
+  }
+  const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+  const headers = { 'Content-Type': 'application/pdf', 'Cache-Control': 'private, no-cache', ETag: etag, 'Content-Disposition': 'inline; filename="Homelab Lookout - User guide.pdf"' };
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': st.size });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(GUIDE_FILE).on('error', () => res.destroy()).pipe(res);
+}
+
 const acceptsGzip = (req) => /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''));
 
 function sendStatic(res, key) {
@@ -6911,6 +6931,11 @@ async function handle(req, res) {
     if (p === '/docs') return seer ? sendPage(res, 'docs.html', seer) : redirect(res, '/login?next=docs');
     if (p === '/updates') return seer ? sendPage(res, 'updates.html', seer) : redirect(res, '/login?next=updates');
     if (p === '/log') return session ? sendPage(res, 'log.html', session) : redirect(res, '/login?next=log');
+    if (p === '/guide.pdf') {
+      // the user guide: sample data only, for anyone who may see the dashboard
+      if (!sees) return redirect(res, '/login?next=guide');
+      return sendGuide(req, res);
+    }
     if (p === '/energy') {
       if (!sees) return redirect(res, '/login?next=energy');
       return sendPage(res, 'energy.html', seer);

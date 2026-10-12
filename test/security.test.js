@@ -73,7 +73,7 @@ async function run() {
     if (r.status !== 401) leaks.push(`${m} ${p} → ${r.status}`);
   }
   ok(!leaks.length, `stranger: every API route answers 401${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
-  for (const [p, next] of [['/', ''], ['/services', '?next=services'], ['/energy', '?next=energy'], ['/admin', '?next=admin'], ['/docs', '?next=docs'], ['/updates', '?next=updates']]) {
+  for (const [p, next] of [['/', ''], ['/services', '?next=services'], ['/energy', '?next=energy'], ['/admin', '?next=admin'], ['/docs', '?next=docs'], ['/updates', '?next=updates'], ['/guide.pdf', '?next=guide']]) {
     const r = await call('GET', p);
     ok(r.status === 303 && r.headers.get('location') === `/login${next}`, `stranger: ${p} sends to the login page`);
   }
@@ -85,7 +85,8 @@ async function run() {
   leaks = [];
   for (const f of files.filter((x) => !x.endsWith('.html') && x !== 'sw.js')) {
     const r = await call('GET', `/static/${f}`);
-    if (PUBLIC.has(f) ? r.status !== 200 : r.status !== 401) leaks.push(`${f} → ${r.status}`);
+    // the guide is only served at /guide.pdf (checked above), never under /static/
+    if (f.startsWith('guide/') ? r.status !== 404 : PUBLIC.has(f) ? r.status !== 200 : r.status !== 401) leaks.push(`${f} → ${r.status}`);
   }
   ok(!leaks.length, `stranger: only the login page's and the app shell's files are public${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
   for (const p of ['/static/../server.js', '/static/%2e%2e/server.js', '/static/js/../../server.js', '/media/bg/../../config.json', '/..%2fconfig.json']) {
