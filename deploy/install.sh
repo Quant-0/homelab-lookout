@@ -58,8 +58,14 @@ done
 [ "$(id -u)" = 0 ] || { echo "Run as root (sudo)." >&2; exit 1; }
 
 # --- Packages ---------------------------------------------------------------
-if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'parseInt(process.versions.node)')" -lt 18 ]; then
-  echo "Installing Node.js from Debian..."
+# Node.js 24 LTS from NodeSource (Debian's own package can be a release without upstream support)
+if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'parseInt(process.versions.node)')" -lt 22 ]; then
+  echo "Installing Node.js 24 LTS from NodeSource..."
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
   apt-get update -qq
   apt-get install -y -qq nodejs
 fi

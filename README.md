@@ -2,7 +2,7 @@
 
 A homelab dashboard for servers (Redfish: Dell iDRAC, HPE iLO, Lenovo XClarity, Supermicro), Proxmox VE, TrueNAS, Synology, UniFi and Omada networks, any SNMPv3 switch, router, NAS or UPS card, and UPSes through NUT, with estimates and logs of power cost for Norway (spot price or Norgespris, plus grid tariff).
 
-It is built from one Node.js server file (`server.js`, Node 18+) plus static HTML/CSS/JS in `public/`. There are no npm dependencies.
+It is built from one Node.js server file (`server.js`, Node 18+; use a supported release, Node 24 LTS recommended) plus static HTML/CSS/JS in `public/`. There are no npm dependencies.
 
 **How to use it day to day: see [GUIDE.md](GUIDE.md).** This README covers what it does, the security design, installation and development.
 

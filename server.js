@@ -8233,6 +8233,9 @@ async function main() {
   log(`Listening on ${[urls.https, urls.http && `${urls.http}${effectiveServer(config.settings.server).http.mode === 'redirect' ? ' (redirects to HTTPS)' : ''}`].filter(Boolean).join(' and ')}`);
 
   event('system', 'Dashboard started');
+  // Node.js lines out of upstream support (no security fixes): 20 ended 2026-04-30
+  const nodeEnd = { 18: '2025-04-30', 19: '2023-06-01', 20: '2026-04-30', 21: '2024-06-01', 22: '2027-04-30', 23: '2025-06-01' }[major];
+  if (nodeEnd && Date.now() > Date.parse(nodeEnd)) event('system', `Node.js ${process.versions.node} no longer gets security updates (support ended ${nodeEnd}); upgrade to Node.js 24`);
   schedulePolling();
   setInterval(pruneEvents, 24 * 3600 * 1000).unref();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
