@@ -3656,7 +3656,7 @@ function iconUrl(icon) {
 // with an optional column count each. Hidden services are only listed for the admin.
 const VMS_GROUP = '@vms';
 
-function servicesPayload(admin = false) {
+function servicesPayload(admin = false, visitor = false) {
   const layout = config.servicesLayout || { groups: [], columns: {} };
   const byGroup = new Map();
   const hidden = [];
@@ -3683,7 +3683,7 @@ function servicesPayload(admin = false) {
     if (!byGroup.has(svc.group)) byGroup.set(svc.group, []);
     byGroup.get(svc.group).push(card);
   }
-  const vms = config.settings.dashboard.vms.services ? vmsPayload() : null;
+  const vms = config.settings.dashboard.vms.services ? vmsPayload(visitor) : null;
   const keys = layout.groups.filter((k) => byGroup.has(k) || (k === VMS_GROUP && vms));
   for (const k of byGroup.keys()) if (!keys.includes(k)) keys.push(k);
   if (vms && !keys.includes(VMS_GROUP)) keys.push(VMS_GROUP);
@@ -3732,7 +3732,7 @@ function saveServicesLayout(b) {
 }
 
 // Proxmox VMs and containers, shown on the Services page (the Overview keeps the node health)
-function vmsPayload() {
+function vmsPayload(visitor = false) {
   const pve = config.hosts.filter((h) => h.type === 'proxmox');
   if (!pve.length) return null;
   const items = [];
@@ -3747,7 +3747,7 @@ function vmsPayload() {
       // the fullest disk: a container's root disk, or the fullest filesystem the guest agent reports
       const fs = g.agent?.fs?.length ? g.agent.fs.reduce((a, f) => (f.used / f.size > a.used / a.size ? f : a)) : null;
       const disk = g.disk != null && g.maxdisk ? { used: g.disk, size: g.maxdisk, mount: '/' } : fs ? { used: fs.used, size: fs.size, mount: fs.mount } : null;
-      items.push({ key: `${h.id}:${g.vmid}`, host: h.id, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime, disk, rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, agent: g.agent?.running ? { ips: g.agent.ips, os: g.agent.os, fs: g.agent.fs } : null });
+      items.push({ key: `${h.id}:${g.vmid}`, host: h.id, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime, disk, rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, agent: g.agent?.running ? { ips: visitor ? [] : g.agent.ips, os: visitor ? null : g.agent.os, fs: g.agent.fs } : null });
     }
   }
   const v = config.settings.dashboard.vms;
@@ -5523,6 +5523,15 @@ function forVisitors(payload) {
   payload.omada = payload.omada.map((h) => (h.data ? { ...h, data: { ...h.data, devices: h.data.devices.map(({ ip, version, upgradable, ...d }) => d) } } : h));
   payload.snmp = payload.snmp.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, descr: null, location: null } } } : h));
   payload.truenas = payload.truenas.map((h) => (h.data ? { ...h, data: { ...h.data, system: { ...h.data.system, version: null } } } : h));
+  // what the guest agent tells about a VM (its addresses, its OS) and disk serial numbers
+  payload.proxmox = payload.proxmox.map((h) => (h.data ? {
+    ...h,
+    data: {
+      ...h.data,
+      nodes: h.data.nodes.map((n) => (n.disks ? { ...n, disks: n.disks.map(({ serial, ...x }) => x) } : n)),
+      guests: h.data.guests.map((g) => (g.agent ? { ...g, agent: { ...g.agent, ips: [], os: null } } : g)),
+    },
+  } : h));
   return payload;
 }
 
@@ -5730,7 +5739,7 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/services' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
-    return sendJson(res, 200, { ...servicesPayload(Boolean(session)), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
+    return sendJson(res, 200, { ...servicesPayload(Boolean(session), !session && !viewer), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
   }
 
   if (!session) {

@@ -82,6 +82,17 @@ async function until(fn, ms = 20000) {
   const h = (await req('GET', `/api/history?keys=pveg:${pve.id}:100:rx,pveg:${pve.id}:100:write`)).json.series;
   ok(h[`pveg:${pve.id}:100:rx`]?.length > 0 && h[`pveg:${pve.id}:100:write`]?.length > 0, 'guest traffic is kept as history');
 
+  // a public dashboard shows the numbers, not the addresses, OS or serial numbers
+  await req('PUT', '/api/admin/settings', { dashboard: { ...cfg.settings.dashboard, refreshSeconds: 10, public: true } });
+  const saved = cookie;
+  cookie = '';
+  const pub = (await req('GET', '/api/dashboard')).json.proxmox[0].data;
+  const pvm = pub.guests.find((g) => g.vmid === 100);
+  ok(pvm.agent.fs.length === 2 && pvm.agent.ips.length === 0 && pvm.agent.os === null && pub.nodes[0].disks.every((x) => !('serial' in x)), 'visitors see no VM addresses, OS or disk serials');
+  const pcard = (await req('GET', '/api/services')).json.groups.find((g) => g.key === '@vms')?.vms.items.find((g) => g.vmid === 100);
+  ok(pcard && pcard.agent.ips.length === 0 && pcard.agent.os === null, '…nor on the Services page');
+  cookie = saved;
+
   console.log(failures ? `\n${failures} FAILED` : '\nALL PROXMOX TESTS PASSED');
   process.exit(failures ? 1 : 0);
 })().catch((e) => {
