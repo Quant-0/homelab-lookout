@@ -1123,8 +1123,15 @@ function renderIntegrationFields() {
       list.map((h) => el('option', { value: h.id, text: `${h.name} (a device you added)` })),
       el('option', { value: '', text: def.noUrl ? 'A NUT server (address below)' : 'Its own login (URL and credentials below)' }));
     sel.value = integ.options.device;
+    const suggestLink = () => {
+      const web = list.find((h) => h.id === integ.options.device)?.web;
+      const f = svcForm();
+      if (web && !f.href.value.trim()) f.href.value = web;
+    };
+    suggestLink();
     sel.addEventListener('change', () => {
       integ.options.device = sel.value;
+      suggestLink();
       renderIntegrationFields();
       syncService();
     });

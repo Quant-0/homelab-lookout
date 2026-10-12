@@ -82,6 +82,15 @@ async function until(fn, ms = 20000) {
   const h = (await req('GET', `/api/history?keys=pveg:${pve.id}:100:rx,pveg:${pve.id}:100:write`)).json.series;
   ok(h[`pveg:${pve.id}:100:rx`]?.length > 0 && h[`pveg:${pve.id}:100:write`]?.length > 0, 'guest traffic is kept as history');
 
+  // a Proxmox card on the Services page, from the connection above
+  const srcs = (await req('GET', '/api/admin/services')).json.sources;
+  const src = srcs.find((x) => x.type === 'proxmox');
+  ok(src?.web === 'https://127.0.0.1:18443', `the card suggests the Proxmox web address (${src?.web})`);
+  let r = await req('POST', '/api/admin/services', { name: 'Proxmox', group: 'Infrastructure', href: src.web, icon: { kind: 'letter' }, connection: null, integration: { type: 'proxmox', options: { device: src.id } } });
+  ok(r.status === 201, `a Proxmox card without its own login (${r.json?.error || ''})`);
+  const pcard2 = await until(async () => (await req('GET', '/api/services')).json.groups.flatMap((g) => g.services || g.items || []).find((x) => x.name === 'Proxmox' && x.stats));
+  ok(pcard2 && pcard2.href === 'https://127.0.0.1:18443/' && pcard2.stats.map((x) => x.label).join() === 'VMs running,CPU,Memory' && pcard2.stats[0].value === '2/3', `its numbers and link (${JSON.stringify(pcard2?.stats)})`);
+
   // a public dashboard shows the numbers, not the addresses, OS or serial numbers
   await req('PUT', '/api/admin/settings', { dashboard: { ...cfg.settings.dashboard, refreshSeconds: 10, public: true } });
   const saved = cookie;

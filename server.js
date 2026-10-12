@@ -2938,6 +2938,20 @@ async function dsmCollect(x) {
   });
 }
 
+function proxmoxStats(d) {
+  const nodes = d.nodes || [];
+  const on = nodes.filter((n) => n.status === 'online');
+  const guests = d.guests || [];
+  const fullest = [...(d.storage || [])].sort((a, b) => pctOf(b.used, b.size) - pctOf(a.used, a.size))[0];
+  return [
+    stat('VMs running', `${guests.filter((g) => g.status === 'running').length}/${guests.length}`),
+    stat('Nodes online', `${on.length}/${nodes.length}`),
+    stat('CPU', on.length ? (100 * sum(on, (n) => n.cpu * n.maxcpu)) / (sum(on, (n) => n.maxcpu) || 1) : null, '%'),
+    stat('Memory', on.length ? pctOf(sum(on, (n) => n.mem), sum(on, (n) => n.maxmem)) : null, '%'),
+    stat('Fullest storage', fullest ? pctOf(fullest.used, fullest.size) : null, '%'),
+  ];
+}
+
 function unifiStats(d) {
   const h = d.health || {};
   const devs = d.devices || [];
@@ -3319,6 +3333,14 @@ const INTEGRATIONS = {
       return unifiStats(await collectUnifi(ownHost(x, 'unifi'), x.secret));
     },
   },
+  proxmox: {
+    label: 'Proxmox VE', group: 'Infrastructure', user: 'API token ID (e.g. dashboard@pve!monitor)', secret: 'Token secret', icon: 'proxmox', fromDevice: ['proxmox'],
+    stats: proxmoxStats,
+    async fetch(x) {
+      if (!/^[^\s@!=]+@[^\s@!=]+![A-Za-z][A-Za-z0-9._-]*$/.test(x.username)) throw new UserError('Enter the full API token ID, e.g. dashboard@pve!monitor');
+      return proxmoxStats(await collectProxmox(ownHost(x, 'proxmox'), x.secret));
+    },
+  },
   ups: {
     label: 'UPS (NUT)', group: 'Infrastructure', secret: null, icon: 'nut', fromDevice: ['nut', 'snmp'], noUrl: true,
     options: [
@@ -3385,6 +3407,7 @@ const DEFAULT_FIELDS = {
   nextcloud: ['Active users (24 h)', 'Files', 'Free space'], immich: ['Photos', 'Videos', 'Storage'], paperless: ['Inbox', 'Documents'],
   uptimekuma: ['Up', 'Down', 'Uptime 24 h'], grafana: ['Dashboards', 'Alert rules'], portainer: ['Running', 'Stopped'],
   speedtest: ['Download', 'Upload', 'Ping'], prometheus: ['Targets up', 'Down'], authentik: ['Logins (24 h)', 'Failed (24 h)', 'Users'],
+  proxmox: ['VMs running', 'CPU', 'Memory'],
   truenas: ['Alerts', 'Unhealthy pools', 'Used'], synology: ['Volume used', 'CPU', 'Memory'], unifi: ['Clients', 'WAN', 'Devices offline'],
   ups: ['Charge', 'Runtime', 'Load'], peanut: ['Charge', 'Runtime', 'Load'], tailscale: ['Online', 'Expiring keys', 'Updates'],
 };
@@ -6267,7 +6290,8 @@ async function handleApi(req, res, url, session, viewer = null) {
       integrations: integrationDefs(),
       devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
       // device connections a card can take its numbers from
-      sources: config.hosts.map((h) => ({ id: h.id, type: h.type, name: config.devices.find((d) => d.id === h.deviceId)?.name || h.name, ups: h.type !== 'snmp' || Boolean(results.get(h.id)?.data?.ups) })),
+      // web: the device's own web interface, suggested as the card's link
+      sources: config.hosts.map((h) => ({ id: h.id, type: h.type, name: config.devices.find((d) => d.id === h.deviceId)?.name || h.name, ups: h.type !== 'snmp' || Boolean(results.get(h.id)?.data?.ups), web: ['proxmox', 'truenas', 'unifi'].includes(h.type) ? `https://${h.address.replace(/:443$/, '')}` : null })),
       icons: config.icons.map((i) => ({ id: i.id, source: i.source })),
     });
   }
