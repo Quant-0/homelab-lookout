@@ -145,6 +145,7 @@ async function main() {
     { file: 'test/cables.test.js', fresh: true },
     { file: 'test/monitor.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0' } },
     { file: 'test/guide.test.js', fresh: true },
+    { file: 'test/schedules.test.js', fresh: true, env: { CHECKIN_MINUTE_MS: '1000', OFFLINE_GRACE_S: '0' } },
     { file: 'test/proxmox.test.js', fresh: true, env: { PVE_EXTRA_S: '5' } },
     { file: 'test/log.test.js', fresh: true, env: { OFFLINE_GRACE_S: '12', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), RDAP_URL: 'https://127.0.0.1:18443/rdap' } },
     { file: 'test/backup.test.js', fresh: true, env: { BACKUP_DIR: backupBase } },

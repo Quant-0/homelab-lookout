@@ -89,7 +89,7 @@ function trio(items) {
 
 // --- header ---
 function renderHead(d) {
-  const list = (d.attention || []).filter((a) => !a.snoozedUntil); // snoozed ones stay off the wall
+  const list = (d.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance); // snoozed ones and maintenance stay off the wall
   const crit = list.filter((a) => a.severity === 'critical').length;
   const warn = list.length - crit;
   $('orb').className = `orb ${crit ? 'critical' : warn ? 'warning' : ''}`;
@@ -118,7 +118,7 @@ function tick() {
 
 // --- what needs you, one at a time ---
 function renderSpot() {
-  const list = (data.attention || []).filter((a) => !a.snoozedUntil);
+  const list = (data.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance);
   const box = $('spot');
   clearTimeout(spotTimer);
   if (!list.length) {
@@ -147,7 +147,7 @@ function renderSpot() {
 }
 
 function renderList() {
-  const list = (data.attention || []).filter((a) => !a.snoozedUntil);
+  const list = (data.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance);
   $('list-h').replaceChildren(HD.icon('list'), 'All problems', el('span', { class: 'r', text: String(list.length) }));
   $('probs').replaceChildren(...(list.length
     ? list.map((a, k) => el('li', { onclick: () => { spotIndex = k; renderSpot(); } },

@@ -934,7 +934,8 @@ function deviceInfos(d) {
       const model = ctx.idrac?.model || ctx.syno?.system?.model || ctx.ud?.model || ctx.omd?.model || (ctx.ups ? [ctx.ups.maker, ctx.ups.model].filter(Boolean).join(' ') : '')
         || (ctx.tn ? ctx.tn.system.version || 'TrueNAS' : '') || (ctx.node ? `Proxmox node ${ctx.node.name}` : '') || ctx.snmp?.system?.name || '';
       const update = Boolean(ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable || ctx.omd?.upgradable || d.updates?.devices?.includes(dev.id));
-      return { id: dev.id, dev, ctx, secs, issues, state: deviceState(dev, ctx, issues), model, update, metrics: keyMetrics(dev, ctx), spark: mainSpark(ctx) };
+      const maint = maintOf(d, dev);
+      return { id: dev.id, dev, ctx, secs, issues, state: maint ? ['Maintenance', 'info'] : deviceState(dev, ctx, issues), maint, model, update, metrics: keyMetrics(dev, ctx), spark: mainSpark(ctx) };
     });
 }
 
@@ -1177,8 +1178,11 @@ function pill(cls, children, attrs) {
 }
 
 // Snoozed warnings stay off the top of Home (the device still shows them)
-const awake = (d) => (d.attention || []).filter((a) => !a.snoozedUntil);
-const snoozedOnes = (d) => (d.attention || []).filter((a) => a.snoozedUntil);
+const awake = (d) => (d.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance);
+const snoozedOnes = (d) => (d.attention || []).filter((a) => a.snoozedUntil && !a.maintenance);
+// Problems on something in a maintenance window: listed, muted, and not counted as faults
+const inMaintenance = (d) => (d.attention || []).filter((a) => a.maintenance);
+const maintOf = (d, dev) => (d.maintenance || []).find((w) => w.all || w.devices.includes(dev.id)) || null;
 let showSnoozed = false;
 
 function renderSummary(d) {
@@ -1195,6 +1199,7 @@ function renderSummary(d) {
     crit ? pill('critical', [el('span', { class: 'dot critical' }), el('strong', { text: String(crit) }), crit === 1 ? ' fault' : ' faults'], { onclick: toNeeds }) : null,
     warn ? pill('warning', [el('span', { class: 'dot warning' }), el('strong', { text: String(warn) }), ' to watch'], { onclick: toNeeds }) : null,
     !list.length && (infos.length || d.services?.total) ? pill('good', [el('span', { class: 'dot good' }), 'All normal'], { onclick: toNeeds }) : null,
+    (d.maintenance || []).length ? pill('maint', [HD.icon('settings'), d.maintenance.length === 1 ? `Maintenance until ${clockText(d.maintenance[0].until)}` : `${d.maintenance.length} maintenance windows`], { onclick: toNeeds }) : null,
     zz ? pill('snoozed', [HD.icon('clock'), el('strong', { text: String(zz) }), ' snoozed'], { onclick: () => { showSnoozed = true; renderNeeds(d); toNeeds(); } }) : null,
     say ? el('span', { class: 'summary-say', text: say }) : null,
   ].filter(Boolean));
@@ -1210,7 +1215,7 @@ function renderNeeds(d) {
   const snoozeLine = zz.length ? el('div', { class: 'snoozed-line' },
     HD.icon('clock'), `${zz.length} snoozed`,
     el('button', { type: 'button', class: 'link-button', 'aria-expanded': String(showSnoozed), text: showSnoozed ? 'Hide' : 'Show', onclick: () => { showSnoozed = !showSnoozed; renderNeeds(d); } })) : null;
-  const rows = [...(d.notices || []).map((n) => noticeRow(n, d)), ...list.map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
+  const rows = [...(d.notices || []).map((n) => noticeRow(n, d)), ...(d.maintenance || []).map((w) => maintRow(w, d)), ...list.map((a) => needRow(a, d)), ...inMaintenance(d).map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
   if (!list.length) {
     box.className = rows.length ? 'needs' : '';
     const head = infos.length || d.services?.total
@@ -1245,21 +1250,33 @@ function noticeRow(n, d) {
   return el('div', { class: 'need-wrap' }, row, box);
 }
 
+const clockText = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+// A maintenance window that is on now
+function maintRow(w, d) {
+  const held = inMaintenance(d).filter((a) => a.maintenance.name === w.name).length;
+  return el('div', { class: 'need info', title: `${w.name} · until ${untilText(w.until)}` },
+    el('span', { class: 'need-icon' }, HD.icon('settings')),
+    el('span', { class: 'need-text' }, el('b', { text: `Maintenance: ${w.name}` }),
+      el('span', { class: 'why', text: `${w.all ? 'Everything' : [w.devices.length && `${w.devices.length} device${w.devices.length === 1 ? '' : 's'}`, w.services.length && `${w.services.length} service${w.services.length === 1 ? '' : 's'}`].filter(Boolean).join(' and ') || 'Check-ins'}: no alerts are sent${held ? ` · ${held} problem${held === 1 ? '' : 's'} below` : ''}` })),
+    el('time', { text: `until ${clockText(w.until)}` }));
+}
+
 const untilText = (t) => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 function needRow(a, d) {
-  const attrs = { class: `need ${a.severity}${a.snoozedUntil ? ' snoozed' : ''}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
+  const attrs = { class: `need ${a.severity}${a.snoozedUntil || a.maintenance ? ' snoozed' : ''}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
   const inner = [
     el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')),
     el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
       el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null),
-    a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
+    a.maintenance ? el('time', { text: 'Maintenance' }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
   ];
   let row;
   if (a.deviceId && infos.some((x) => x.id === a.deviceId)) row = el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
   else if (a.serviceId) row = el('a', { href: '/services', ...attrs }, inner);
   else row = el('div', attrs, inner);
-  if (!d.loggedIn || !a.key) return row;
+  if (!d.loggedIn || !a.key || a.maintenance) return row;
   return el('div', { class: 'need-wrap' }, row, snoozeControl(a, d));
 }
 

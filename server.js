@@ -108,6 +108,8 @@ const DEFAULT_SETTINGS = {
     serviceAlerts: true, // a down service shows under "Needs you" and in the top pill
     // VMs and containers: where they show, and what
     vms: { home: true, services: true, host: true, rack: true, stopped: true, cpu: true, ram: true, uptime: true, homeNumbers: false },
+    // a public page at /status with only up/down and uptime of the services: no addresses or hardware
+    statusPage: { enabled: false, title: '' },
   },
   power: {
     plan: 'spot',
@@ -466,6 +468,8 @@ function loadConfig() {
     servicesLayout: raw.servicesLayout?.groups ? raw.servicesLayout : null,
     backup: { ...structuredClone(DEFAULT_BACKUP), ...(raw.backup || {}), schedule: { ...DEFAULT_BACKUP.schedule, ...(raw.backup?.schedule || {}) } },
     alerts: normalizeAlerts(raw.alerts),
+    checkins: Array.isArray(raw.checkins) ? raw.checkins : [], // [{ id, name, token, everyMin, graceMin, deviceId, createdAt }]
+    maintenance: Array.isArray(raw.maintenance) ? raw.maintenance : [], // [{ id, name, targets, schedule }]
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
@@ -683,6 +687,8 @@ function validateDashboard(d) {
     else if (cl?.kind === 'file' && config.icons.some((i) => i.id === cl.id)) carrierLogo = { kind: 'file', id: cl.id };
     else throw new UserError('Upload or link the provider logo again');
   }
+  const sp = d.statusPage;
+  const statusPage = sp === undefined ? structuredClone(config.settings.dashboard.statusPage || { enabled: false, title: '' }) : { enabled: sp?.enabled === true, title: str(sp?.title, 60, 'Status page title') };
   return {
     title,
     carrier, // '' = what UniFi reports
@@ -693,6 +699,7 @@ function validateDashboard(d) {
     design: 2,
     serviceAlerts: d.serviceAlerts !== false,
     vms,
+    statusPage,
   };
 }
 
@@ -3549,6 +3556,8 @@ async function pollService(svc) {
   if (config.services.find((x) => x.id === svc.id) !== svc) return;
   const prev = serviceResults.get(svc.id);
   if (check?.up && check.ms != null) histRecord(`svc:${svc.id}:ms`, check.ms, Date.now());
+  // uptime: 1 up, 0 down; time in a maintenance window doesn't count either way
+  if (check && !inMaintenance({ serviceId: svc.id })) histRecord(`upsvc:${svc.id}`, check.up ? 1 : 0, Date.now());
   serviceResults.set(svc.id, {
     check,
     stats: integ.stats ?? (integ.error ? prev?.stats ?? null : null),
@@ -3680,6 +3689,7 @@ function iconUrl(icon) {
 const VMS_GROUP = '@vms';
 
 function servicesPayload(admin = false, visitor = false) {
+  const wins = activeMaintenance();
   const layout = config.servicesLayout || { groups: [], columns: {} };
   const byGroup = new Map();
   const hidden = [];
@@ -3695,6 +3705,7 @@ function servicesPayload(admin = false, visitor = false) {
       onHome: svc.onHome !== false,
       integration: svc.integration ? INTEGRATIONS[svc.integration.type]?.label : null,
       check: svc.connection || svc.monitor ? r?.check ?? null : undefined,
+      maintenance: Boolean(inMaintenance({ serviceId: svc.id }, wins)),
       stats: shownStats(svc, r?.stats ?? null),
       error: r?.error ?? null,
       updatedAt: r?.updatedAt ?? null,
@@ -4066,7 +4077,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write))$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write)|upsvc:[0-9a-f-]{36})$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4463,7 +4474,14 @@ function zoned(ms) {
     minute: parseInt(p.minute, 10),
     second: parseInt(p.second, 10),
     weekend: p.weekday === 'Sat' || p.weekday === 'Sun',
+    weekday: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday), // 0 = Monday
   };
+}
+
+// "2026-10-13 02:07", Oslo time
+function osloText(ms) {
+  const z = zoned(ms);
+  return `${z.date} ${String(z.hour).padStart(2, '0')}:${String(z.minute).padStart(2, '0')}`;
 }
 
 function osloDayStart(ms) {
@@ -5139,7 +5157,9 @@ function loadStatic() {
     'log.html': 'log.html',
     'energy.html': 'energy.html',
     'wall.html': 'wall.html',
+    'status.html': 'status.html',
     'offline.html': 'offline.html',
+    '/static/js/status.js': 'js/status.js',
     '/sw.js': 'sw.js',
     '/static/js/offline.js': 'js/offline.js',
     '/static/icons/icon-192.png': 'icons/icon-192.png',
@@ -5710,17 +5730,20 @@ function forVisitors(payload) {
 // What needs attention, worst first, tied to the device or service it is about
 function attentionList() {
   const rank = { critical: 0, warning: 1 };
+  const wins = activeMaintenance();
   return [...alertConditions(true)].map(([key, c]) => {
     const host = config.hosts.find((h) => h.id === c.owner);
+    const chk = c.type === 'checkin' ? config.checkins.find((x) => x.id === c.owner) : null;
+    const win = maintenanceFor(c, wins);
     const deviceId = c.device || host?.deviceId || null;
     const dev = deviceId && config.devices.find((d) => d.id === deviceId);
     const svc = c.type === 'service' ? config.services.find((x) => x.id === c.owner) : null;
-    const subject = dev?.name || svc?.name || null;
+    const subject = dev?.name || svc?.name || chk?.name || null;
     // titles read "titan: PS2 failed"; the subject is shown separately
     const text = subject && c.title.startsWith(`${subject}: `) ? c.title.slice(subject.length + 2) : c.title;
     // a TrueNAS alert's own text says more than "TrueNAS critical"
     const own = c.type === 'nas' && c.detail;
-    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity) };
+    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity), maintenance: win ? { name: win.name, until: win.until } : null };
   }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
     .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
 }
@@ -5738,6 +5761,46 @@ function snoozedUntil(key, severity) {
     return null;
   }
   return z.until;
+}
+
+// The share of time up (0–1) over a range, from the 1/0 history; null without data
+function uptimeOver(key, rangeMs) {
+  const pts = histQuery(key, rangeMs, 500);
+  return pts.length ? pts.reduce((a, [, v]) => a + v, 0) / pts.length : null;
+}
+
+// The public status page: services with a status check, their state and uptime; no links,
+// addresses, descriptions or hardware
+function statusPayload() {
+  const sp = config.settings.dashboard.statusPage;
+  const wins = activeMaintenance();
+  const groups = [];
+  for (const svc of [...config.services].sort((a, b) => (a.order || 0) - (b.order || 0))) {
+    if (svc.hidden || !(svc.connection || svc.monitor)) continue;
+    const check = serviceResults.get(svc.id)?.check;
+    const maint = inMaintenance({ serviceId: svc.id }, wins);
+    const key = `upsvc:${svc.id}`;
+    let g = groups.find((x) => x.name === svc.group);
+    if (!g) groups.push((g = { name: svc.group, services: [] }));
+    g.services.push({
+      name: svc.name,
+      state: maint ? 'maintenance' : !check ? 'unknown' : check.up ? 'up' : 'down',
+      uptime: { d1: uptimeOver(key, 86400e3), d7: uptimeOver(key, 7 * 86400e3), d30: uptimeOver(key, 30 * 86400e3), d90: uptimeOver(key, 90 * 86400e3) },
+      days: histQuery(key, 90 * 86400e3, 90).map(([t, v]) => [t, round2(v)]),
+    });
+  }
+  const all = groups.flatMap((g) => g.services);
+  const shown = new Set(config.services.map((x) => x.id));
+  const relevant = (w) => w.targets.all || w.targets.services.some((id) => shown.has(id)) || w.targets.devices.some((id) => config.services.some((x) => x.deviceId === id));
+  const now = Date.now();
+  return {
+    title: sp.title || `${config.settings.dashboard.title} status`,
+    overall: all.some((x) => x.state === 'down') ? 'down' : all.some((x) => x.state === 'maintenance') ? 'maintenance' : all.length ? 'up' : 'unknown',
+    groups,
+    maintenance: config.maintenance.filter(relevant).map((w) => publicMaintenance(w, now)).filter((w) => w.active || w.next)
+      .map((w) => ({ name: w.name, active: w.active, until: w.until, next: w.next })).slice(0, 10),
+    generatedAt: now,
+  };
 }
 
 function servicesSummary() {
@@ -5804,6 +5867,8 @@ function dashboardPayload() {
     power: powerSummary(),
     // with service alerts off, Home and the wall leave services out of "Needs you" and the top pill
     attention: attentionList().filter((a) => s.serviceAlerts || !a.serviceId),
+    // maintenance on now: what it covers, so tiles and cards can say so
+    maintenance: activeMaintenance().map((w) => ({ id: w.id, name: w.name, until: w.until, all: w.targets.all, devices: w.targets.devices, services: w.targets.services })),
     services: s.serviceAlerts ? servicesSummary() : null,
   };
 }
@@ -5866,6 +5931,12 @@ async function handleApi(req, res, url, session, viewer = null) {
   const sees = Boolean(session || viewer || config.settings.dashboard.public);
 
   if (p === '/api/login' && m === 'POST') return handleLogin(req, res);
+
+  // the status page: public once switched on (signed in, it can be previewed before)
+  if (p === '/api/status' && m === 'GET') {
+    if (!config.settings.dashboard.statusPage.enabled && !session) return sendError(res, 404, 'The status page is switched off');
+    return sendJson(res, 200, statusPayload());
+  }
 
   if (p === '/api/dashboard' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
@@ -6167,6 +6238,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       const removed = deviceHosts(dev);
       config.hosts = config.hosts.filter((h) => !removed.includes(h));
       config.devices = config.devices.filter((d) => d !== dev);
+      forgetInSchedules({ deviceId: dev.id });
       saveConfig();
       removed.forEach((h) => forgetHost(h.id));
       recheckAlerts();
@@ -6349,6 +6421,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     }
     if (m === 'DELETE') {
       config.services = config.services.filter((x) => x !== old);
+      forgetInSchedules({ serviceId: old.id });
       pruneIcons();
       saveConfig();
       forgetService(old.id);
@@ -6583,6 +6656,99 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   // --- Alerts ---
   if (p === '/api/admin/alerts' && m === 'GET') return sendJson(res, 200, alertsStatus());
+
+  // --- Check-ins ---
+  if (p === '/api/admin/checkins' && m === 'GET') return sendJson(res, 200, checkinsPayload());
+  if (p === '/api/admin/checkins' && m === 'POST') {
+    if (config.checkins.length >= 100) throw new UserError('At most 100 check-ins');
+    const c = { id: crypto.randomUUID(), ...validateCheckin(await readBody(req)), token: crypto.randomBytes(24).toString('base64url'), createdAt: Date.now() };
+    config.checkins.push(c);
+    saveConfig();
+    event('alerts', `Check-in added: ${c.name} (every ${durationText(c.everyMin)}, grace ${durationText(c.graceMin)})`);
+    return sendJson(res, 201, { checkin: publicCheckin(c), ...checkinsPayload() });
+  }
+  const ck = p.match(/^\/api\/admin\/checkins\/([0-9a-f-]{36})(\/token|\/reset)?$/);
+  if (ck) {
+    const c = config.checkins.find((x) => x.id === ck[1]);
+    if (!c) return sendError(res, 404, 'Check-in not found');
+    if (!ck[2] && m === 'PUT') {
+      const before = { ...c };
+      Object.assign(c, validateCheckin(await readBody(req)));
+      saveConfig();
+      alertsSoon();
+      event('alerts', `Check-in changed: ${changesText({ name: before.name, every: durationText(before.everyMin), grace: durationText(before.graceMin) }, { name: c.name, every: durationText(c.everyMin), grace: durationText(c.graceMin) }) || c.name}`);
+      return sendJson(res, 200, { checkin: publicCheckin(c), ...checkinsPayload() });
+    }
+    if (ck[2] === '/token' && m === 'POST') {
+      // a new URL: the old one stops working at once
+      c.token = crypto.randomBytes(24).toString('base64url');
+      saveConfig();
+      event('alerts', `Check-in ${c.name}: new URL (the old one no longer works)`);
+      return sendJson(res, 200, { checkin: publicCheckin(c), ...checkinsPayload() });
+    }
+    if (ck[2] === '/reset' && m === 'POST') {
+      // forget a failure or missed check-in, e.g. after fixing the job by hand
+      delete alertState.checkins[c.id];
+      alertsDirty = true;
+      alertsSoon();
+      event('alerts', `Check-in ${c.name}: reset`);
+      return sendJson(res, 200, { checkin: publicCheckin(c), ...checkinsPayload() });
+    }
+    if (!ck[2] && m === 'DELETE') {
+      config.checkins = config.checkins.filter((x) => x !== c);
+      for (const w of config.maintenance) w.targets.checkins = w.targets.checkins.filter((id) => id !== c.id);
+      forgetInSchedules({});
+      delete alertState.checkins[c.id];
+      alertsDirty = true;
+      saveConfig();
+      alertsSoon();
+      event('alerts', `Check-in deleted: ${c.name}`);
+      return sendJson(res, 200, checkinsPayload());
+    }
+  }
+
+  // --- Maintenance windows ---
+  if (p === '/api/admin/maintenance' && m === 'GET') return sendJson(res, 200, maintenancePayload());
+  if (p === '/api/admin/maintenance' && m === 'POST') {
+    if (config.maintenance.length >= 50) throw new UserError('At most 50 maintenance windows');
+    const w = { id: crypto.randomUUID(), ...validateMaintenance(await readBody(req)) };
+    config.maintenance.push(w);
+    saveConfig();
+    alertsSoon();
+    event('alerts', `Maintenance planned: ${w.name} (${maintenanceText(w)})`);
+    return sendJson(res, 201, maintenancePayload());
+  }
+  const mw = p.match(/^\/api\/admin\/maintenance\/([0-9a-f-]{36})(\/end)?$/);
+  if (mw) {
+    const w = config.maintenance.find((x) => x.id === mw[1]);
+    if (!w) return sendError(res, 404, 'Maintenance window not found');
+    if (!mw[2] && m === 'PUT') {
+      const before = maintenanceText(w);
+      Object.assign(w, validateMaintenance(await readBody(req)), { skipUntil: undefined });
+      saveConfig();
+      alertsSoon();
+      event('alerts', `Maintenance changed: ${w.name} (${before} → ${maintenanceText(w)})`);
+      return sendJson(res, 200, maintenancePayload());
+    }
+    if (mw[2] && m === 'POST') {
+      // over now: a one-off window ends, a weekly one skips the rest of this time
+      const on = activeMaintenance().find((x) => x.id === w.id);
+      if (!on) throw new UserError('It is not on right now');
+      if (w.schedule.kind === 'once') w.schedule.end = Date.now();
+      else w.skipUntil = on.until;
+      saveConfig();
+      alertsSoon();
+      event('alerts', `Maintenance ended early: ${w.name}`);
+      return sendJson(res, 200, maintenancePayload());
+    }
+    if (!mw[2] && m === 'DELETE') {
+      config.maintenance = config.maintenance.filter((x) => x !== w);
+      saveConfig();
+      alertsSoon();
+      event('alerts', `Maintenance deleted: ${w.name}`);
+      return sendJson(res, 200, maintenancePayload());
+    }
+  }
   if (p === '/api/admin/alerts' && m === 'PUT') {
     const b = await readBody(req);
     const ids = new Set(config.alerts.channels.map((c) => c.id));
@@ -6915,6 +7081,9 @@ async function handle(req, res) {
     return sendError(res, 400, 'Bad request');
   }
   const p = url.pathname;
+  // check-ins: called by scripts on other machines, so no login and no same-origin rule
+  const pm = p.match(/^\/ping\/([A-Za-z0-9_-]{32})(?:\/(start|fail))?\/?$/);
+  if (pm) return handlePing(req, res, pm[1], pm[2]);
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
   const session = getSession(req);
   const viewer = session ? null : getViewer(req); // a remembered device: view only
@@ -6955,6 +7124,10 @@ async function handle(req, res) {
     if (p === '/docs') return seer ? sendPage(res, 'docs.html', seer) : redirect(res, '/login?next=docs');
     if (p === '/updates') return seer ? sendPage(res, 'updates.html', seer) : redirect(res, '/login?next=updates');
     if (p === '/log') return session ? sendPage(res, 'log.html', session) : redirect(res, '/login?next=log');
+    if (p === '/status') {
+      if (!config.settings.dashboard.statusPage.enabled && !session) return sendError(res, 404, 'Not found');
+      return sendPage(res, 'status.html', seer);
+    }
     if (p === '/guide.pdf') {
       // the user guide: sample data only, for anyone who may see the dashboard
       if (!sees) return redirect(res, '/login?next=guide');
@@ -6998,7 +7171,7 @@ async function handle(req, res) {
       return res.end(data);
     }
     if (STATIC[p] && p.startsWith('/static/')) {
-      const allowed = PUBLIC_ASSETS.has(p) || session || (viewer && p !== '/static/js/admin.js') || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
+      const allowed = PUBLIC_ASSETS.has(p) || session || (p === '/static/js/status.js' && config.settings.dashboard.statusPage.enabled) || (viewer && p !== '/static/js/admin.js') || (DASHBOARD_ASSETS.has(p) && config.settings.dashboard.public);
       return allowed ? sendStatic(res, p) : sendError(res, 401, 'Login required');
     }
     if (p === '/favicon.ico' || p === '/logo') return sendLogo(req, res);
@@ -7048,6 +7221,7 @@ const ALERT_TYPES = {
   space: { label: 'Storage almost full', hint: 'A pool, volume or Proxmox storage is fuller than the limit, or a disk inside a container or VM (with the guest agent).', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
   nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
   power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
+  checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
   backup: { label: 'Backup failed', hint: 'An automatic backup of the dashboard or one of its destinations failed, or a Proxmox backup job did.', delay: null },
 };
 const SEVERITY_RANK = { warning: 1, critical: 2 };
@@ -7399,7 +7573,7 @@ const testMessage = () => ({ site: config.settings.dashboard.title, severity: 't
 
 // --- State and evaluation ---
 
-let alertState = { active: {}, log: [], channels: {}, snoozed: {}, seen: {}, wan: {}, notices: [], carrier: {} };
+let alertState = { active: {}, log: [], channels: {}, snoozed: {}, seen: {}, wan: {}, notices: [], carrier: {}, checkins: {} };
 let alertsDirty = false;
 let alertsRunning = false;
 let alertsAgain = false; // a check was asked for while one was running
@@ -7407,7 +7581,182 @@ let alertsAgain = false; // a check was asked for while one was running
 function loadAlertState() {
   const s = readJson(ALERTS_FILE, null);
   const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels), snoozed: obj(s?.snoozed), seen: obj(s?.seen), wan: obj(s?.wan), notices: Array.isArray(s?.notices) ? s.notices.slice(0, 20) : [], carrier: obj(s?.carrier) };
+  alertState = { active: obj(s?.active), log: Array.isArray(s?.log) ? s.log.slice(0, 200) : [], channels: obj(s?.channels), snoozed: obj(s?.snoozed), seen: obj(s?.seen), wan: obj(s?.wan), notices: Array.isArray(s?.notices) ? s.notices.slice(0, 20) : [], carrier: obj(s?.carrier), checkins: obj(s?.checkins) };
+}
+
+// ---------------------------------------------------------------------------
+// Check-ins: a backup script or cron job calls its own secret URL when it has run. Silence past
+// the period plus the grace time is a missed check-in; calling …/fail reports a failure.
+
+const CHECKIN_TOKEN = /^[A-Za-z0-9_-]{32}$/;
+const CHECKIN_MINUTE = Number(process.env.CHECKIN_MINUTE_MS) || 60e3; // shorter in the tests
+
+function validateCheckin(b) {
+  const name = str(b.name, 48, 'Name', { required: true });
+  return {
+    name,
+    everyMin: num(b.everyMin, 1, 31 * 1440, 'Expected every (minutes)', { int: true }),
+    graceMin: num(b.graceMin, 1, 7 * 1440, 'Grace time (minutes)', { int: true }),
+    deviceId: b.deviceId && config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : null,
+  };
+}
+
+function durationText(min) {
+  if (min % 10080 === 0) return `${min / 10080} week${min === 10080 ? '' : 's'}`;
+  if (min % 1440 === 0) return `${min / 1440} day${min === 1440 ? '' : 's'}`;
+  if (min % 60 === 0) return `${min / 60} h`;
+  return `${min} min`;
+}
+
+// new (never called), up, late (past the period, within the grace time), down, or failed
+function checkinStatus(c, now = Date.now()) {
+  const st = alertState.checkins[c.id] || {};
+  const base = { last: st.last || null, lastStart: st.lastStart || null, lastFail: st.lastFail || null };
+  if (st.failed) return { ...base, state: 'failed' };
+  if (!st.last) return { ...base, state: 'new' };
+  const due = st.last + c.everyMin * CHECKIN_MINUTE;
+  return { ...base, state: now <= due ? 'up' : now <= due + c.graceMin * CHECKIN_MINUTE ? 'late' : 'down', due };
+}
+
+// GET, HEAD or POST /ping/<token>[/start|/fail]: no login, the token is the secret
+function handlePing(req, res, token, kind) {
+  if (!['GET', 'HEAD', 'POST'].includes(req.method)) return sendError(res, 405, 'Method not allowed');
+  const c = config.checkins.find((x) => x.token === token);
+  if (!c) return sendError(res, 404, 'Unknown check-in');
+  const st = (alertState.checkins[c.id] ||= {});
+  const now = Date.now();
+  if (kind === 'start') st.lastStart = now;
+  else {
+    st.last = now;
+    st.failed = kind === 'fail';
+    if (st.failed) st.lastFail = now;
+  }
+  alertsDirty = true;
+  alertsSoon();
+  req.resume(); // a body (curl --data-binary @log) is read and ignored
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(req.method === 'HEAD' ? undefined : 'OK\n');
+}
+
+function publicCheckin(c) {
+  return { ...c, status: checkinStatus(c), path: `/ping/${c.token}`, every: durationText(c.everyMin), grace: durationText(c.graceMin) };
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance windows: planned work on chosen devices, services and check-ins (or everything).
+// Their problems still show, marked as maintenance, but send no alerts and don't count against
+// uptime. Once: a start and an end. Weekly: days, a start time (Oslo) and a length.
+
+function validateMaintenance(b, { restoring = false } = {}) {
+  const name = str(b.name, 48, 'Name', { required: true });
+  const ids = (list, pool) => [...new Set((Array.isArray(list) ? list : []).filter((id) => pool.some((x) => x.id === id)))];
+  const t = b.targets || {};
+  const targets = t.all === true
+    ? { all: true, devices: [], services: [], checkins: [] }
+    : { all: false, devices: ids(t.devices, config.devices), services: ids(t.services, config.services), checkins: ids(t.checkins, config.checkins) };
+  if (!targets.all && !targets.devices.length && !targets.services.length && !targets.checkins.length) throw new UserError('Choose what the maintenance is for');
+  const sc = b.schedule || {};
+  let schedule;
+  if (sc.kind === 'weekly') {
+    const days = [...new Set((Array.isArray(sc.days) ? sc.days : []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
+    if (!days.length) throw new UserError('Choose at least one day');
+    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(sc.start || ''));
+    if (!m) throw new UserError('Start time: HH:MM');
+    schedule = { kind: 'weekly', days, start: m[0], minutes: num(sc.minutes, 5, 1440, 'Length (minutes)', { int: true }) };
+  } else {
+    const start = Number(sc.start);
+    const end = Number(sc.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new UserError('The end must be after the start');
+    if (end - start > 31 * 86400e3) throw new UserError('At most 31 days; use a weekly window for regular work');
+    if (!restoring && end <= Date.now()) throw new UserError('That time has already passed');
+    schedule = { kind: 'once', start: Math.round(start), end: Math.round(end) };
+  }
+  return { name, targets, schedule };
+}
+
+// The occurrences of a window that touch [from, to): [{ start, end }]
+function maintenanceOccurrences(w, from, to) {
+  const sc = w.schedule;
+  if (sc.kind === 'once') return sc.end > from && sc.start < to ? [{ start: sc.start, end: sc.end }] : [];
+  const out = [];
+  const [hh, mm] = sc.start.split(':').map(Number);
+  // from the day before (a window may run past midnight) to the last day of the range
+  for (let day = osloDayStart(from - 86400e3); day < to; day = osloDayStart(day + 30 * 3600e3)) {
+    if (!sc.days.includes(zoned(day + 12 * 3600e3).weekday)) continue;
+    const start = day + (hh * 60 + mm) * 60e3;
+    const end = start + sc.minutes * 60e3;
+    if (end > from && start < to && !(w.skipUntil && end <= w.skipUntil)) out.push({ start, end });
+  }
+  return out;
+}
+
+// Windows on right now, each with when it ends
+function activeMaintenance(now = Date.now()) {
+  return config.maintenance.flatMap((w) => {
+    const occ = maintenanceOccurrences(w, now, now + 1).find((o) => o.start <= now && now < o.end);
+    return occ ? [{ ...w, until: occ.end }] : [];
+  });
+}
+
+function nextMaintenance(w, now = Date.now()) {
+  return maintenanceOccurrences(w, now, now + 8 * 86400e3).find((o) => o.end > now) || null;
+}
+
+// The window (if any) that covers a problem: by its device, service or check-in
+function maintenanceFor(c, wins) {
+  if (!wins.length) return null;
+  const host = config.hosts.find((h) => h.id === c.owner);
+  const svc = config.services.find((x) => x.id === c.owner);
+  const chk = config.checkins.find((x) => x.id === c.owner);
+  const dev = c.device || host?.deviceId || svc?.deviceId || chk?.deviceId || null;
+  return wins.find((w) => w.targets.all || (dev && w.targets.devices.includes(dev)) || (svc && w.targets.services.includes(svc.id)) || (chk && w.targets.checkins.includes(chk.id))) || null;
+}
+
+// Is a device or service in maintenance right now (for tiles, cards and uptime)?
+function inMaintenance({ deviceId = null, serviceId = null }, wins = activeMaintenance()) {
+  const svc = serviceId && config.services.find((x) => x.id === serviceId);
+  const dev = deviceId || svc?.deviceId || null;
+  return wins.find((w) => w.targets.all || (dev && w.targets.devices.includes(dev)) || (serviceId && w.targets.services.includes(serviceId))) || null;
+}
+
+// A deleted device or service leaves the check-ins and maintenance windows that named it; a window
+// left with nothing to cover is removed
+function forgetInSchedules({ deviceId = null, serviceId = null }) {
+  for (const c of config.checkins) if (deviceId && c.deviceId === deviceId) c.deviceId = null;
+  for (const w of config.maintenance) {
+    if (deviceId) w.targets.devices = w.targets.devices.filter((id) => id !== deviceId);
+    if (serviceId) w.targets.services = w.targets.services.filter((id) => id !== serviceId);
+  }
+  config.maintenance = config.maintenance.filter((w) => w.targets.all || w.targets.devices.length || w.targets.services.length || w.targets.checkins.length);
+}
+
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function maintenanceText(w) {
+  const sc = w.schedule;
+  if (sc.kind === 'weekly') return `${sc.days.length === 7 ? 'every day' : sc.days.map((d) => DAY_NAMES[d]).join(', ')} ${sc.start} for ${durationText(sc.minutes)}`;
+  return `${osloText(sc.start)} to ${osloText(sc.end)}`;
+}
+
+function checkinsPayload() {
+  return {
+    checkins: config.checkins.map(publicCheckin),
+    devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+    httpPort: listeners.http ? effectiveServer(config.settings.server).http?.port || null : null, // check-ins also answer over plain HTTP
+  };
+}
+
+function maintenancePayload() {
+  return {
+    windows: config.maintenance.map((w) => publicMaintenance(w)),
+    devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+    services: config.services.filter((x) => !x.hidden).map((x) => ({ id: x.id, name: x.name })),
+    checkins: config.checkins.map((c) => ({ id: c.id, name: c.name })),
+  };
+}
+
+function publicMaintenance(w, now = Date.now()) {
+  const on = activeMaintenance(now).find((x) => x.id === w.id);
+  return { ...w, skipUntil: undefined, text: maintenanceText(w), active: Boolean(on), until: on?.until || null, next: on ? null : nextMaintenance(w, now) };
 }
 
 function saveAlertState() {
@@ -7488,7 +7837,7 @@ function alertConditions(all = false) {
         for (const f of g.agent?.fs || []) full(`vm:${g.vmid}:${f.mount}`, `${g.name} ${f.mount}`, f.used, f.size);
       }
       for (const b of (d.backups || []).filter((x) => ours(x.node) && !x.ok)) {
-        add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${new Date(b.at).toISOString().slice(0, 16).replace('T', ' ')} UTC`, own);
+        add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${osloText(b.at)}`, own);
       }
     } else if (h.type === 'truenas') {
       for (const p of d.pools) {
@@ -7555,6 +7904,11 @@ function alertConditions(all = false) {
     // what an integration reports (a UPS on battery, Tailscale keys about to expire)
     for (const a of serviceResults.get(svc.id)?.alerts || []) add('service', `${svc.id}:${a.key}`, a.severity, a.title, a.detail, svc.id, false);
   }
+  for (const c of config.checkins) {
+    const st = checkinStatus(c);
+    if (st.state === 'down') add('checkin', c.id, 'critical', `${c.name}: missed its check-in`, `Last check-in ${osloText(st.last)}; expected every ${durationText(c.everyMin)}`, c.id, false, c.deviceId);
+    if (st.state === 'failed') add('checkin', c.id, 'critical', `${c.name}: reported a failure`, `At ${osloText(st.lastFail)}`, c.id, false, c.deviceId);
+  }
   const w = measuredWatts().total;
   if (over('power', 'total', w, rules.power.watts, rules.power.watts * 0.05)) add('power', 'total', 'warning', `Power draw ${Math.round(w)} W`, `Limit ${rules.power.watts} W`, null, false);
   return out;
@@ -7574,11 +7928,14 @@ async function evaluateAlertsNow(now) {
     logProblems();
     const cond = alertConditions();
     const { rules, settings } = config.alerts;
+    // in a maintenance window: nothing is sent, and nothing starts counting towards its wait
+    const wins = activeMaintenance(now);
+    const quiet = new Set([...cond].filter(([, c]) => maintenanceFor(c, wins)).map(([k]) => k));
     const events = [];
     for (const [key, a] of Object.entries(alertState.active)) {
       if (cond.has(key)) continue;
       // deleted (or hidden) things go away quietly instead of "resolving"
-      const exists = (!a.owner || config.hosts.some((h) => h.id === a.owner) || config.services.some((s) => s.id === a.owner))
+      const exists = (!a.owner || config.hosts.some((h) => h.id === a.owner) || config.services.some((s) => s.id === a.owner) || config.checkins.some((x) => x.id === a.owner))
         && !(a.device && config.devices.find((d) => d.id === a.device)?.hidden);
       if (exists && rules[a.type]?.enabled && a.fromData && !results.get(a.owner)?.ok) continue; // no fresh data: unknown
       delete alertState.active[key];
@@ -7586,6 +7943,7 @@ async function evaluateAlertsNow(now) {
       if (exists && a.firedAt && rules[a.type]?.enabled && settings.resolved) events.push({ ...a, key, event: 'resolved' });
     }
     for (const [key, c] of cond) {
+      if (quiet.has(key)) continue;
       let a = alertState.active[key];
       if (!a) {
         a = alertState.active[key] = { ...c, since: now, firedAt: null, notifiedAt: null };
@@ -8119,7 +8477,24 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     servicesLayout: Array.isArray(c.servicesLayout?.groups) ? { groups: c.servicesLayout.groups.filter((k) => typeof k === 'string').slice(0, 200), columns: c.servicesLayout.columns || {} } : null,
     backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
     alerts: normalizeAlerts(c.alerts, channels),
+    checkins: [],
+    maintenance: [],
   };
+  // check-ins and windows are checked like in Admin, after the devices and services they name
+  for (const x of arr(c.checkins)) {
+    try {
+      if (UUID.test(x.id) && CHECKIN_TOKEN.test(x.token)) config.checkins.push({ id: x.id, ...validateCheckin(x), token: x.token, createdAt: Number.isFinite(x.createdAt) ? x.createdAt : Date.now() });
+    } catch {
+      /* dropped */
+    }
+  }
+  for (const x of arr(c.maintenance)) {
+    try {
+      if (UUID.test(x.id)) config.maintenance.push({ id: x.id, ...validateMaintenance(x, { restoring: true }) });
+    } catch {
+      /* dropped */
+    }
+  }
   if (b.passphrasePlain) config.backup.passphrase = encryptSecret(passHost(), b.passphrasePlain);
   // Settings are validated like changes made in Admin; a section that doesn't pass gets the defaults
   const valid = (fn, v, fallback) => {
@@ -8512,7 +8887,8 @@ function redirectToHttps(req, res) {
 // The HTTP listener decides per request, so switching between redirect and serve needs no re-bind.
 function httpHandler(req, res) {
   const mode = effectiveServer(config.settings.server).http?.mode;
-  if (mode === 'redirect' && listeners.https) return redirectToHttps(req, res);
+  // a check-in also works over plain HTTP, so `curl http://…/ping/…` needs no trusted certificate
+  if (mode === 'redirect' && listeners.https && !String(req.url).startsWith('/ping/')) return redirectToHttps(req, res);
   return handle(req, res);
 }
 
@@ -8729,6 +9105,7 @@ async function main() {
   setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(() => rememberedDirty && saveRemembered(), 5 * 60 * 1000).unref(); // "last used"
   setInterval(backupTick, 30 * 1000).unref();
+  setInterval(() => config.checkins.length && alertsSoon(), 30 * 1000).unref(); // a missed check-in needs no poll to be noticed
   setTimeout(updatesTick, 2 * 60 * 1000).unref(); // after the first polls, so Proxmox nodes are known
   setInterval(updatesTick, 5 * 60 * 1000).unref();
   const shutdown = () => {

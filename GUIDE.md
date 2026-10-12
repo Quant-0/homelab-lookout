@@ -231,6 +231,7 @@ More on devices:
 | **Runs on** | Which device it runs on. |
 | **Icon** | Search the icon library, upload your own (JPEG/PNG/WebP), or use a letter. |
 | **Connection URL** | For the status check and numbers. Can differ from the link, e.g. an internal address. |
+| **Integration: Proxmox VE** | Pick your Proxmox device under **Numbers from**. The card shows VMs running, CPU and memory, and the **Link** is filled in with the Proxmox web address, so it's one click from Services. |
 | **Status check** | **Web page**: the connection URL answers (any status below 500). **Ping**: the host answers ping. **TCP port**: something listens on the port, e.g. SSH on 22 or a database on 5432; for services that have no web page. The response time is kept as history. |
 | **Integration** and its key | Over plain `http://` the key travels unencrypted on your network; the form warns you. |
 
@@ -266,10 +267,27 @@ To arrange the page, press **Customize** on the Services page:
    - **iMessage (Sendblue)**: API key ID and secret key from the Sendblue dashboard, your Sendblue line, and up to 10 phone numbers with country code (+47…). Phones without iMessage get an SMS. Each alert is one message per number, which counts toward your Sendblue plan.
 
    Press **Test** before saving.
-2. **What to send where** has a row per alert: offline, service down, hardware fault, storage problem, temperature, storage almost full, TrueNAS alerts, high power, and failed backup. For each one, choose the channels and a wait time, so short blips stay quiet.
+2. **What to send where** has a row per alert: offline, service down, hardware fault, storage problem, temperature, storage almost full, TrueNAS alerts, high power, check-in missed, and failed backup. For each one, choose the channels and a wait time, so short blips stay quiet.
 3. Choose whether to **Also send a message when an alert clears**, and whether to **Remind while still active**.
 
 **Active now** shows current alerts and **Recent notifications** shows what was sent. At most 30 messages go to one channel per hour.
+
+#### Check-ins (backups and cron jobs)
+
+A check-in catches the job that silently stopped running, which no other check can see.
+
+1. **Add check-in**: a name, how often the job runs (**Expected every**), how late it may be (**Grace time**) and, if you like, the device it runs on.
+2. Open **Address and how to use it** and copy the address into the end of the job, for example in crontab:
+   `0 3 * * * /usr/local/bin/backup.sh && curl -fsS -m 10 --retry 3 http://192.168.1.140:8080/ping/… || curl -fsS -m 10 --retry 3 http://192.168.1.140:8080/ping/…/fail`
+3. The check-in is **OK** while the job calls in time, **Late** after the period, and **Missed** after the grace time as well. Calling `…/fail` reports a failure at once. Both raise **Check-in missed** under **Needs you** and as an alert.
+
+The address works over plain HTTP too, so `curl` needs no trusted certificate. Anyone who knows it can check in, so keep it like a password; **Edit → New address** replaces it. **Reset** forgets a missed or failed check-in.
+
+#### Maintenance
+
+**Plan maintenance** for work you know about: choose **Everything**, or the devices, services and check-ins it covers, and when: **Starting now** (for 30 minutes to a day), **Once** (from–to), or **Every week** (days, start time and length, in Norwegian time).
+
+While it is on, problems on what it covers are listed on Home as *Maintenance* but muted. They don't count as faults, no alerts are sent, and the time doesn't count against uptime. A device tile and a service card say **Maintenance**. **End now** stops it early; for a weekly window, only this time.
 
 ### Power & cost
 
@@ -278,6 +296,8 @@ To arrange the page, press **Customize** on the Services page:
 - **Include estimated power in cost** decides whether estimated devices count, or only measured ones (Redfish and PoE).
 
 ### Dashboard & look
+
+**Status page**: a public page at `/status` showing only whether your services are up, with their uptime over the last 90 days (30 days on a phone) and any planned maintenance. No links, addresses, devices or VMs. Switch it on with **Show the status page to everyone**. It works while the dashboard itself stays private, so you can give people the status page instead of making the whole dashboard public. Services with a status check are listed, in the groups from the Services page.
 
 - **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
 - **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.

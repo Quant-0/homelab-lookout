@@ -2128,3 +2128,60 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .guest-detail { display: grid; gap: 10px; }
 .guest-detail .sparks { margin: 0; }
 .guest-table td.r { white-space: nowrap; }
+
+/* Public status page: up or down and 90 days of uptime per service, nothing else */
+.status-main { max-width: 860px; margin: 0 auto; padding: calc(32px + env(safe-area-inset-top, 0px)) 16px 48px; display: flex; flex-direction: column; gap: 16px; }
+.status-head { display: flex; align-items: center; gap: 12px; }
+.status-logo { height: 32px; width: auto; max-width: 120px; object-fit: contain; }
+.status-head h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.03em; text-wrap: balance; }
+.status-overall { display: flex; align-items: center; gap: 12px; padding: 16px 18px; font-size: 16px; font-weight: 600; }
+.status-overall .led { width: 12px; height: 12px; }
+.status-overall.good { box-shadow: inset 4px 0 0 var(--good); }
+.status-overall.critical { box-shadow: inset 4px 0 0 var(--critical); }
+.status-overall.info { box-shadow: inset 4px 0 0 var(--accent); }
+.status-maint { display: flex; flex-direction: column; gap: 8px; }
+.status-maint:empty { display: none; }
+.st-notice { padding: 10px 14px; border-radius: var(--r); background: var(--accent-wash); border: 1px solid var(--accent-line); font-size: 14px; }
+.st-group h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.st-group ul { list-style: none; margin: 0; padding: 0; }
+.st-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border); }
+.st-row:first-child { border-top: 0; }
+.st-line { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.st-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-uptime { color: var(--muted); font-size: 13px; }
+.st-state { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; min-width: 108px; justify-content: flex-end; }
+.st-state.critical { color: var(--critical); }
+.st-bars { display: grid; grid-template-columns: repeat(90, 1fr); gap: 2px; height: 26px; }
+.st-bars span { border-radius: 2px; background: var(--surface-3); }
+.st-bars span.good { background: var(--good); }
+.st-bars span.warning { background: var(--warning); }
+.st-bars span.critical { background: var(--critical); }
+.st-axis { display: flex; justify-content: space-between; margin-top: 6px; }
+.st-axis .ax-30 { display: none; }
+.status-foot { text-align: center; }
+/* phones: the last 30 days */
+@media (max-width: 600px) {
+  .st-bars { grid-template-columns: repeat(30, 1fr); }
+  .st-bars span:nth-child(-n+60) { display: none; }
+  .st-uptime { display: none; }
+  .st-axis .ax-90 { display: none; }
+  .st-axis .ax-30 { display: inline; }
+}
+
+/* Check-ins and maintenance in Admin → Alerts */
+.ck-how { margin-top: 6px; font-size: 13px; }
+.ck-how summary { cursor: pointer; color: var(--accent); }
+.ck-url { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; min-width: 0; }
+.ck-url code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); }
+pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; margin: 4px 0; }
+.mw-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 10px 0; }
+.mw-group { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 12px; max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mw-group legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.mw-days { display: flex; flex-wrap: wrap; gap: 4px; }
+.mw-days button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* Maintenance: the accent colour, never a fault colour */
+.status.info { background: var(--accent-wash); }
+.status.info .icon { color: var(--accent); }
+.summary .pill.maint { color: var(--text); background: var(--accent-wash); border-color: transparent; }
+.summary .pill.maint .icon { color: var(--accent); }

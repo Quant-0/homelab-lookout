@@ -20,7 +20,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForURL(B + '/');
   await page.goto(B + '/admin#alerts');
   await page.waitForSelector('#tab-alerts:not([hidden]) table.rules');
-  check(await page.locator('#al-rules-table tbody tr').count() === 9, 'routing table lists the 9 kinds of alert');
+  check(await page.locator('#al-rules-table tbody tr').count() === 10, 'routing table lists the 10 kinds of alert');
   check(/Add a channel first/.test(await page.textContent('#al-rules-table')), 'hint to add a channel first');
   check(/Nothing wrong right now/.test(await page.textContent('#al-active')), 'no active alerts');
 

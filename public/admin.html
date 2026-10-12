@@ -215,6 +215,22 @@
           <div class="form-actions"><button type="submit" class="primary">Save</button><span class="msg" id="al-rules-msg" role="status"></span></div>
         </form>
       </section>
+      <section class="card" id="ck-card">
+        <div class="card-head">
+          <div class="title"><h3>Check-ins</h3><p class="hint">For backups and cron jobs: the job calls its own address when it has run. If it doesn't within the time you set, or reports a failure, you get a <em>Check-in missed</em> alert.</p></div>
+          <button type="button" class="primary" id="ck-new">Add check-in</button>
+        </div>
+        <div class="dest-editor hidden" id="ck-editor"></div>
+        <div id="ck-list"></div>
+      </section>
+      <section class="card" id="mw-card">
+        <div class="card-head">
+          <div class="title"><h3>Maintenance</h3><p class="hint">Planned work: problems on what you choose are shown as maintenance, no alerts are sent, and the time doesn't count against uptime.</p></div>
+          <button type="button" class="primary" id="mw-new">Plan maintenance</button>
+        </div>
+        <div class="dest-editor hidden" id="mw-editor"></div>
+        <div id="mw-list"></div>
+      </section>
       <section class="card">
         <div class="card-head">
           <div class="title"><h3>Active now</h3></div>
@@ -286,6 +302,17 @@
       </section>
       </div>
       <div class="tab-panel" role="tabpanel" id="tab-dashboard" aria-labelledby="tabbtn-dashboard" hidden>
+      <section class="card" id="sp-card">
+        <h3>Status page</h3>
+        <p class="hint">A public page at <a href="/status" target="_blank" rel="noopener">/status</a> that shows only whether your services are up, and their uptime over 90 days. No addresses, links, hardware or VMs. It works while the dashboard itself stays private.</p>
+        <form id="sp-form" autocomplete="off">
+          <div class="form-grid two">
+            <label class="check wide"><input type="checkbox" name="enabled"> Show the status page to everyone</label>
+            <label><span>Title</span><input name="title" maxlength="60" placeholder="Same as the dashboard, plus “status”"></label>
+          </div>
+          <div class="form-actions"><button type="submit" class="primary">Save</button><a class="button" href="/status" target="_blank" rel="noopener">Open the status page</a><span class="msg" id="sp-msg" role="status"></span></div>
+        </form>
+      </section>
       <section class="card">
         <h3>Dashboard</h3>
         <form id="dash-form">

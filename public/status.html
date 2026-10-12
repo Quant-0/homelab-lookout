@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Status</title>
+  <link rel="icon" href="/logo">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body class="status-page">
+  <div class="app-bg" aria-hidden="true"></div>
+  <main class="status-main">
+    <header class="status-head">
+      <img class="status-logo" src="/logo" alt="">
+      <h1 id="st-title">Status</h1>
+    </header>
+    <section class="status-overall" id="st-overall" role="status" aria-live="polite"></section>
+    <section id="st-maint" class="status-maint"></section>
+    <div id="st-groups"></div>
+    <p class="hint status-foot" id="st-foot"></p>
+  </main>
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/status.js"></script>
+</body>
+</html>

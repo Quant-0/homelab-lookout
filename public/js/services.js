@@ -10,6 +10,7 @@ let timer = null;
 function statusBadge(svc) {
   if (svc.check === undefined) return null; // no connection URL or status check: link only
   if (!svc.check) return el('span', { class: 'svc-status', title: 'Waiting for the first check' }, el('span', { class: 'led off' }));
+  if (svc.maintenance) return el('span', { class: 'svc-status', title: `Maintenance · ${HD.checkText(svc.check)}`, 'aria-label': 'Maintenance' }, el('span', { class: 'led info' }), el('span', { class: 'small muted', text: 'Maintenance' }));
   const c = svc.check;
   const title = HD.checkText(c);
   return el('span', { class: 'svc-status', title, 'aria-label': c.up ? 'Up' : 'Down' },

@@ -54,6 +54,8 @@ const patterned = {
   channels: [['PUT', `/api/admin/alerts/channels/${U}`], ['DELETE', `/api/admin/alerts/channels/${U}`], ['POST', `/api/admin/alerts/channels/${U}/test`]],
   localBackups: [['GET', '/api/admin/backup/local/homelab-dashboard-2026-01-01-000000.hldb'], ['DELETE', '/api/admin/backup/local/homelab-dashboard-2026-01-01-000000.hldb']],
   notices: [['DELETE', '/api/admin/notices/00000000000000aa']],
+  checkins: [['PUT', `/api/admin/checkins/${U}`], ['DELETE', `/api/admin/checkins/${U}`], ['POST', `/api/admin/checkins/${U}/token`], ['POST', `/api/admin/checkins/${U}/reset`]],
+  maintenance: [['PUT', `/api/admin/maintenance/${U}`], ['DELETE', `/api/admin/maintenance/${U}`], ['POST', `/api/admin/maintenance/${U}/end`]],
   destinations: [['PUT', `/api/admin/backup/destinations/${U}`], ['DELETE', `/api/admin/backup/destinations/${U}`], ['POST', `/api/admin/backup/destinations/${U}/test`], ['POST', `/api/admin/backup/destinations/${U}/sshkey`]],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
@@ -68,11 +70,12 @@ async function run() {
   // --- a stranger: everything but the login form needs a login ---
   let leaks = [];
   for (const [m, p] of ROUTES) {
-    if (p === '/api/login') continue;
+    if (p === '/api/login' || p === '/api/status') continue; // the status page is public by choice (below)
     const r = await call(m, p, { body: bodyFor(m) });
     if (r.status !== 401) leaks.push(`${m} ${p} → ${r.status}`);
   }
   ok(!leaks.length, `stranger: every API route answers 401${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
+  ok((await call('GET', '/api/status')).status === 404, 'stranger: the status page is not there until switched on');
   for (const [p, next] of [['/', ''], ['/services', '?next=services'], ['/energy', '?next=energy'], ['/admin', '?next=admin'], ['/docs', '?next=docs'], ['/updates', '?next=updates'], ['/guide.pdf', '?next=guide']]) {
     const r = await call('GET', p);
     ok(r.status === 303 && r.headers.get('location') === `/login${next}`, `stranger: ${p} sends to the login page`);
@@ -151,7 +154,7 @@ async function run() {
   const vcsrf = (await call('GET', '/api/session', { cookie: device })).json.csrf;
   leaks = [];
   for (const [m, p] of ROUTES) {
-    if (p === '/api/login' || VIEWER_OK.has(`${m} ${p}`)) continue;
+    if (p === '/api/login' || p === '/api/status' || VIEWER_OK.has(`${m} ${p}`)) continue;
     const res = await call(m, p, { cookie: device, csrf: vcsrf, body: bodyFor(m) });
     if (res.status !== 401) leaks.push(`${m} ${p} → ${res.status}`);
   }

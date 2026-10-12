@@ -290,7 +290,22 @@ function fillDashboard(d) {
   f.homeServices.value = d.homeServices;
   f.serviceAlerts.checked = d.serviceAlerts;
   for (const [k, v] of Object.entries(d.vms)) if (f[`vms.${k}`]) f[`vms.${k}`].checked = v;
+  const sp = $('sp-form').elements;
+  sp.enabled.checked = Boolean(d.statusPage?.enabled);
+  sp.title.value = d.statusPage?.title || '';
 }
+
+$('sp-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  try {
+    const r = await api('PUT', '/api/admin/settings', { dashboard: { ...state.settings.dashboard, statusPage: { enabled: f.enabled.checked, title: f.title.value } } });
+    state.settings = r.settings;
+    showMsg('sp-msg', f.enabled.checked ? 'Saved: the status page is public' : 'Saved: the status page is off', true);
+  } catch (e) {
+    showMsg('sp-msg', e.message, false);
+  }
+});
 
 async function saveSettings(msgId) {
   const d = $('dash-form').elements;
@@ -1491,7 +1506,247 @@ async function loadAlerts() {
   } catch (e) {
     showMsg('al-rules-msg', e.message, false);
   }
+  loadCheckins();
+  loadMaintenance();
 }
+
+// ---------------------------------------------------------------------------
+// Check-ins: a job calls its own address when it has run
+
+let ck = null; // { checkins, devices, httpPort }
+const EVERY = [5, 15, 30, 60, 120, 360, 720, 1440, 2880, 10080];
+const GRACE = [5, 15, 30, 60, 120, 360, 720, 1440];
+const minText = (m) => (m % 10080 === 0 ? `${m / 10080} week${m === 10080 ? '' : 's'}` : m % 1440 === 0 ? `${m / 1440} day${m === 1440 ? '' : 's'}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`);
+const CK_STATE = { new: ['Waiting for the first check-in', ''], up: ['OK', 'good'], late: ['Late', 'warning'], down: ['Missed', 'critical'], failed: ['Failed', 'critical'] };
+
+function pingUrls(c) {
+  const https = `${location.origin}${c.path}`;
+  const http = ck.httpPort ? `http://${location.hostname}${ck.httpPort === 80 ? '' : `:${ck.httpPort}`}${c.path}` : null;
+  return { https, http };
+}
+
+function copyButton(text, label = 'Copy') {
+  const b = el('button', { type: 'button', text: label });
+  b.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      b.textContent = 'Copied';
+    } catch {
+      b.textContent = 'Select and copy it';
+    }
+    setTimeout(() => (b.textContent = label), 1600);
+  });
+  return b;
+}
+
+async function loadCheckins() {
+  try {
+    ck = await api('GET', '/api/admin/checkins');
+    renderCheckins();
+  } catch (e) {
+    $('ck-list').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+function renderCheckins() {
+  const dev = (id) => ck.devices.find((d) => d.id === id)?.name;
+  $('ck-list').replaceChildren(...(ck.checkins.length ? ck.checkins.map((c) => {
+    const [label, tone] = CK_STATE[c.status.state];
+    const u = pingUrls(c);
+    const url = u.http || u.https;
+    const more = el('details', { class: 'ck-how' },
+      el('summary', { text: 'Address and how to use it' }),
+      el('div', { class: 'ck-url' }, el('code', { text: url }), copyButton(url)),
+      u.http && location.protocol === 'https:' ? el('p', { class: 'hint', text: `Plain HTTP on port ${ck.httpPort}, so curl works without trusting the dashboard's certificate. Over HTTPS it is ${u.https}` }) : null,
+      el('p', { class: 'hint', text: 'At the end of a job (cron, a backup script, a systemd timer):' }),
+      el('pre', { class: 'ck-code' }, el('code', { text: `your-backup-command && curl -fsS -m 10 --retry 3 ${url} \\\n  || curl -fsS -m 10 --retry 3 ${url}/fail` })),
+      el('p', { class: 'hint', text: 'Optional: call …/start when the job begins. Anyone with the address can check in, so treat it like a password; "New address" replaces it.' }));
+    return el('div', { class: 'svc-row ck-row' },
+      el('span', { class: `led ${tone || 'off'}`, 'aria-hidden': 'true' }),
+      el('div', { class: 'device-main' },
+        el('strong', { text: c.name }),
+        el('span', { class: 'small muted', text: [label, `every ${c.every}`, `grace ${c.grace}`, c.status.last ? `last ${fmt.ago(c.status.last)}` : null, dev(c.deviceId) ? `on ${dev(c.deviceId)}` : null].filter(Boolean).join(' · ') }),
+        more),
+      el('span'),
+      el('span', { class: 'svc-row-actions' },
+        ['down', 'failed'].includes(c.status.state) ? el('button', { type: 'button', text: 'Reset', title: 'Forget the missed or failed check-in', onclick: () => ckAction(`/api/admin/checkins/${c.id}/reset`, 'POST') }) : null,
+        el('button', { type: 'button', text: 'Edit', onclick: () => openCheckin(c) })));
+  }) : [el('p', { class: 'empty', text: 'No check-ins yet. Add one for each backup or scheduled job you want to hear about when it stops running.' })]));
+}
+
+async function ckAction(path, method, body) {
+  try {
+    ck = await api(method, path, body);
+    renderCheckins();
+    return true;
+  } catch (e) {
+    showMsg('ck-msg', e.message, false);
+    return false;
+  }
+}
+
+function openCheckin(c) {
+  const d = c ? { ...c } : { name: '', everyMin: 1440, graceMin: 60, deviceId: null };
+  const box = $('ck-editor');
+  const opts = (list, v) => [...new Set([...list, v])].sort((a, b) => a - b).map((m) => el('option', { value: m, text: minText(m) }));
+  const name = el('input', { value: d.name, maxlength: 48, placeholder: 'e.g. Nightly backup to NAS', required: true });
+  const every = el('select', null, opts(EVERY, d.everyMin));
+  every.value = d.everyMin;
+  const grace = el('select', null, opts(GRACE, d.graceMin));
+  grace.value = d.graceMin;
+  const devSel = el('select', null, el('option', { value: '', text: '–' }), ck.devices.map((x) => el('option', { value: x.id, text: x.name })));
+  devSel.value = d.deviceId || '';
+  const body = () => ({ name: name.value, everyMin: Number(every.value), graceMin: Number(grace.value), deviceId: devSel.value || null });
+  const close = () => {
+    box.classList.add('hidden');
+    box.replaceChildren();
+  };
+  box.replaceChildren(
+    el('h4', { text: c ? `Edit ${c.name}` : 'New check-in' }),
+    el('div', { class: 'form-grid two' },
+      el('label', null, el('span', { text: 'Name' }), name),
+      el('label', null, el('span', { text: 'Runs on' }), devSel, el('span', { class: 'hint', text: 'Optional: its problems then show on that device' })),
+      el('label', null, el('span', { text: 'Expected every' }), every),
+      el('label', null, el('span', { text: 'Grace time' }), grace, el('span', { class: 'hint', text: 'How late it may be before it counts as missed' }))),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: c ? 'Save' : 'Add check-in', onclick: async () => (await ckAction(c ? `/api/admin/checkins/${c.id}` : '/api/admin/checkins', c ? 'PUT' : 'POST', body())) && close() }),
+      el('button', { type: 'button', text: 'Cancel', onclick: close }),
+      c ? el('button', { type: 'button', text: 'New address', title: 'The old address stops working at once', onclick: () => confirm(`Give ${c.name} a new address? The job must then use the new one.`) && ckAction(`/api/admin/checkins/${c.id}/token`, 'POST') }) : null,
+      c ? el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: async () => confirm(`Delete the check-in ${c.name}?`) && (await ckAction(`/api/admin/checkins/${c.id}`, 'DELETE')) && close() }) : null,
+      el('span', { class: 'msg', id: 'ck-msg', role: 'status' })));
+  box.classList.remove('hidden');
+  name.focus();
+}
+$('ck-new').addEventListener('click', () => ck && openCheckin(null));
+
+// ---------------------------------------------------------------------------
+// Maintenance windows
+
+let mw = null; // { windows, devices, services, checkins }
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const LENGTHS = [30, 60, 120, 240, 480, 720, 1440];
+const at = (t) => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const hm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+// <input type="datetime-local"> wants local time without a zone
+const localInput = (t) => {
+  const d = new Date(t - new Date(t).getTimezoneOffset() * 60e3);
+  return d.toISOString().slice(0, 16);
+};
+
+async function loadMaintenance() {
+  try {
+    mw = await api('GET', '/api/admin/maintenance');
+    renderMaintenance();
+  } catch (e) {
+    $('mw-list').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+function targetsText(t) {
+  if (t.all) return 'Everything';
+  const names = [
+    ...t.devices.map((id) => mw.devices.find((x) => x.id === id)?.name),
+    ...t.services.map((id) => mw.services.find((x) => x.id === id)?.name),
+    ...t.checkins.map((id) => mw.checkins.find((x) => x.id === id)?.name),
+  ].filter(Boolean);
+  return names.length > 4 ? `${names.slice(0, 4).join(', ')} and ${names.length - 4} more` : names.join(', ');
+}
+
+function renderMaintenance() {
+  $('mw-list').replaceChildren(...(mw.windows.length ? mw.windows.map((w) => el('div', { class: 'svc-row' },
+    el('span', { class: `led ${w.active ? 'info' : 'off'}`, 'aria-hidden': 'true' }),
+    el('div', { class: 'device-main' },
+      el('strong', { text: w.name }),
+      el('span', { class: 'small muted', text: [w.active ? `On now, until ${hm(w.until)}` : w.next ? `Next ${at(w.next.start)}` : 'Over', targetsText(w.targets), w.schedule.kind === 'weekly' ? w.text : null].filter(Boolean).join(' · ') })),
+    el('span'),
+    el('span', { class: 'svc-row-actions' },
+      w.active ? el('button', { type: 'button', text: 'End now', onclick: () => mwAction(`/api/admin/maintenance/${w.id}/end`, 'POST') }) : null,
+      el('button', { type: 'button', text: 'Edit', onclick: () => openMaintenance(w) })))) : [el('p', { class: 'empty', text: 'No maintenance planned.' })]));
+}
+
+async function mwAction(path, method, body) {
+  try {
+    mw = await api(method, path, body);
+    renderMaintenance();
+    return true;
+  } catch (e) {
+    showMsg('mw-msg', e.message, false);
+    return false;
+  }
+}
+
+function openMaintenance(w) {
+  const now = Date.now();
+  const d = w ? structuredClone(w) : { name: '', targets: { all: false, devices: [], services: [], checkins: [] }, schedule: { kind: 'now' } };
+  const box = $('mw-editor');
+  const name = el('input', { value: d.name, maxlength: 48, placeholder: 'e.g. Proxmox upgrade', required: true });
+  // what: everything, or ticked devices, services and check-ins
+  const all = el('input', { type: 'checkbox', checked: d.targets.all });
+  const picks = { devices: new Set(d.targets.devices), services: new Set(d.targets.services), checkins: new Set(d.targets.checkins) };
+  const group = (key, title, list) => (list.length ? el('fieldset', { class: 'mw-group' }, el('legend', { text: title }), list.map((x) => {
+    const cb = el('input', { type: 'checkbox', checked: picks[key].has(x.id) });
+    cb.addEventListener('change', () => (cb.checked ? picks[key].add(x.id) : picks[key].delete(x.id)));
+    return el('label', { class: 'check' }, cb, ` ${x.name}`);
+  })) : null);
+  const pickBox = el('div', { class: 'mw-picks' }, group('devices', 'Devices', mw.devices), group('services', 'Services', mw.services), group('checkins', 'Check-ins', mw.checkins));
+  const syncAll = () => pickBox.classList.toggle('hidden', all.checked);
+  all.addEventListener('change', syncAll);
+  syncAll();
+  // when: now for a while, once, or every week
+  const kind = el('select', null, [['now', 'Starting now'], ['once', 'Once'], ['weekly', 'Every week']].map(([v, t]) => el('option', { value: v, text: t })));
+  kind.value = d.schedule.kind;
+  const forLen = el('select', null, LENGTHS.map((m) => el('option', { value: m, text: `for ${minText(m)}` })));
+  forLen.value = 120;
+  const start = el('input', { type: 'datetime-local', value: localInput(d.schedule.kind === 'once' ? d.schedule.start : now + 3600e3) });
+  const end = el('input', { type: 'datetime-local', value: localInput(d.schedule.kind === 'once' ? d.schedule.end : now + 3 * 3600e3) });
+  const days = new Set(d.schedule.kind === 'weekly' ? d.schedule.days : [6]);
+  const dayBox = el('div', { class: 'seg mw-days', role: 'group', 'aria-label': 'Days' }, DAYS.map((t, i) => {
+    const b = el('button', { type: 'button', text: t, 'aria-pressed': String(days.has(i)) });
+    b.addEventListener('click', () => {
+      days.has(i) ? days.delete(i) : days.add(i);
+      b.setAttribute('aria-pressed', String(days.has(i)));
+    });
+    return b;
+  }));
+  const time = el('input', { type: 'time', value: d.schedule.kind === 'weekly' ? d.schedule.start : '02:00' });
+  const wkLen = el('select', null, [...new Set([...LENGTHS, d.schedule.minutes].filter(Boolean))].sort((a, b) => a - b).map((m) => el('option', { value: m, text: minText(m) })));
+  wkLen.value = d.schedule.kind === 'weekly' ? d.schedule.minutes : 120;
+  const when = el('div', { class: 'form-grid two' });
+  const syncKind = () => when.replaceChildren(...{
+    now: [el('label', null, el('span', { text: 'How long' }), forLen)],
+    once: [el('label', null, el('span', { text: 'From' }), start), el('label', null, el('span', { text: 'To' }), end)],
+    weekly: [el('label', { class: 'wide' }, el('span', { text: 'Days' }), dayBox), el('label', null, el('span', { text: 'Starts at' }), time), el('label', null, el('span', { text: 'Lasts' }), wkLen)],
+  }[kind.value]);
+  kind.addEventListener('change', syncKind);
+  syncKind();
+  const body = () => ({
+    name: name.value,
+    targets: { all: all.checked, devices: [...picks.devices], services: [...picks.services], checkins: [...picks.checkins] },
+    schedule: kind.value === 'now' ? { kind: 'once', start: Date.now(), end: Date.now() + Number(forLen.value) * 60e3 }
+      : kind.value === 'once' ? { kind: 'once', start: new Date(start.value).getTime(), end: new Date(end.value).getTime() }
+        : { kind: 'weekly', days: [...days], start: time.value, minutes: Number(wkLen.value) },
+  });
+  const close = () => {
+    box.classList.add('hidden');
+    box.replaceChildren();
+  };
+  box.replaceChildren(
+    el('h4', { text: w ? `Edit ${w.name}` : 'Plan maintenance' }),
+    el('div', { class: 'form-grid two' },
+      el('label', { class: 'wide' }, el('span', { text: 'Name' }), name),
+      el('label', { class: 'check wide' }, all, ' Everything (all devices, services and check-ins)')),
+    pickBox,
+    el('div', { class: 'form-grid two' }, el('label', null, el('span', { text: 'When' }), kind)),
+    when,
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: w ? 'Save' : 'Plan', onclick: async () => (await mwAction(w ? `/api/admin/maintenance/${w.id}` : '/api/admin/maintenance', w ? 'PUT' : 'POST', body())) && close() }),
+      el('button', { type: 'button', text: 'Cancel', onclick: close }),
+      w ? el('button', { type: 'button', class: 'danger', text: 'Delete', onclick: async () => confirm(`Delete ${w.name}?`) && (await mwAction(`/api/admin/maintenance/${w.id}`, 'DELETE')) && close() }) : null,
+      el('span', { class: 'msg', id: 'mw-msg', role: 'status' })));
+  box.classList.remove('hidden');
+  name.focus();
+}
+$('mw-new').addEventListener('click', () => mw && openMaintenance(null));
 
 const chanSummary = (c) => (c.type === 'ntfy' ? `${c.url.replace(/^https:\/\//, '')}/${c.topic}`
   : c.type === 'telegram' ? `chat ${c.chatId}`
