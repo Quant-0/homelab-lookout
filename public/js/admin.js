@@ -646,6 +646,14 @@ function openDevice(dev, preset = {}) {
     el('option', { value: 'none', text: 'Nothing (directly reachable)' }),
     el('optgroup', { label: 'Devices' }, state.devices.filter((x) => x.id !== draft.id && !x.hidden).sort((a, b) => a.name.localeCompare(b.name)).map((x) => el('option', { value: x.id, text: x.name }))));
   f.parent.value = draft.parent || '';
+  const lim = state.alertLimits || {};
+  f.alertMute.checked = draft.alerts?.mute === true;
+  f.alertPct.value = draft.alerts?.spacePct ?? '';
+  f.alertPct.placeholder = lim.pct ?? '';
+  f.alertDiskC.value = draft.alerts?.diskC ?? '';
+  f.alertDiskC.placeholder = lim.diskC ?? '';
+  f.alertOtherC.value = draft.alerts?.otherC ?? '';
+  f.alertOtherC.placeholder = lim.otherC ?? '';
   $('device-editor-title').textContent = dev ? `Edit ${dev.name}` : 'Add device';
   $('device-catalog-hint').textContent = draft.catalogNote || '';
   $('device-origin').textContent = dev?.discovered
@@ -680,6 +688,8 @@ function syncDraft() {
   draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
   if (f.powerSource.value) draft.powerSource = f.powerSource.value;
   draft.parent = f.parent.value || null;
+  const n = (x) => (x.value === '' ? null : Number(x.value));
+  draft.alerts = { mute: f.alertMute.checked, spacePct: n(f.alertPct), diskC: n(f.alertDiskC), otherC: n(f.alertOtherC) };
   draft.model = f.brand.value.trim() || f.modelName.value.trim() ? { brand: f.brand.value.trim(), name: f.modelName.value.trim() } : null;
   draft.front = { model: f.frontModel.value || 'auto', drives: f.frontDrives.value || 'auto' };
   for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
@@ -1028,7 +1038,7 @@ $('device-form').addEventListener('submit', async (ev) => {
   syncDraft();
   const d = draft;
   const body = {
-    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, powerSource: d.powerSource || 'auto', parent: d.parent || null, hidden: false, front: d.front, model: d.model,
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, powerSource: d.powerSource || 'auto', parent: d.parent || null, hidden: false, front: d.front, model: d.model, alerts: d.alerts,
     connections: d.connections.map((c) => ({
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
       options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,
@@ -1140,6 +1150,7 @@ function openService(svc) {
   f.description.value = svcDraft.description;
   f.href.value = svcDraft.href;
   f.onHome.checked = svcDraft.onHome !== false;
+  f.muted.checked = svcDraft.muted === true;
   $('svc-device').replaceChildren(el('option', { value: '', text: '–' }), ...svcState.devices.map((d) => el('option', { value: d.id, text: d.name })));
   f.deviceId.value = svcDraft.deviceId || '';
   f.url.value = svcDraft.connection?.url || '';
@@ -1321,6 +1332,7 @@ function serviceBody() {
     href: f.href.value,
     deviceId: f.deviceId.value || null,
     onHome: f.onHome.checked,
+    muted: f.muted.checked,
     icon: svcDraft.icon,
     connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
     monitor: f.monitor.value === 'http'

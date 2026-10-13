@@ -2276,3 +2276,12 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .push-subs li > span:first-child { display: flex; gap: 8px; align-items: center; }
 .push-subs li > .small { grid-column: 1; }
 .push-subs li > button { grid-column: 2; grid-row: 1 / span 2; }
+
+/* Admin → Devices: alerts for one device */
+.dev-alerts { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px 4px; margin: 0 0 12px; }
+.dev-alerts legend { font-size: 12px; color: var(--text-2); padding: 0 4px; }
+.dev-alerts label.check { margin: 6px 0 10px; }
+.dev-alerts .form-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 14px; }
+.dev-alerts .hint { margin: 8px 0 6px; }
+.d-alerts { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; }
+.d-alerts svg { width: 14px; height: 14px; flex: none; }

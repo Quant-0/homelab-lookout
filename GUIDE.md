@@ -250,6 +250,13 @@ More on devices:
   - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
   - **Drive bays** on *Automatic* follow the drives the management controller reports. Change it if your server has a different backplane than the drives suggest.
 
+#### Alerts for this device
+
+- **Mute** stops messages for the device, and for the services and check-ins that belong to it. Its problems still show on Home (marked *Alerts muted*), in the device's details and under Log → Incidents. Use it for a test machine or something you know is broken. For a planned job, use a [maintenance window](#maintenance) instead.
+- **Full at**, **Disks hot at** and **Other sensors at** are limits for this device only. Leave a field empty to use the limit under Alerts (shown greyed). A limit set here also wins over the iDRAC's own warning level. The device's details say which limits are its own.
+
+A service has its own **Mute alerts** box (in the service editor) that works the same way.
+
 #### Reached through (dependencies)
 
 Each device has **Reached through**: the switch, gateway or host it depends on. **Automatic** uses what UniFi reports (an access point hangs off the switch it is plugged into, a switch off the gateway); for servers and anything else choose it yourself, for example the core switch, or the Proxmox host for a device that is a VM. **Nothing** means it is reached directly.

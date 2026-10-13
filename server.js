@@ -930,7 +930,14 @@ function validateDeviceFields(b, selfId) {
       if (selfId && (p.id === selfId || ancestorsOf(p).some((x) => x.id === selfId))) throw new UserError(`Reached through: ${p.name} is itself reached through this device`);
     }
   }
-  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.powerSource !== undefined ? { powerSource: b.powerSource } : {}), ...(b.parent !== undefined ? { parent } : {}), ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.powerSource !== undefined ? { powerSource: b.powerSource } : {}), ...(b.parent !== undefined ? { parent } : {}), ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}), ...(b.alerts !== undefined ? { alerts: validateDeviceAlerts(b.alerts) } : {}) };
+}
+
+// Alert settings of one device: muted, and limits of its own (null: the ones under Alerts)
+function validateDeviceAlerts(a) {
+  const opt = (v, min, max, label) => (v === null || v === undefined || v === '' ? null : num(v, min, max, label, { int: true }));
+  const out = { mute: a?.mute === true, spacePct: opt(a?.spacePct, 50, 99, 'Full at'), diskC: opt(a?.diskC, 30, 90, 'Disks at'), otherC: opt(a?.otherC, 30, 120, 'Other sensors at') };
+  return out.mute || out.spacePct !== null || out.diskC !== null || out.otherC !== null ? out : null;
 }
 
 // Creates or updates a connection from request data. A changed address, user name or pinned
@@ -4115,6 +4122,7 @@ function validateServiceInput(b) {
     href: validateLink(b.href),
     deviceId: b.deviceId && config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : null,
     onHome: b.onHome !== false,
+    muted: b.muted === true, // no alerts sent for it
     icon: b.icon?.kind === 'file' && config.icons.some((i) => i.id === b.icon.id) ? { kind: 'file', id: b.icon.id } : { kind: 'letter' },
     connection: null,
     monitor: validateMonitor(b.monitor),
@@ -6318,6 +6326,7 @@ function sendPage(res, key, session, edit = (html) => html) {
 // software versions, which tell an attacker what to try. Names and status stay.
 function forVisitors(payload) {
   payload.notices = []; // they carry the public IP
+  payload.devices = payload.devices.map((d) => ({ ...d, alerts: null }));
   payload.attention = payload.attention.map((a) => ({ ...a, incidentId: null, ack: a.ack ? { at: a.ack.at } : null })); // not who
   payload.unifi = payload.unifi.map((h) => (h.data ? {
     ...h,
@@ -6364,7 +6373,7 @@ function attentionList() {
     return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity), maintenance: win ? { name: win.name, until: win.until } : null,
       behind: deps.behind.has(key) ? { deviceId: deps.behind.get(key).id, name: deps.behind.get(key).name } : null,
       behindCount: c.type === 'offline' && deviceId && deps.byRoot.has(deviceId) ? deps.byRoot.get(deviceId).length : 0,
-      incidentId: openIncidentFor(key)?.id || null, ack: openIncidentFor(key)?.ack || null };
+      incidentId: openIncidentFor(key)?.id || null, ack: openIncidentFor(key)?.ack || null, muted: mutedFor(c) };
   }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
     .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
 }
@@ -6460,6 +6469,7 @@ function dashboardPayload() {
       powerFrom: powerSourceOf(d).kind, // what it is read from now
       parent: d.parent || null, // a device id, 'none', or null = automatic (UniFi uplink)
       reachedThrough: parentOf(d)?.id || null,
+      alerts: d.alerts || null, // muted, own limits (signed in only)
       front: d.front || null,
       model: d.model || null,
       unifi: d.unifi,
@@ -6726,6 +6736,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/admin/config' && m === 'GET') {
     return sendJson(res, 200, {
       settings: config.settings,
+      alertLimits: limitsFor(null), // the general ones, for "own limits" on a device
       hosts: config.hosts.map((h) => {
         const r = results.get(h.id);
         return {
@@ -8716,6 +8727,22 @@ function saveAlertState() {
   alertsDirty = false;
 }
 
+// A device's own alert limits (Admin → Devices → Alerts), else the general ones
+function limitsFor(deviceId) {
+  const own = (deviceId && config.devices.find((d) => d.id === deviceId)?.alerts) || {};
+  const { temperature: t, space } = config.alerts.rules;
+  return { own, pct: own.spacePct ?? space.pct, diskC: own.diskC ?? t.diskC, otherC: own.otherC ?? t.otherC };
+}
+
+// Alerts muted on a device (and so its services and check-ins) or on a service: shown, never sent
+function mutedFor(c) {
+  const host = config.hosts.find((h) => h.id === c.owner);
+  const svc = config.services.find((x) => x.id === c.owner);
+  const chk = config.checkins.find((x) => x.id === c.owner);
+  const dev = c.device || host?.deviceId || svc?.deviceId || chk?.deviceId || null;
+  return Boolean(svc?.muted || (dev && config.devices.find((d) => d.id === dev)?.alerts?.mute));
+}
+
 // Everything that is wrong right now: Map of key -> { type, severity, title, detail, owner, fromData }
 // `all`: for the dashboard's "needs attention" list, every kind counts whether or not notifications
 // are on (except the power limit, which only exists when you set it).
@@ -8727,7 +8754,7 @@ function alertConditions(all = false) {
   };
   // Over a limit; once active it only clears below the limit minus a margin, so it doesn't flap
   const over = (type, id, value, limit, margin) => typeof value === 'number' && (value >= limit || (Boolean(alertState.active[`${type}:${id}`]) && value > limit - margin));
-  const { temperature: temp, space } = rules;
+  const { temperature: temp } = rules;
   const pct = (used, size) => (size ? (100 * used) / size : null);
   for (const h of config.hosts) {
     const r = results.get(h.id);
@@ -8737,6 +8764,7 @@ function alertConditions(all = false) {
     if (!r?.ok && !inGrace(r)) continue; // meanwhile its last reading still counts
     const d = r.data;
     const own = h.id;
+    const lim = limitsFor(h.deviceId);
     if (h.type === 'idrac') {
       let specific = false;
       for (const p of d.psus) {
@@ -8757,7 +8785,7 @@ function alertConditions(all = false) {
       }
       if (d.health === 'Critical' && !specific) add('hardware', `${h.id}:system`, 'critical', `${name}: the management controller reports critical health`, '', own);
       for (const t of d.temps) {
-        const limit = t.warn ?? temp.otherC;
+        const limit = lim.own.otherC ?? t.warn ?? temp.otherC; // a limit set on the device wins over the iDRAC's own
         if (over('temperature', `${h.id}:${t.name}`, t.celsius, limit, 3))
           add('temperature', `${h.id}:${t.name}`, t.crit && t.celsius >= t.crit ? 'critical' : 'warning', `${name}: ${t.name} at ${t.celsius} °C`, `Limit ${limit} °C${t.crit ? `, critical at ${t.crit} °C` : ''}`, own);
       }
@@ -8769,7 +8797,7 @@ function alertConditions(all = false) {
       const ours = (nodeName) => !mine || !nodeName || nodeName === mine;
       const full = (key, what, used, size) => {
         const f = pct(used, size);
-        if (over('space', `${h.id}:${key}`, f, space.pct, 2)) add('space', `${h.id}:${key}`, 'warning', `${name}: ${what} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+        if (over('space', `${h.id}:${key}`, f, lim.pct, 2)) add('space', `${h.id}:${key}`, 'warning', `${name}: ${what} is ${Math.round(f)} % full`, `Limit ${lim.pct} %`, own);
       };
       for (const st of d.storage || []) if (ours(st.node)) full(`st:${st.node || ''}:${st.name}`, `storage ${st.name}`, st.used, st.size);
       for (const n of d.nodes.filter((x) => ours(x.name))) {
@@ -8812,7 +8840,7 @@ function alertConditions(all = false) {
       for (const p of d.pools) {
         if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, 'critical', `${name}: pool ${p.name} is ${p.status}`, p.detail || '', own);
         const f = pct(p.allocated, p.size);
-        if (over('space', `${h.id}:${p.name}`, f, space.pct, 2)) add('space', `${h.id}:${p.name}`, 'warning', `${name}: pool ${p.name} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+        if (over('space', `${h.id}:${p.name}`, f, lim.pct, 2)) add('space', `${h.id}:${p.name}`, 'warning', `${name}: pool ${p.name} is ${Math.round(f)} % full`, `Limit ${lim.pct} %`, own);
       }
       for (const a of d.alerts) {
         const crit = ['CRITICAL', 'ERROR', 'ALERT', 'EMERGENCY'].includes(a.level);
@@ -8824,16 +8852,16 @@ function alertConditions(all = false) {
       if (s.systemFan === 'Failed') add('hardware', `${h.id}:fan:system`, 'critical', `${name}: system fan failed`, '', own);
       if (s.cpuFan === 'Failed') add('hardware', `${h.id}:fan:cpu`, 'critical', `${name}: CPU fan failed`, '', own);
       if (s.powerStatus === 'Failed') add('hardware', `${h.id}:power`, 'critical', `${name}: power supply failed`, '', own);
-      if (over('temperature', `${h.id}:system`, s.temp, temp.otherC, 3)) add('temperature', `${h.id}:system`, 'warning', `${name}: system at ${s.temp} °C`, `Limit ${temp.otherC} °C`, own);
+      if (over('temperature', `${h.id}:system`, s.temp, lim.otherC, 3)) add('temperature', `${h.id}:system`, 'warning', `${name}: system at ${s.temp} °C`, `Limit ${lim.otherC} °C`, own);
       for (const x of d.disks) {
         const crit = ['Critical', 'Failing'].includes(x.health) || x.status === 'Crashed';
         if (crit || x.health === 'Warning') add('storage', `${h.id}:disk:${x.id}`, crit ? 'critical' : 'warning', `${name}: ${x.id} ${x.status === 'Crashed' ? 'crashed' : x.health.toLowerCase()}`, x.model || '', own);
-        if (over('temperature', `${h.id}:disk:${x.id}`, x.temp, temp.diskC, 3)) add('temperature', `${h.id}:disk:${x.id}`, 'warning', `${name}: ${x.id} at ${x.temp} °C`, `Limit ${temp.diskC} °C`, own);
+        if (over('temperature', `${h.id}:disk:${x.id}`, x.temp, lim.diskC, 3)) add('temperature', `${h.id}:disk:${x.id}`, 'warning', `${name}: ${x.id} at ${x.temp} °C`, `Limit ${lim.diskC} °C`, own);
       }
       for (const p of d.pools) if (!p.healthy) add('storage', `${h.id}:pool:${p.name}`, /Crashed/.test(p.status) ? 'critical' : 'warning', `${name}: ${p.name} is ${p.status}`, '', own);
       for (const v of d.volumes) {
         const f = pct(v.used, v.size);
-        if (over('space', `${h.id}:${v.name}`, f, space.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name.replace('/', '')} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+        if (over('space', `${h.id}:${v.name}`, f, lim.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name.replace('/', '')} is ${Math.round(f)} % full`, `Limit ${lim.pct} %`, own);
       }
     } else if (h.type === 'snmp' || h.type === 'nut') {
       const u = d.ups;
@@ -8842,7 +8870,7 @@ function alertConditions(all = false) {
       if (u?.replaceBattery) add('hardware', `${h.id}:ups:replace`, 'warning', `${name}: UPS battery needs replacing`, '', own);
       for (const v of d.volumes || []) {
         const f = pct(v.used, v.size);
-        if (over('space', `${h.id}:${v.name}`, f, space.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name} is ${Math.round(f)} % full`, `Limit ${space.pct} %`, own);
+        if (over('space', `${h.id}:${v.name}`, f, lim.pct, 2)) add('space', `${h.id}:${v.name}`, 'warning', `${name}: ${v.name} is ${Math.round(f)} % full`, `Limit ${lim.pct} %`, own);
       }
     } else if (h.type === 'omada') {
       const dev = config.devices.find((x) => x.id === h.deviceId);
@@ -8857,7 +8885,8 @@ function alertConditions(all = false) {
         const dn = dev?.name || x.name;
         if (!x.online) add('offline', `${h.id}:${x.mac}`, 'critical', `${dn} is ${String(x.state || 'offline').toLowerCase()}`, 'Reported by UniFi', own, true, dev?.id);
         const t = x.temps.length ? Math.max(...x.temps.map((v) => v.value)) : null;
-        if (over('temperature', `${h.id}:${x.mac}`, t, temp.otherC, 3)) add('temperature', `${h.id}:${x.mac}`, 'warning', `${dn} at ${t} °C`, `Limit ${temp.otherC} °C`, own, true, dev?.id);
+        const limU = limitsFor(dev?.id || h.deviceId);
+        if (over('temperature', `${h.id}:${x.mac}`, t, limU.otherC, 3)) add('temperature', `${h.id}:${x.mac}`, 'warning', `${dn} at ${t} °C`, `Limit ${limU.otherC} °C`, own, true, dev?.id);
       }
     }
   }
@@ -8899,7 +8928,7 @@ async function evaluateAlertsNow(now) {
     const { rules, settings } = config.alerts;
     // in a maintenance window: nothing is sent, and nothing starts counting towards its wait
     const wins = activeMaintenance(now);
-    const quiet = new Set([...cond].filter(([, c]) => maintenanceFor(c, wins)).map(([k]) => k));
+    const quiet = new Set([...cond].filter(([, c]) => maintenanceFor(c, wins) || mutedFor(c)).map(([k]) => k));
     // behind a device that is down: no alert of their own; the device's alert names them
     const deps = dependencyCauses(cond);
     for (const k of deps.behind.keys()) quiet.add(k);

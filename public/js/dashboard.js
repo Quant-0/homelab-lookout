@@ -1041,6 +1041,10 @@ function deviceDetail(info) {
       status(stateText, stateCls)),
     info.issues.map((a) => el('div', { class: `callout ${a.severity}` }, el('b', { text: a.text }), a.detail ? HD.clampText(a.detail) : null, a.since ? el('span', { class: 'small muted', text: sinceText(a.since) === 'just now' ? 'Just now' : `For ${sinceText(a.since)}` }) : null)),
     info.metrics.length ? el('div', { class: 'metrics' }, keyMetrics(dev, info.ctx, 8).map(metricNode)) : null,
+    dev.alerts ? el('p', { class: 'small muted d-alerts' }, HD.icon('bell'), [
+      dev.alerts.mute ? 'Alerts muted' : null,
+      [dev.alerts.spacePct != null ? `full at ${dev.alerts.spacePct} %` : null, dev.alerts.diskC != null ? `disks hot at ${dev.alerts.diskC} °C` : null, dev.alerts.otherC != null ? `sensors at ${dev.alerts.otherC} °C` : null].filter(Boolean).join(', ').replace(/^./, (ch) => `Own limits: ${ch}`) || null,
+    ].filter(Boolean).join(' · ')) : null,
     el('div', { class: 'sect-head' }, HD.rangeTabs()),
     info.secs.map((x) => sectionNode(x)),
     signed || info.update ? el('div', { class: 'detail-actions' },
@@ -1331,7 +1335,7 @@ function needRow(a, d) {
     el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
       el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null,
       a.behindCount ? el('span', { class: 'why', text: `${a.behindCount} more behind it, listed below` }) : null),
-    a.maintenance ? el('time', { text: 'Maintenance' }) : a.behind ? el('time', { text: `Behind ${a.behind.name}` }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.ack ? el('time', { text: a.ack.by ? `Acknowledged${a.ack.by === 'link' ? '' : ` by ${a.ack.by}`}` : 'Acknowledged' }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
+    a.maintenance ? el('time', { text: 'Maintenance' }) : a.behind ? el('time', { text: `Behind ${a.behind.name}` }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.ack ? el('time', { text: a.ack.by ? `Acknowledged${a.ack.by === 'link' ? '' : ` by ${a.ack.by}`}` : 'Acknowledged' }) : a.muted ? el('time', { text: 'Alerts muted', title: 'No messages are sent for it (set on the device or service in Admin)' }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
   ];
   let row;
   if (a.deviceId && infos.some((x) => x.id === a.deviceId)) row = el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);

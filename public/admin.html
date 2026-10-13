@@ -127,6 +127,16 @@
               <div class="conn-list" id="conn-list"></div>
               <label class="add-conn"><span>Add connection</span><select id="conn-add"></select></label>
               <label><span>Reached through</span><select name="parent" id="device-parent"></select><span class="hint">The switch, gateway or host it depends on. When that is down, this device's problems are grouped under it: one alert instead of many.</span></label>
+              <fieldset class="dev-alerts">
+                <legend>Alerts for this device</legend>
+                <label class="check wide"><input type="checkbox" name="alertMute"> Mute: problems still show on Home and in the log, but no messages are sent (also for its services and check-ins)</label>
+                <div class="form-grid">
+                  <label><span>Full at (%)</span><input name="alertPct" type="number" min="50" max="99" step="1"></label>
+                  <label><span>Disks hot at (°C)</span><input name="alertDiskC" type="number" min="30" max="90" step="1"></label>
+                  <label><span>Other sensors at (°C)</span><input name="alertOtherC" type="number" min="30" max="120" step="1"></label>
+                </div>
+                <p class="hint">Leave a limit empty to use the one under Alerts (shown greyed). A limit here also wins over the iDRAC's own warning level.</p>
+              </fieldset>
               <label><span>Power reading from</span><select name="powerSource" id="device-power"></select><span class="hint" id="device-power-hint"></span></label>
               <label><span>Estimated power (W)</span><input name="estimateW" type="number" min="0" max="5000" step="1" placeholder="Leave empty if measured"><span class="hint" id="device-est-hint"></span></label>
               <div class="form-actions">
@@ -154,6 +164,7 @@
             <label><span>Link (opened when you click the card)</span><input name="href" placeholder="https://jellyfin.example.lan"></label>
             <label><span>Runs on</span><select name="deviceId" id="svc-device"></select></label>
             <label class="check wide"><input type="checkbox" name="onHome"> Show on Home (and the wall display), not only on the Services tab</label>
+            <label class="check wide"><input type="checkbox" name="muted"> Mute alerts: it still shows when it is down, but no messages are sent</label>
           </div>
           <datalist id="svc-groups"></datalist>
           <h4>Icon</h4>
