@@ -1986,7 +1986,7 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .snooze .icon { width: 17px; height: 17px; }
 .snooze:hover, .snooze[aria-expanded="true"] { border-color: var(--border); background: var(--surface-2); color: var(--text); }
 .snooze-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: grid; gap: 2px; min-width: 168px; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); }
-.snooze-menu button { justify-content: flex-start; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 13.5px; }
+.snooze-menu button { justify-content: flex-start; white-space: nowrap; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 13.5px; }
 .snooze-menu button:hover, .snooze-menu button:focus-visible { background: var(--surface-2); }
 .snooze-error { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; white-space: nowrap; padding: 5px 9px; border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-lg); color: var(--critical); font-size: 12.5px; }
 .need.snoozed { opacity: 0.62; }
@@ -2250,3 +2250,21 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .ct-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 13px; }
 .ct-chip.bad { border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
 @media (max-width: 1000px) { .ct-head, .ct-row { grid-template-columns: 1fr 1fr; } }
+
+/* Log → Incidents */
+.log-view { margin: 0 0 14px; align-self: flex-start; display: inline-flex; }
+.log-view button { flex: none; padding: 0 16px; }
+.inc-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.inc-summary .pill { cursor: default; }
+.log-entry.inc { grid-template-columns: 5.2em 28px minmax(0, 1fr) auto; align-items: center; }
+.log-entry.inc time { padding-top: 0; }
+.log-entry.inc .inc-dot { margin: 0 6px; }
+@media (max-width: 720px) {
+  .log-entry.inc { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .log-entry.inc .inc-dot { grid-row: 1; }
+  .log-entry.inc .log-body { grid-column: 2; grid-row: 1; }
+  .log-entry.inc > button { grid-column: 3; grid-row: 1 / span 2; }
+}
+.log-entry.inc.quiet { opacity: 0.6; }
+.ack-page h2 { font-size: 18px; margin-top: 4px; }
+.ack-page form { margin-top: 6px; }

@@ -58,6 +58,7 @@ const patterned = {
   checkins: [['PUT', `/api/admin/checkins/${U}`], ['DELETE', `/api/admin/checkins/${U}`], ['POST', `/api/admin/checkins/${U}/token`], ['POST', `/api/admin/checkins/${U}/reset`]],
   maintenance: [['PUT', `/api/admin/maintenance/${U}`], ['DELETE', `/api/admin/maintenance/${U}`], ['POST', `/api/admin/maintenance/${U}/end`]],
   destinations: [['PUT', `/api/admin/backup/destinations/${U}`], ['DELETE', `/api/admin/backup/destinations/${U}`], ['POST', `/api/admin/backup/destinations/${U}/test`], ['POST', `/api/admin/backup/destinations/${U}/sshkey`]],
+  incidents: [['POST', '/api/admin/incidents/00000000000000aa/ack']],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
 const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);

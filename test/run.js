@@ -148,6 +148,7 @@ async function main() {
     { file: 'test/checks.test.js', fresh: true },
     { file: 'test/dependencies.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', CHECKIN_MINUTE_MS: '1000' } },
     { file: 'test/docker.test.js', fresh: true },
+    { file: 'test/incidents.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', REMIND_HOUR_MS: '2000' } },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/sessions-restart.test.js', fresh: false },
     { file: 'test/hardening.test.js', fresh: true, env: { OPEN_LIMIT_PER_MIN: '8', BACKUP_DIR: backupBase } },
@@ -175,7 +176,7 @@ async function main() {
     }
     const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed, 'energy.ui.js': require('./energy.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
-      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' } }[f], skip: !playwright && 'Playwright not installed' });
+      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' } }[f], skip: !playwright && 'Playwright not installed' });
   }
 
   let passed = 0;

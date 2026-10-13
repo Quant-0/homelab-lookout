@@ -274,6 +274,7 @@
             <label><span>Title</span><input name="title" maxlength="60"></label>
             <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
             <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
+            <label class="wide"><span>Address for links in alert messages</span><input name="linkUrl" maxlength="200" placeholder="This server’s own address when empty" autocomplete="off" spellcheck="false"></label>
             <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
           </div>
           <div class="carrier-pick" id="carrier-pick"></div>

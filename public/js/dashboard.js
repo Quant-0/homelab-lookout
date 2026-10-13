@@ -1331,7 +1331,7 @@ function needRow(a, d) {
     el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
       el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null,
       a.behindCount ? el('span', { class: 'why', text: `${a.behindCount} more behind it, listed below` }) : null),
-    a.maintenance ? el('time', { text: 'Maintenance' }) : a.behind ? el('time', { text: `Behind ${a.behind.name}` }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
+    a.maintenance ? el('time', { text: 'Maintenance' }) : a.behind ? el('time', { text: `Behind ${a.behind.name}` }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.ack ? el('time', { text: a.ack.by ? `Acknowledged${a.ack.by === 'link' ? '' : ` by ${a.ack.by}`}` : 'Acknowledged' }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
   ];
   let row;
   if (a.deviceId && infos.some((x) => x.id === a.deviceId)) row = el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
@@ -1359,7 +1359,18 @@ function snoozeControl(a, d) {
     box = el('div', { class: 'snooze-box' }, el('button', { type: 'button', class: 'snooze', title: 'Show it again', 'aria-label': `Show again: ${a.subject || ''} ${a.text}`, onclick: () => send(0) }, HD.icon('bell')));
     return box;
   }
+  const ack = async () => {
+    for (const m of document.querySelectorAll('.snooze-menu')) m.hidden = true;
+    try {
+      await HD.api('POST', `/api/admin/incidents/${a.incidentId}/ack`);
+      a.ack = { at: Date.now(), by: d.user || 'you' };
+      renderNeeds(d);
+    } catch (e) {
+      box?.append(el('span', { class: 'snooze-error', role: 'alert', text: e.message }));
+    }
+  };
   const menu = el('div', { class: 'snooze-menu', role: 'menu', hidden: true },
+    a.incidentId && !a.ack ? el('button', { type: 'button', role: 'menuitem', text: 'Acknowledge', title: 'Someone is on it: no more reminders', onclick: ack }) : null,
     el('button', { type: 'button', role: 'menuitem', text: 'Snooze 1 day', onclick: () => send(1) }),
     el('button', { type: 'button', role: 'menuitem', text: 'Snooze 1 week', onclick: () => send(7) }));
   const close = (e) => {

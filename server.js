@@ -126,6 +126,7 @@ const DEFAULT_SETTINGS = {
     vms: { home: true, services: true, host: true, rack: true, stopped: true, cpu: true, ram: true, uptime: true, homeNumbers: false },
     // a public page at /status with only up/down and uptime of the services: no addresses or hardware
     statusPage: { enabled: false, title: '' },
+    linkUrl: '', // where links in alert messages point; empty = this server's own address
   },
   power: {
     plan: 'spot',
@@ -726,6 +727,9 @@ function validateDashboard(d) {
     else if (cl?.kind === 'file' && config.icons.some((i) => i.id === cl.id)) carrierLogo = { kind: 'file', id: cl.id };
     else throw new UserError('Upload or link the provider logo again');
   }
+  // the address links in alert messages point to (empty: this server's own)
+  const linkUrl = d.linkUrl === undefined ? config.settings.dashboard.linkUrl || '' : str(d.linkUrl, 200, 'Address for links');
+  if (linkUrl && !/^https?:\/\/[a-z0-9.\-]+(:\d{1,5})?$|^https?:\/\/\[[0-9a-f:.]+\](:\d{1,5})?$/i.test(linkUrl.replace(/\/$/, ''))) throw new UserError('Address for links: like https://lookout.home.arpa:8443, without a path');
   const sp = d.statusPage;
   const statusPage = sp === undefined ? structuredClone(config.settings.dashboard.statusPage || { enabled: false, title: '' }) : { enabled: sp?.enabled === true, title: str(sp?.title, 60, 'Status page title') };
   return {
@@ -739,6 +743,7 @@ function validateDashboard(d) {
     serviceAlerts: d.serviceAlerts !== false,
     vms,
     statusPage,
+    linkUrl: linkUrl.replace(/\/$/, ''),
   };
 }
 
@@ -6313,6 +6318,7 @@ function sendPage(res, key, session, edit = (html) => html) {
 // software versions, which tell an attacker what to try. Names and status stay.
 function forVisitors(payload) {
   payload.notices = []; // they carry the public IP
+  payload.attention = payload.attention.map((a) => ({ ...a, incidentId: null, ack: a.ack ? { at: a.ack.at } : null })); // not who
   payload.unifi = payload.unifi.map((h) => (h.data ? {
     ...h,
     data: {
@@ -6357,7 +6363,8 @@ function attentionList() {
     const own = c.type === 'nas' && c.detail;
     return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity), maintenance: win ? { name: win.name, until: win.until } : null,
       behind: deps.behind.has(key) ? { deviceId: deps.behind.get(key).id, name: deps.behind.get(key).name } : null,
-      behindCount: c.type === 'offline' && deviceId && deps.byRoot.has(deviceId) ? deps.byRoot.get(deviceId).length : 0 };
+      behindCount: c.type === 'offline' && deviceId && deps.byRoot.has(deviceId) ? deps.byRoot.get(deviceId).length : 0,
+      incidentId: openIncidentFor(key)?.id || null, ack: openIncidentFor(key)?.ack || null };
   }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
     .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
 }
@@ -6750,7 +6757,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const before = structuredClone(config.settings);
     const next = validateSettings(body, config.settings);
     // making the dashboard or the status page public is a step-up change too
-    if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled)) && !freshAuth(session)) return stepUpRequired(res);
+    if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled) || (next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '')) && !freshAuth(session)) return stepUpRequired(res);
     config.settings = next;
     saveConfig();
     if (config.settings.dashboard.refreshSeconds !== prevRefresh) schedulePolling();
@@ -7351,6 +7358,22 @@ async function handleApi(req, res, url, session, viewer = null) {
   // --- Alerts ---
   if (p === '/api/admin/alerts' && m === 'GET') return sendJson(res, 200, alertsStatus());
 
+  // --- Incidents ---
+  if (p === '/api/admin/incidents' && m === 'GET') {
+    const dev = url.searchParams.get('device');
+    const list = incidents.filter((x) => !dev || x.deviceId === dev).slice(-500).reverse();
+    return sendJson(res, 200, { incidents: list.map(publicIncident), keepDays: INCIDENT_DAYS, total: incidents.length });
+  }
+  const ia = p.match(/^\/api\/admin\/incidents\/([0-9a-f]{16})\/ack$/);
+  if (ia && m === 'POST') {
+    const x = incidents.find((y) => y.id === ia[1]);
+    if (!x) return sendError(res, 404, 'Not found');
+    if (x.end) throw new UserError('It has already cleared');
+    ackIncident(x, session.user, 'dashboard');
+    alertsSoon();
+    return sendJson(res, 200, { incident: publicIncident(x) });
+  }
+
   // --- Check-ins ---
   if (p === '/api/admin/checkins' && m === 'GET') return sendJson(res, 200, checkinsPayload());
   if (p === '/api/admin/checkins' && m === 'POST') {
@@ -7786,6 +7809,9 @@ async function handle(req, res) {
   const pm = p.match(/^\/ping\/([A-Za-z0-9_-]{32})(?:\/(start|fail))?\/?$/);
   if (pm) return handlePing(req, res, pm[1], pm[2]);
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
+  // the acknowledge link from an alert message: no login, the token in the link is the permission
+  const am = p.match(/^\/ack\/([0-9a-f]{16})$/);
+  if (am) return openLimitOk(req, res) && handleAck(req, res, am[1], url);
   const session = getSession(req);
   const viewer = session ? null : getViewer(req); // a remembered device: view only
   const seer = session || viewer;
@@ -8059,6 +8085,9 @@ async function checkedSend(request, label, errorOf) {
 
 const SEVERITY_ICON = { critical: '🔴', warning: '🟠', resolved: '✅', test: '🔔' };
 
+// The acknowledge link as a line of text, for channels without buttons
+const ackLine = (m) => (m.ackUrl ? `\nAcknowledge (stops reminders): ${m.ackUrl}` : '');
+
 function sendNtfy(c, secret, m) {
   const headers = {};
   if (c.auth === 'token') headers.Authorization = `Bearer ${secret}`;
@@ -8069,12 +8098,14 @@ function sendNtfy(c, secret, m) {
     message: m.text || m.title,
     priority: { critical: 5, warning: 4 }[m.severity] || 3,
     tags: [{ critical: 'rotating_light', warning: 'warning', resolved: 'white_check_mark' }[m.severity] || 'bell'],
+    ...(m.link ? { click: m.link } : {}),
+    ...(m.ackUrl ? { actions: [{ action: 'view', label: 'Acknowledge', url: m.ackUrl, clear: true }] } : {}),
   });
   return checkedSend(connRequest({ url: c.url, tlsMode: c.tlsMode, fingerprint: c.fingerprint }, '/', { method: 'POST', headers, body, full: true }), 'ntfy', (r) => r.json?.error);
 }
 
 function sendTelegram(c, token, m) {
-  const text = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}\n— ${m.site}`.trim().slice(0, 4000);
+  const text = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}${ackLine(m)}\n— ${m.site}`.trim().slice(0, 4000);
   return checkedSend(connRequest({ url: TELEGRAM_API, tlsMode: 'verify' }, `/bot${token}/sendMessage`, {
     method: 'POST', body: JSON.stringify({ chat_id: c.chatId, text, disable_web_page_preview: true }), full: true,
   }), 'Telegram', (r) => r.json?.description);
@@ -8085,14 +8116,14 @@ function sendDiscord(c, webhook, m) {
   const body = JSON.stringify({
     username: m.site.slice(0, 80),
     allowed_mentions: { parse: [] }, // names and messages from devices can't ping anyone
-    embeds: [{ title: m.title.slice(0, 256), description: m.text ? m.text.slice(0, 4000) : undefined, color: { critical: 0xd03b3b, warning: 0xfab219, resolved: 0x0ca30c }[m.severity] ?? 0x2a78d6, timestamp: new Date().toISOString() }],
+    embeds: [{ title: m.title.slice(0, 256), ...(m.ackUrl || m.link ? { url: m.ackUrl || m.link } : {}), description: `${m.text || ''}${m.ackUrl ? `\n[Acknowledge](${m.ackUrl}) (stops reminders)` : ''}`.trim().slice(0, 4000) || undefined, color: { critical: 0xd03b3b, warning: 0xfab219, resolved: 0x0ca30c }[m.severity] ?? 0x2a78d6, timestamp: new Date().toISOString() }],
   });
   return checkedSend(connRequest({ url: hook.url, tlsMode: 'verify' }, hook.path, { method: 'POST', body, full: true }), 'Discord', (r) => r.json?.message);
 }
 
 // iMessage through Sendblue (SMS where the phone has no iMessage): one request per recipient
 async function sendSendblue(c, secret, m) {
-  const content = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}\n— ${m.site}`.trim().slice(0, 4000);
+  const content = `${SEVERITY_ICON[m.severity] || ''} ${m.title}${m.text ? `\n${m.text}` : ''}${ackLine(m)}\n— ${m.site}`.trim().slice(0, 4000);
   const headers = { 'sb-api-key-id': c.keyId, 'sb-api-secret-key': secret };
   const why = (r) => r.json?.error_message || r.json?.message || r.json?.error;
   for (const number of c.to) {
@@ -8123,7 +8154,7 @@ function mimeHeader(s) {
 }
 
 function emailMessage(c, m) {
-  const body = `${m.title}\n\n${m.text ? `${m.text}\n\n` : ''}— ${m.site}\n`.replace(/\r?\n/g, '\r\n');
+  const body = `${m.title}\n\n${m.text ? `${m.text}\n` : ''}${ackLine(m).trim() ? `${ackLine(m).trim()}\n` : ''}\n— ${m.site}\n`.replace(/\r?\n/g, '\r\n');
   return [
     `From: ${mimeHeader(m.site)} <${c.from}>`,
     `To: ${c.to.join(', ')}`,
@@ -8267,7 +8298,9 @@ function alertMessage(events) {
   if (events.length === 1) {
     const e = events[0];
     const text = e.event === 'resolved' ? `Cleared after ${duration(Date.now() - e.since)}.` : e.event === 'reminder' ? `Active for ${duration(Date.now() - e.since)}. ${e.detail || ''}` : e.detail || '';
-    return { site, severity: e.event === 'resolved' ? 'resolved' : e.severity, title: head(e), text: text.trim() };
+    // one open problem: a link to acknowledge it (which stops the reminders)
+    const x = e.event !== 'resolved' && e.key ? openIncidentFor(e.key) : null;
+    return { site, severity: e.event === 'resolved' ? 'resolved' : e.severity, title: head(e), text: text.trim(), ...(x && !x.ack ? { ackUrl: ackUrl(x) } : {}), link: linkBase() };
   }
   const open = events.filter((e) => e.event !== 'resolved');
   const resolved = events.length - open.length;
@@ -8277,6 +8310,7 @@ function alertMessage(events) {
     title: [open.length && `${open.length} alert${open.length === 1 ? '' : 's'}`, resolved && `${resolved} resolved`].filter(Boolean).join(', '),
     text: events.slice(0, 20).map((e) => `• ${e.event === 'resolved' ? '' : `[${e.severity === 'critical' ? 'Critical' : 'Warning'}] `}${head(e)}${e.detail && e.event !== 'resolved' ? ` (${e.detail})` : ''}`).join('\n')
       + (events.length > 20 ? `\n…and ${events.length - 20} more` : ''),
+    link: linkBase(),
   };
 }
 
@@ -8707,7 +8741,7 @@ async function evaluateAlertsNow(now) {
       let event = null;
       if (!a.firedAt && now - a.since >= (rules[c.type].delay || 0) * 60e3) event = 'fired';
       else if (escalated) event = 'escalated';
-      else if (a.firedAt && settings.repeatHours && now - a.notifiedAt >= settings.repeatHours * 3600e3) event = 'reminder';
+      else if (a.firedAt && !a.ackAt && settings.repeatHours && now - a.notifiedAt >= settings.repeatHours * (Number(process.env.REMIND_HOUR_MS) || 3600e3)) event = 'reminder'; // acknowledged: no reminders
       if (!event) continue;
       if (event === 'fired') a.firedAt = now;
       a.notifiedAt = now;
@@ -8731,9 +8765,13 @@ function logProblems() {
   const seen = alertState.seen || (alertState.seen = {});
   const now = new Map(attentionList().map((a) => [a.key, a]));
   for (const [key, a] of now) {
-    if (seen[key]) continue;
+    if (seen[key]) {
+      updateIncident(key, a);
+      continue;
+    }
     seen[key] = { text: `${a.subject ? `${a.subject}: ` : ''}${a.text}`, severity: a.severity };
     event('alerts', `${a.severity === 'critical' ? 'Fault' : 'Warning'}: ${seen[key].text}`, a.detail || null);
+    openIncident(key, a);
     alertsDirty = true;
   }
   for (const key of Object.keys(seen)) {
@@ -8741,9 +8779,148 @@ function logProblems() {
     const owner = key.split(':')[1];
     if (results.get(owner) && results.get(owner).ok === false && !key.startsWith('offline:')) continue; // no fresh data: unknown
     event('alerts', `Cleared: ${seen[key].text}`);
+    closeIncident(key);
     delete seen[key];
     alertsDirty = true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Incidents: every problem from when it appeared to when it cleared, kept a year (at most 5,000),
+// with who acknowledged it. Acknowledging stops the reminders; it can be done on Home or from the
+// link in an alert message (a per-incident token, so the link alone can only acknowledge that one).
+
+const INCIDENTS_FILE = path.join(DATA_DIR, 'incidents.json');
+const INCIDENT_DAYS = 365;
+const INCIDENT_MAX = 5000;
+let incidents = []; // oldest first: { id, key, type, severity, title, subject, deviceId, serviceId, start, end, ack, behind, maintenance }
+let incidentsDirty = false;
+
+function loadIncidents() {
+  const cutoff = Date.now() - INCIDENT_DAYS * 86400e3;
+  incidents = cleanIncidents(readJson(INCIDENTS_FILE, null)?.incidents).filter((x) => (x.end || Date.now()) >= cutoff);
+}
+
+function cleanIncidents(list) {
+  const str2 = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, n) : null);
+  return (Array.isArray(list) ? list : []).filter((x) => x && /^[0-9a-f]{16}$/.test(x.id) && typeof x.key === 'string' && Number.isFinite(x.start)).map((x) => ({
+    id: x.id, key: str2(x.key, 200), type: str2(x.type, 20), severity: x.severity === 'critical' ? 'critical' : 'warning', title: str2(x.title, 200) || '', subject: str2(x.subject, 80),
+    deviceId: UUID.test(x.deviceId || '') ? x.deviceId : null, serviceId: UUID.test(x.serviceId || '') ? x.serviceId : null,
+    start: x.start, end: Number.isFinite(x.end) ? x.end : null,
+    ack: x.ack && Number.isFinite(x.ack.at) ? { at: x.ack.at, by: str2(x.ack.by, 64) || 'admin', via: x.ack.via === 'link' ? 'link' : 'dashboard' } : null,
+    behind: str2(x.behind, 80), maintenance: x.maintenance === true,
+  })).slice(-INCIDENT_MAX);
+}
+
+function saveIncidents() {
+  incidentsDirty = false;
+  writeJsonAtomic(INCIDENTS_FILE, { incidents });
+}
+
+const openIncidentFor = (key) => incidents.findLast((x) => x.key === key && !x.end) || null;
+
+function openIncident(key, a) {
+  if (openIncidentFor(key)) return;
+  incidents.push({
+    id: crypto.randomBytes(8).toString('hex'), key, type: a.type, severity: a.severity, title: a.text, subject: a.subject || null,
+    deviceId: a.deviceId || null, serviceId: a.serviceId || null, start: a.since || Date.now(), end: null, ack: null,
+    behind: a.behind?.name || null, maintenance: Boolean(a.maintenance),
+  });
+  if (incidents.length > INCIDENT_MAX) incidents = incidents.slice(-INCIDENT_MAX);
+  saveIncidents();
+}
+
+// while open: it can get worse, turn out to be behind another outage, or fall in a maintenance window
+function updateIncident(key, a) {
+  const x = openIncidentFor(key);
+  if (!x) return openIncident(key, a);
+  let changed = false;
+  if (a.severity === 'critical' && x.severity !== 'critical') [x.severity, changed] = ['critical', true];
+  if (a.behind && !x.behind) [x.behind, changed] = [a.behind.name, true];
+  if (a.maintenance && !x.maintenance) [x.maintenance, changed] = [true, true];
+  if (changed) incidentsDirty = true;
+}
+
+function closeIncident(key) {
+  const x = openIncidentFor(key);
+  if (!x) return;
+  x.end = Date.now();
+  saveIncidents();
+}
+
+function pruneIncidents() {
+  const cutoff = Date.now() - INCIDENT_DAYS * 86400e3;
+  const before = incidents.length;
+  incidents = incidents.filter((x) => !x.end || x.end >= cutoff);
+  if (incidents.length !== before) saveIncidents();
+}
+
+// Acknowledge: "someone is on it". The open alert stops reminding.
+function ackIncident(x, by, via) {
+  if (x.end || x.ack) return false;
+  x.ack = { at: Date.now(), by, via };
+  const a = alertState.active[x.key];
+  if (a) {
+    a.ackAt = x.ack.at;
+    alertsDirty = true;
+  }
+  saveIncidents();
+  event('alerts', `Acknowledged${via === 'link' ? ' from the alert message' : ''}: ${x.subject ? `${x.subject}: ` : ''}${x.title}`);
+  return true;
+}
+
+// The link in an alert message: /ack/<id>?t=<token>, the token an HMAC of the id with a key derived
+// from the server key (its own key, not the one that encrypts secrets)
+let ackKey = null;
+const ackToken = (id) => crypto.createHmac('sha256', (ackKey ||= Buffer.from(crypto.hkdfSync('sha256', KEY, '', 'homelab-lookout ack links', 32)))).update(`ack:${id}`).digest('base64url').slice(0, 32);
+function ackTokenOk(id, t) {
+  const want = Buffer.from(ackToken(id));
+  const got = Buffer.from(String(t || ''));
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+// Where links in messages point: the address set in Admin, or this server's own
+function linkBase() {
+  const set = config.settings.dashboard.linkUrl;
+  if (set) return set.replace(/\/$/, '');
+  const srv = effectiveServer(config.settings.server);
+  const host = HOST.includes(':') ? `[${HOST}]` : HOST;
+  return srv.https ? `https://${host}${srv.https.port === 443 ? '' : `:${srv.https.port}`}` : `http://${host}${srv.http.port === 80 ? '' : `:${srv.http.port}`}`;
+}
+const ackUrl = (x) => `${linkBase()}/ack/${x.id}?t=${ackToken(x.id)}`;
+
+const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+
+// GET shows the problem and a button (so a link preview or scanner acknowledges nothing); POST acknowledges
+async function handleAck(req, res, id, url) {
+  const x = incidents.find((y) => y.id === id);
+  let token = url.searchParams.get('t');
+  let done = false;
+  if (req.method === 'POST') {
+    const raw = await new Promise((resolve, reject) => {
+      let b = '';
+      req.on('data', (c) => ((b += c), b.length > 2048 && req.destroy()));
+      req.on('end', () => resolve(b));
+      req.on('error', reject);
+    });
+    token = new URLSearchParams(raw).get('t');
+  } else if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
+  const valid = x && ackTokenOk(id, token);
+  if (valid && req.method === 'POST') done = ackIncident(x, 'link', 'link') || Boolean(x.ack);
+  const what = x ? `${x.subject ? `${x.subject}: ` : ''}${x.title}` : '';
+  const body = !valid ? '<h2>This link is not valid</h2><p class="muted">It may be mistyped, or the problem was deleted.</p>'
+    : x.end ? `<h2>Already cleared</h2><p>${escHtml(what)}</p><p class="muted">It cleared ${escHtml(osloText(x.end))}. Nothing to do.</p>`
+      : done || x.ack ? `<h2>Acknowledged</h2><p>${escHtml(what)}</p><p class="muted">No more reminders for it. It still shows on Home until it clears.</p>`
+        : `<h2>Acknowledge this problem?</h2><p><strong>${escHtml(what)}</strong></p><p class="muted">Since ${escHtml(osloText(x.start))}. Acknowledging means someone is on it: the reminders stop.</p>
+<form method="post" action="/ack/${id}"><input type="hidden" name="t" value="${escHtml(token)}"><button class="primary" type="submit">Acknowledge</button></form>`;
+  const html = Buffer.from(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Acknowledge · ${escHtml(config.settings.dashboard.title)}</title><link rel="stylesheet" href="/static/css/style.css"></head><body><div class="login-wrap"><section class="card login ack-page"><h1>${escHtml(config.settings.dashboard.title)}</h1>${body}<p class="small"><a href="/">Open the dashboard</a></p></section></div></body></html>`);
+  // same-origin, not no-referrer: with no-referrer the form's POST says "Origin: null" and is refused
+  res.writeHead(valid ? 200 : 404, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': html.length, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' });
+  res.end(html);
+}
+
+function publicIncident(x) {
+  return { ...x, key: undefined, duration: (x.end || Date.now()) - x.start, open: !x.end };
 }
 
 // How long a connection must keep failing before it counts as not answering (OFFLINE_GRACE_S for the tests)
@@ -9130,6 +9307,7 @@ function backupBundle() {
     docs,
     docsHistory,
     events,
+    incidents,
     energy,
     history: historySnapshot(),
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
@@ -9294,6 +9472,8 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   saveEnergy();
   setHistory(cleanHistory(bundle.history));
   // the change log comes back too (entries checked like when loading), and the restore is added to it
+  incidents = cleanIncidents(bundle.incidents);
+  saveIncidents();
   if (Array.isArray(bundle.events)) {
     const cutoff = Date.now() - EVENT_DAYS * 864e5;
     events = bundle.events.filter((e) => e && Number.isFinite(e.t) && e.t >= cutoff && typeof e.text === 'string')
@@ -9854,6 +10034,7 @@ async function main() {
   loadHistory();
   loadAlertState();
   loadEvents();
+  loadIncidents();
   loadUpdates();
   loadDocs();
   loadDocsHistory();
@@ -9880,6 +10061,8 @@ async function main() {
   if (nodeEnd && Date.now() > Date.parse(nodeEnd)) event('system', `Node.js ${process.versions.node} no longer gets security updates (support ended ${nodeEnd}); upgrade to Node.js 24`);
   schedulePolling();
   setInterval(pruneEvents, 24 * 3600 * 1000).unref();
+  setInterval(pruneIncidents, 24 * 3600 * 1000).unref();
+  setInterval(() => incidentsDirty && saveIncidents(), 60 * 1000).unref();
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
   setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(() => rememberedDirty && saveRemembered(), 5 * 60 * 1000).unref(); // "last used"

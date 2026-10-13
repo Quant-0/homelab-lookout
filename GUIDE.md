@@ -172,6 +172,8 @@ One list of what can be updated: Proxmox packages, TrueNAS and its apps, UniFi f
 
 **Log** in the menu (admin only) lists everything that changed, newest first, grouped by day: every change in Admin and Docs (with what changed, e.g. *Title: Homelab → My Lab*, and who did it), devices found, problems starting and clearing, notifications sent, snoozes, the public IP and its changes, sign-ins and failed sign-ins, update checks, backups and restarts. Filter by category or search, and **Download CSV** for the current filter. Entries are kept for a year and are included in backups. Passwords and keys are never written to it; at most it says that one was changed.
 
+**Incidents** at the top of the Log lists every problem from when it appeared to when it cleared: how long it lasted, who acknowledged it and when, and whether it was behind another outage or during maintenance. **Open only** shows the ones still going on. At the top you see how many are open, how many there were in the last 30 days, and how long they lasted in total (not counting the muted ones). Incidents are kept for a year and are included in backups.
+
 ### User guide
 
 The illustrated user guide (a PDF with sample data) opens from the **document button** beside Search in the top bar, from **More → User guide (PDF)** on a phone, or by searching for *guide*. Anyone who can see the dashboard can open it, at `/guide.pdf`.
@@ -334,6 +336,12 @@ To arrange the page, press **Customize** on the Services page:
 
 **Active now** shows current alerts and **Recent notifications** shows what was sent. At most 30 messages go to one channel per hour.
 
+**Acknowledge** means "someone is on it": the problem keeps showing until it clears, but no more reminders are sent for it. You can acknowledge in two ways:
+- From the message: ntfy has an **Acknowledge** button; Telegram, iMessage and e-mail have an *Acknowledge* link; and Discord has the link in the message. The link opens a page that asks first, so a link preview can't acknowledge anything. You don't need to sign in. The link only works for that one problem.
+- On Home: use the clock button on the row, then **Acknowledge**.
+
+The links point to this server's own address. If you reach it by another name (for example over Tailscale), set **Address for links in alert messages** under Dashboard.
+
 ### Check-ins & maintenance
 
 #### Check-ins (backups and cron jobs)
@@ -365,6 +373,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 **Status page**: a public page at `/status` showing only whether your services are up, with their uptime over the last 90 days (30 days on a phone) and any planned maintenance. No links, addresses, devices or VMs. Switch it on with **Show the status page to everyone**. It works while the dashboard itself stays private, so you can give people the status page instead of making the whole dashboard public. Services with a status check are listed, in the groups from the Services page.
 
 - **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
+- **Address for links in alert messages**: where the *Acknowledge* and *Open* links in messages point, for example `https://lookout.home.arpa:8443`. Leave it empty to use this server's own address. Changing it asks for your password.
 - **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.

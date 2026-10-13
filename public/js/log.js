@@ -86,6 +86,94 @@ function render(d) {
   $('log-foot').textContent = `Every change, problem and sign-in is kept for ${d.keepDays} days (${d.total.toLocaleString('en-GB')} entries now) and is included in backups. Times are this device's local time; the CSV uses UTC.`;
 }
 
+// --- Incidents: each problem from start to end, with who acknowledged it ---
+
+let view = location.hash === '#incidents' ? 'incidents' : 'log';
+let incOpenOnly = false;
+const dur = (ms) => {
+  const m = Math.round(ms / 60e3);
+  if (m < 60) return `${Math.max(1, m)} min`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h ${m % 60} min`;
+  return `${Math.floor(h / 24)} days ${h % 24} h`;
+};
+const clock = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+function renderView() {
+  $('log-view').replaceChildren(...[['log', 'Changes'], ['incidents', 'Incidents']].map(([k, t]) => el('button', {
+    type: 'button', text: t, 'aria-pressed': String(view === k),
+    onclick: () => {
+      view = k;
+      history.replaceState(null, '', k === 'incidents' ? '#incidents' : location.pathname);
+      renderView();
+      if (k === 'incidents') loadIncidents();
+    },
+  })));
+  const inc = view === 'incidents';
+  $('inc-card').classList.toggle('hidden', !inc);
+  for (const sel of ['.log-filters', '.log-list:not(#inc-card)', '#log-foot', '#log-csv']) for (const n of document.querySelectorAll(sel)) n.classList.toggle('hidden', inc);
+  document.querySelector('.page-title').textContent = inc ? 'Incidents' : 'Log';
+}
+
+let incData = null;
+async function loadIncidents() {
+  try {
+    incData = await api('GET', '/api/admin/incidents');
+    renderIncidents();
+  } catch (e) {
+    $('inc-days').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+function incEntry(x) {
+  const tags = [x.behind ? `behind ${x.behind}` : null, x.maintenance ? 'in maintenance' : null].filter(Boolean);
+  return el('li', { class: `log-entry inc ${x.severity}${x.open ? ' open' : ''}${x.behind || x.maintenance ? ' quiet' : ''}` },
+    el('time', { class: 'num', text: clock(x.start) }),
+    el('span', { class: `inc-dot dot ${x.open ? x.severity : 'off'}`, title: x.severity }),
+    el('div', { class: 'log-body' },
+      el('div', { class: 'log-text' }, el('span', null, x.subject ? el('strong', { text: `${x.subject}: ` }) : null, x.title)),
+      el('div', { class: 'small muted' }, [
+        x.open ? `Ongoing, for ${dur(x.duration)}` : `Lasted ${dur(x.duration)}, cleared ${clock(x.end)}${new Date(x.end).toDateString() !== new Date(x.start).toDateString() ? ` on ${new Date(x.end).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''}`,
+        x.ack ? `acknowledged ${x.ack.via === 'link' ? 'from the alert message' : `by ${x.ack.by}`} at ${clock(x.ack.at)}` : null,
+        ...tags,
+      ].filter(Boolean).join(' · '))),
+    x.open && !x.ack ? el('button', { type: 'button', class: 'small', text: 'Acknowledge', onclick: async () => {
+      try {
+        await api('POST', `/api/admin/incidents/${x.id}/ack`);
+      } finally {
+        loadIncidents();
+      }
+    } }) : null);
+}
+
+function renderIncidents() {
+  const list = incData.incidents.filter((x) => !incOpenOnly || x.open);
+  const month = incData.incidents.filter((x) => x.start > Date.now() - 30 * 864e5 && !x.behind && !x.maintenance);
+  const open = incData.incidents.filter((x) => x.open).length;
+  $('inc-summary').replaceChildren(
+    el('span', { class: `pill ${open ? 'critical' : 'good'}` }, el('strong', { text: String(open) }), ' open'),
+    el('span', { class: 'pill' }, el('strong', { text: String(month.length) }), ' in the last 30 days'),
+    el('span', { class: 'pill' }, el('strong', { text: dur(month.reduce((a, x) => a + x.duration, 0)) }), ' of problems in 30 days'),
+    el('label', { class: 'check small' }, (() => {
+      const cb = el('input', { type: 'checkbox', checked: incOpenOnly });
+      cb.addEventListener('change', () => {
+        incOpenOnly = cb.checked;
+        renderIncidents();
+      });
+      return cb;
+    })(), ' Open only'));
+  const days = new Map();
+  for (const x of list) {
+    const k = dayKey(x.start);
+    if (!days.has(k)) days.set(k, []);
+    days.get(k).push(x);
+  }
+  $('inc-days').replaceChildren(...(list.length
+    ? [...days].map(([, xs]) => el('section', { class: 'log-day' }, el('h2', { text: dayName(xs[0].start) }), el('ol', { class: 'log-entries' }, xs.map(incEntry))))
+    : [el('p', { class: 'muted log-empty', text: incOpenOnly ? 'Nothing is open.' : 'No incidents yet.' })]),
+  el('p', { class: 'hint', text: `Each problem from when it appeared to when it cleared, kept for ${incData.keepDays} days. Those behind another outage or in maintenance are muted and left out of the totals.` }));
+}
+
 let timer = null;
 $('log-q').addEventListener('input', (e) => {
   clearTimeout(timer);
@@ -97,8 +185,11 @@ $('log-q').addEventListener('input', (e) => {
 $('log-more').addEventListener('click', () => load(true));
 
 HD.shell({ active: 'log', admin: true });
+renderView();
 load();
+if (view === 'incidents') loadIncidents();
 // new entries every 30 s, while the top of the list is in view and no older pages are open
 setInterval(() => {
   if (!document.hidden && window.scrollY < 200 && shown.length <= 200) load();
+  if (!document.hidden && view === 'incidents') loadIncidents();
 }, 30000);

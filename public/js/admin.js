@@ -315,6 +315,7 @@ function fillDashboard(d) {
   carrierMode = null;
   renderCarrier();
   f.refreshSeconds.value = d.refreshSeconds;
+  f.linkUrl.value = d.linkUrl || '';
   f.public.checked = d.public;
   f.homeServices.value = d.homeServices;
   f.serviceAlerts.checked = d.serviceAlerts;
@@ -344,6 +345,7 @@ async function saveSettings(msgId) {
       carrier: d.carrier.value,
       carrierLogo: carrierDraft,
       refreshSeconds: Number(d.refreshSeconds.value),
+      linkUrl: d.linkUrl.value.trim(),
       public: d.public.checked,
       homeServices: d.homeServices.value,
       serviceAlerts: d.serviceAlerts.checked,
