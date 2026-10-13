@@ -44,3 +44,44 @@ self.addEventListener('fetch', (event) => {
     }).catch(() => caches.match(url.pathname).then((hit) => hit || Response.error())));
   }
 });
+
+// Push: an alert from the dashboard (Admin → Alerts → Push to the app). The message is encrypted
+// for this browser; it carries the title, the text and, for one open problem, its acknowledge link.
+self.addEventListener('push', (event) => {
+  let d = {};
+  try {
+    d = event.data ? event.data.json() : {};
+  } catch {
+    d = { body: event.data ? event.data.text() : '' };
+  }
+  event.waitUntil(self.registration.showNotification(d.title || d.site || 'Homelab Lookout', {
+    body: d.body || '',
+    icon: '/logo',
+    tag: d.ack ? `ack-${d.ack.split('?')[0]}` : undefined,
+    requireInteraction: d.severity === 'critical',
+    data: { url: d.url || '/', ack: d.ack || null },
+    actions: d.ack ? [{ action: 'ack', title: 'Acknowledge' }] : [],
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  const n = event.notification;
+  n.close();
+  const { url, ack } = n.data || {};
+  const open = async (to) => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const w = wins.find((c) => new URL(c.url).origin === self.location.origin);
+    if (w && to === '/') return w.focus();
+    return self.clients.openWindow(to);
+  };
+  if (event.action === 'ack' && ack) {
+    // straight from the notification: the same form the acknowledge page sends
+    const u = new URL(ack, self.location.origin);
+    event.waitUntil(fetch(u.pathname, {
+      method: 'POST', referrerPolicy: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ t: u.searchParams.get('t') || '' }),
+    }).then((r) => (r.ok ? self.registration.showNotification('Acknowledged', { body: n.title, icon: '/logo', tag: n.tag, silent: true }) : open(ack))).catch(() => open(ack)));
+    return;
+  }
+  event.waitUntil(open(url || '/'));
+});

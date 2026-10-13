@@ -7483,7 +7483,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const b = await readBody(req);
     const old = b.id ? config.alerts.channels.find((c) => c.id === b.id) : null;
     if (b.id && !old) throw Object.assign(new UserError('Channel not found'), { status: 404 });
-    const c = { id: old?.id || 'new', ...validateChannel({ ...b, type: old?.type || b.type }) };
+    const c = { ...(old ? { ...old, secret: undefined } : {}), id: old?.id || 'new', ...validateChannel({ ...b, type: old?.type || b.type }) };
     let secret = channelSecret(c, b.secret);
     if (!secret && channelNeedsSecret(c)) {
       if (!old?.secret) throw new UserError('Enter the token, password or webhook URL to test');
@@ -7491,6 +7491,35 @@ async function handleApi(req, res, url, session, viewer = null) {
       secret = decryptSecret(channelHost(old));
     }
     return sendJson(res, 200, await sendToChannel({ ...c, id: null }, testMessage(), { secret, rateLimit: false }));
+  }
+  // Push: the key a browser subscribes with, and turning it on or off for this browser
+  if (p === '/api/admin/push/key' && m === 'GET') return sendJson(res, 200, { publicKey: vapidKeys().publicKey });
+  const ps = p.match(/^\/api\/admin\/alerts\/channels\/([0-9a-f-]{36})\/subscriptions(?:\/([0-9a-f]{16}))?$/);
+  if (ps) {
+    const ch = config.alerts.channels.find((c) => c.id === ps[1] && c.type === 'push');
+    if (!ch) throw Object.assign(new UserError('Channel not found'), { status: 404 });
+    if (!ps[2] && m === 'POST') {
+      const b = await readBody(req);
+      const sub = validatePushSub(b.subscription);
+      const label = str(b.label, 60, 'Name') || 'Browser';
+      // the same browser again: the same entry, with its keys renewed
+      const was = (ch.subs || []).find((x) => x.endpoint === sub.endpoint);
+      ch.subs = (ch.subs || []).filter((x) => x !== was);
+      if (ch.subs.length >= MAX_PUSH_SUBS) throw new UserError(`At most ${MAX_PUSH_SUBS} browsers per channel`);
+      const x = { id: was?.id || crypto.randomBytes(8).toString('hex'), label, at: Date.now(), by: session.user, ...sub };
+      ch.subs.push(x);
+      saveConfig();
+      event('alerts', `Push turned on for ${label} (${ch.name})`);
+      return sendJson(res, 201, { sub: publicSub(x), status: alertsStatus() });
+    }
+    if (ps[2] && m === 'DELETE') {
+      const x = (ch.subs || []).find((y) => y.id === ps[2]);
+      if (!x) throw Object.assign(new UserError('Not found'), { status: 404 });
+      ch.subs = ch.subs.filter((y) => y !== x);
+      saveConfig();
+      event('alerts', `Push turned off for ${x.label} (${ch.name})`);
+      return sendJson(res, 200, alertsStatus());
+    }
   }
   if (p === '/api/admin/alerts/channels' && m === 'POST') {
     const b = await readBody(req);
@@ -7935,7 +7964,7 @@ const ALERTS_FILE = path.join(DATA_DIR, 'alerts.json');
 const TELEGRAM_API = process.env.TELEGRAM_API_URL || 'https://api.telegram.org'; // overridable for the tests
 const DISCORD_HOSTS = ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com', ...String(process.env.DISCORD_WEBHOOK_HOSTS || '').split(',').filter(Boolean)];
 const SENDBLUE_API = process.env.SENDBLUE_API_URL || 'https://api.sendblue.com'; // overridable for the tests
-const CHANNEL_TYPES = { ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)', sendblue: 'iMessage (Sendblue)' };
+const CHANNEL_TYPES = { push: 'Push to the app', ntfy: 'ntfy', telegram: 'Telegram', discord: 'Discord', email: 'E-mail (SMTP)', sendblue: 'iMessage (Sendblue)', webhook: 'Webhook' };
 const PHONE_RE = /^\+[1-9]\d{6,14}$/; // E.164
 const phoneNumber = (v) => String(v).replace(/[\s().-]/g, '');
 const ALERT_TYPES = {
@@ -7984,7 +8013,7 @@ function defaultRule(type) {
 }
 
 // From the config file or a backup: unknown or broken entries fall back to the defaults
-function normalizeAlerts(raw, channels = Array.isArray(raw?.channels) ? raw.channels.filter((c) => UUID.test(c?.id) && CHANNEL_TYPES[c.type]) : []) {
+function normalizeAlerts(raw, channels = Array.isArray(raw?.channels) ? raw.channels.filter((c) => UUID.test(c?.id) && CHANNEL_TYPES[c.type]).map(cleanPushSubs) : []) {
   const ids = new Set(channels.map((c) => c.id));
   const rules = {};
   for (const k of Object.keys(ALERT_TYPES)) {
@@ -8039,7 +8068,23 @@ function validateChannel(b) {
     if (!out.to.length || out.to.length > 10) throw new UserError('Enter 1 to 10 phone numbers');
     for (const n of [out.from, ...out.to]) if (!PHONE_RE.test(n)) throw new UserError(`Phone numbers need the country code, like +4791234567 (${n.slice(0, 32)})`);
   }
+  if (type === 'webhook') {
+    // the whole URL is the secret (its path often carries a token); only where it goes is shown
+    if (b.secret) out.url = webhookTarget(b.secret).origin;
+    else if (b.url !== undefined) out.url = parseServiceUrl(b.url).href.replace(/^(https?:\/\/[^/]+).*$/, '$1');
+    out.tlsMode = /^https:/.test(out.url || b.url || '') && b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+  }
   return out;
+}
+
+// A webhook URL: http(s), no login in it; sent to as it is
+function webhookTarget(v) {
+  const s = String(v || '').trim();
+  if (s.length > 1000) throw new UserError('Webhook URL: at most 1000 characters');
+  const u = parseServiceUrl(s);
+  const url = new URL(s);
+  return { origin: `${url.protocol}//${url.host}`, path: `${u.base}${url.search}` || '/', https: u.https };
 }
 
 function parseDiscordWebhook(s) {
@@ -8054,7 +8099,7 @@ function parseDiscordWebhook(s) {
   return { url: `https://${u.host}`, path: u.pathname };
 }
 
-const channelNeedsSecret = (c) => (c.type === 'ntfy' ? c.auth !== 'none' : c.type === 'email' ? Boolean(c.username) : true);
+const channelNeedsSecret = (c) => (c.type === 'ntfy' ? c.auth !== 'none' : c.type === 'email' ? Boolean(c.username) : c.type !== 'push');
 
 function channelSecret(c, s) {
   const v = validateSecret(s);
@@ -8062,12 +8107,13 @@ function channelSecret(c, s) {
   if (c.type === 'telegram' && !/^\d{3,20}:[A-Za-z0-9_-]{20,100}$/.test(v)) throw new UserError('That does not look like a bot token (123456789:AA…)');
   if (c.type === 'discord') parseDiscordWebhook(v);
   if (c.type === 'sendblue' && /\s/.test(v)) throw new UserError('That does not look like an API secret key');
+  if (c.type === 'webhook') webhookTarget(v);
   return v;
 }
 
 // Where the secret is sent: changing any of this without re-entering it deletes the stored one
 function channelIdentity(c) {
-  const address = c.type === 'ntfy' ? c.url : c.type === 'email' ? `${c.security}://${c.host}:${c.port}` : c.type === 'telegram' ? TELEGRAM_API : c.type === 'sendblue' ? SENDBLUE_API : 'discord';
+  const address = c.type === 'ntfy' ? c.url : c.type === 'email' ? `${c.security}://${c.host}:${c.port}` : c.type === 'telegram' ? TELEGRAM_API : c.type === 'sendblue' ? SENDBLUE_API : c.type === 'webhook' ? c.url : c.type;
   const username = c.type === 'ntfy' ? `${c.auth}:${c.username || ''}` : c.type === 'email' ? c.username : c.type === 'sendblue' ? c.keyId : '';
   return { id: c.id, type: `alert:${c.type}`, address, username, tlsMode: c.tlsMode || '', fingerprint: c.fingerprint || '' };
 }
@@ -8258,7 +8304,149 @@ async function sendEmail(c, password, m) {
   }
 }
 
-const CHANNEL_SENDERS = { ntfy: sendNtfy, telegram: sendTelegram, discord: sendDiscord, email: sendEmail, sendblue: sendSendblue };
+// A JSON POST to any URL (Home Assistant, n8n, Node-RED, your own script)
+function sendWebhook(c, url, m) {
+  const t = webhookTarget(url);
+  if (t.origin !== c.url) throw new UserError('Webhook: the URL does not match the channel; enter it again');
+  const body = JSON.stringify({
+    source: 'homelab-lookout', site: m.site, severity: m.severity, title: m.title, text: m.text || '',
+    link: m.link || null, ackUrl: m.ackUrl || null, alerts: m.events || [], sentAt: new Date().toISOString(),
+  });
+  return checkedSend(connRequest({ url: t.origin, tlsMode: c.tlsMode, fingerprint: c.fingerprint }, t.path, { method: 'POST', headers: { 'User-Agent': 'homelab-lookout' }, body, full: true }), 'Webhook', (r) => r.json?.message || r.json?.error);
+}
+
+// ---------------------------------------------------------------------------
+// Web Push: notifications on phones and computers where the installed app (or the browser) said
+// yes, without a third-party app. Each browser gets its own address at its push service (Google,
+// Mozilla, Apple, Microsoft); the message is encrypted for that browser (RFC 8291), so the push
+// service sees nothing but its size. This server proves who it is with a VAPID key (RFC 8292),
+// derived from the server key: nothing extra to store or back up.
+
+const PUSH_HOSTS = process.env.PUSH_HOSTS ? process.env.PUSH_HOSTS.split(',').map((x) => x.trim()) : null; // tests: exact host:port, http allowed
+const PUSH_SUFFIXES = ['fcm.googleapis.com', 'push.services.mozilla.com', 'push.apple.com', 'notify.windows.com'];
+const MAX_PUSH_SUBS = 20;
+let vapid = null;
+function vapidKeys() {
+  if (vapid) return vapid;
+  // a P-256 private key from the server key; a value out of range (never in practice) tries the next one
+  for (let i = 0; ; i++) {
+    const d = Buffer.from(crypto.hkdfSync('sha256', KEY, '', `homelab-lookout vapid ${i}`, 32));
+    try {
+      const ecdh = crypto.createECDH('prime256v1');
+      ecdh.setPrivateKey(d);
+      const pub = ecdh.getPublicKey();
+      const b64 = (x) => x.toString('base64url');
+      const key = crypto.createPrivateKey({ key: { kty: 'EC', crv: 'P-256', d: b64(d), x: b64(pub.subarray(1, 33)), y: b64(pub.subarray(33)) }, format: 'jwk' });
+      vapid = { key, publicKey: b64(pub) };
+      return vapid;
+    } catch {
+      /* the next one */
+    }
+  }
+}
+
+function vapidAuth(endpoint) {
+  const u = new URL(endpoint);
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const data = `${b64({ typ: 'JWT', alg: 'ES256' })}.${b64({ aud: `${u.protocol}//${u.host}`, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: process.env.PUSH_CONTACT || 'mailto:homelab-lookout@example.com' })}`;
+  const sig = crypto.sign('sha256', Buffer.from(data), { key: vapidKeys().key, dsaEncoding: 'ieee-p1363' }).toString('base64url');
+  return `vapid t=${data}.${sig}, k=${vapidKeys().publicKey}`;
+}
+
+// RFC 8291 (aes128gcm): one record, the browser's key and secret from its subscription
+function pushEncrypt(sub, plaintext) {
+  const ua = Buffer.from(sub.p256dh, 'base64url');
+  const authSecret = Buffer.from(sub.auth, 'base64url');
+  const ecdh = crypto.createECDH('prime256v1');
+  const asPublic = ecdh.generateKeys();
+  const shared = ecdh.computeSecret(ua);
+  const ikm = Buffer.from(crypto.hkdfSync('sha256', shared, authSecret, Buffer.concat([Buffer.from('WebPush: info\0'), ua, asPublic]), 32));
+  const salt = crypto.randomBytes(16);
+  const cek = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16));
+  const nonce = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12));
+  const cipher = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+  const body = Buffer.concat([cipher.update(Buffer.concat([Buffer.from(plaintext), Buffer.from([2])])), cipher.final(), cipher.getAuthTag()]);
+  const head = Buffer.alloc(21);
+  salt.copy(head);
+  head.writeUInt32BE(4096, 16);
+  head[20] = asPublic.length;
+  return Buffer.concat([head, asPublic, body]);
+}
+
+// From the config file or a backup: only well-formed subscriptions
+function cleanPushSubs(c) {
+  if (c.type !== 'push') return c;
+  const subs = [];
+  for (const x of Array.isArray(c.subs) ? c.subs : []) {
+    try {
+      subs.push({ id: /^[0-9a-f]{16}$/.test(x.id) ? x.id : crypto.randomBytes(8).toString('hex'), label: String(x.label || 'Browser').slice(0, 60), at: Number(x.at) || Date.now(), by: String(x.by || '').slice(0, 64), ...validatePushSub({ endpoint: x.endpoint, keys: { p256dh: x.p256dh, auth: x.auth } }) });
+    } catch {
+      /* dropped */
+    }
+  }
+  return { ...c, subs: subs.slice(0, MAX_PUSH_SUBS) };
+}
+
+// A subscription from the browser: an https address at a known push service and the two keys
+function validatePushSub(b) {
+  const endpoint = String(b?.endpoint || '');
+  let u;
+  try {
+    u = new URL(endpoint);
+  } catch {
+    throw new UserError('Invalid push subscription');
+  }
+  const ok = PUSH_HOSTS ? PUSH_HOSTS.includes(u.host) && /^https?:$/.test(u.protocol)
+    : u.protocol === 'https:' && !u.port && PUSH_SUFFIXES.some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`));
+  if (!ok || endpoint.length > 1024 || u.username || u.password) throw new UserError('This browser uses a push service the dashboard does not know');
+  const p256dh = String(b?.keys?.p256dh || '');
+  const auth = String(b?.keys?.auth || '');
+  if (!/^[A-Za-z0-9_-]{86,88}={0,2}$/.test(p256dh) || Buffer.from(p256dh, 'base64url').length !== 65 || !/^[A-Za-z0-9_-]{22,24}={0,2}$/.test(auth) || Buffer.from(auth, 'base64url').length !== 16) throw new UserError('Invalid push subscription keys');
+  try {
+    const e = crypto.createECDH('prime256v1');
+    e.generateKeys();
+    e.computeSecret(Buffer.from(p256dh, 'base64url'));
+  } catch {
+    throw new UserError('Invalid push subscription keys');
+  }
+  return { endpoint, p256dh: p256dh.replace(/=+$/, ''), auth: auth.replace(/=+$/, '') };
+}
+
+// For the page: which browsers, never their addresses
+const publicSub = (x) => ({ id: x.id, label: x.label, at: x.at, by: x.by, service: new URL(x.endpoint).hostname });
+
+async function sendPush(c, _secret, m) {
+  const subs = c.subs || [];
+  if (!subs.length) throw new UserError('No browser has push turned on yet: open the dashboard on the phone or computer, and turn it on there');
+  const msg = JSON.stringify({
+    title: m.severity === 'test' ? m.title : `${{ critical: '🔴 ', warning: '🟠 ', resolved: '✅ ' }[m.severity] || ''}${m.title}`.slice(0, 200),
+    body: (m.text || '').slice(0, 1500), site: m.site, severity: m.severity, url: '/', ack: m.ackUrl ? new URL(m.ackUrl).pathname + new URL(m.ackUrl).search : null,
+  });
+  const gone = [];
+  const errors = [];
+  await Promise.all(subs.map(async (x) => {
+    try {
+      const u = new URL(x.endpoint);
+      const r = await connRequest({ url: `${u.protocol}//${u.host}`, tlsMode: 'verify' }, `${u.pathname}${u.search}`, {
+        method: 'POST', full: true, body: pushEncrypt(x, msg),
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Encoding': 'aes128gcm', TTL: '86400', Urgency: m.severity === 'critical' ? 'high' : 'normal', Authorization: vapidAuth(x.endpoint) },
+      });
+      if (r.status === 404 || r.status === 410) gone.push(x.id); // the browser turned it off
+      else if (r.status < 200 || r.status >= 300) errors.push(`${x.label}: HTTP ${r.status}`);
+    } catch (e) {
+      errors.push(`${x.label}: ${e instanceof UserError ? e.message : 'not sent'}`);
+    }
+  }));
+  const ch = c.id && config.alerts.channels.find((y) => y.id === c.id);
+  if (gone.length && ch) {
+    ch.subs = ch.subs.filter((x) => !gone.includes(x.id));
+    saveConfig();
+    event('alerts', `Push: ${gone.length} browser${gone.length === 1 ? '' : 's'} had turned notifications off and ${gone.length === 1 ? 'was' : 'were'} removed from ${ch.name}`);
+  }
+  if (errors.length + gone.length === subs.length) throw new UserError(errors.length ? errors.join('; ').slice(0, 300) : 'Every browser had turned notifications off');
+}
+
+const CHANNEL_SENDERS = { ntfy: sendNtfy, telegram: sendTelegram, discord: sendDiscord, email: sendEmail, sendblue: sendSendblue, webhook: sendWebhook, push: sendPush };
 const channelSends = new Map(); // channel id -> send times in the last hour (rate limit)
 
 // `secret` overrides the stored one (testing a channel before it is saved)
@@ -8300,7 +8488,7 @@ function alertMessage(events) {
     const text = e.event === 'resolved' ? `Cleared after ${duration(Date.now() - e.since)}.` : e.event === 'reminder' ? `Active for ${duration(Date.now() - e.since)}. ${e.detail || ''}` : e.detail || '';
     // one open problem: a link to acknowledge it (which stops the reminders)
     const x = e.event !== 'resolved' && e.key ? openIncidentFor(e.key) : null;
-    return { site, severity: e.event === 'resolved' ? 'resolved' : e.severity, title: head(e), text: text.trim(), ...(x && !x.ack ? { ackUrl: ackUrl(x) } : {}), link: linkBase() };
+    return { site, severity: e.event === 'resolved' ? 'resolved' : e.severity, title: head(e), text: text.trim(), ...(x && !x.ack ? { ackUrl: ackUrl(x) } : {}), link: linkBase(), events: events.map(webhookEvent) };
   }
   const open = events.filter((e) => e.event !== 'resolved');
   const resolved = events.length - open.length;
@@ -8311,8 +8499,10 @@ function alertMessage(events) {
     text: events.slice(0, 20).map((e) => `• ${e.event === 'resolved' ? '' : `[${e.severity === 'critical' ? 'Critical' : 'Warning'}] `}${head(e)}${e.detail && e.event !== 'resolved' ? ` (${e.detail})` : ''}`).join('\n')
       + (events.length > 20 ? `\n…and ${events.length - 20} more` : ''),
     link: linkBase(),
+    events: events.map(webhookEvent),
   };
 }
+const webhookEvent = (e) => ({ type: e.type, event: e.event, severity: e.severity, title: e.title, detail: e.detail || '', since: e.since ? new Date(e.since).toISOString() : null });
 
 const testMessage = () => ({ site: config.settings.dashboard.title, severity: 'test', title: 'Test notification', text: `Alerts from ${config.settings.dashboard.title} will arrive here.` });
 
@@ -8961,7 +9151,7 @@ async function deliverAlerts(events, now) {
   alertsDirty = true;
 }
 
-const publicChannel = (c) => ({ ...c, secret: undefined, hasSecret: Boolean(c.secret), last: alertState.channels[c.id] || null });
+const publicChannel = (c) => ({ ...c, secret: undefined, hasSecret: Boolean(c.secret), last: alertState.channels[c.id] || null, ...(c.type === 'push' ? { subs: (c.subs || []).map(publicSub) } : {}) });
 
 function alertsStatus() {
   return {

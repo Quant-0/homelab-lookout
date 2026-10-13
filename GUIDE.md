@@ -324,10 +324,12 @@ To arrange the page, press **Customize** on the Services page:
 ### Alerts
 
 1. Under **Channels**, add where messages go:
+   - **Push to the app**: notifications straight to the dashboard on your phone or computer, with no extra app. Save the channel, then press **Turn on for this device** on each phone, tablet or computer that should get them (allow notifications when the browser asks). On iPhone and iPad, [install it on the Home Screen](#install-it-as-an-app-on-your-phone) first and turn push on from inside that app (iOS 16.4 or newer). The device must trust the dashboard's certificate. The channel lists the devices; **Remove** turns one off. A device that turned notifications off by itself is removed automatically. Messages go through the browser maker's push service (Apple, Google, Mozilla or Microsoft), encrypted so that only your device can read them. A critical alert stays on screen until you dismiss it, and one open problem has an **Acknowledge** button.
    - **ntfy**: server (ntfy.sh or your own), a random topic name, and a token if needed
    - **Telegram**: bot token and chat ID ("How to get a bot token and chat ID" explains it)
    - **Discord**: webhook URL
    - **E-mail**: SMTP server, encryption (TLS or STARTTLS; a login is never sent unencrypted), user, password, from and to
+   - **Webhook**: any URL that takes a JSON POST, for example a Home Assistant automation with a *Webhook* trigger, n8n or Node-RED. The message contains `source`, `site`, `severity`, `title`, `text`, `link`, `ackUrl` (to acknowledge the problem) and `alerts` (each with `type`, `event`, `severity`, `title`, `detail` and `since`). The URL is stored like a password because its path is often the secret; only the server part is shown.
    - **iMessage (Sendblue)**: API key ID and secret key from the Sendblue dashboard, your Sendblue line, and up to 10 phone numbers with country code (+47…). Phones without iMessage get an SMS. Each alert is one message per number, which counts toward your Sendblue plan.
 
    Press **Test** before saving.

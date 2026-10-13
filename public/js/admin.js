@@ -1827,7 +1827,9 @@ const chanSummary = (c) => (c.type === 'ntfy' ? `${c.url.replace(/^https:\/\//, 
   : c.type === 'telegram' ? `chat ${c.chatId}`
     : c.type === 'discord' ? (c.hasSecret ? 'webhook set' : 'no webhook')
       : c.type === 'sendblue' ? `to ${c.to.join(', ')} from ${c.from}`
-        : `to ${c.to.join(', ')} via ${c.host}`);
+        : c.type === 'webhook' ? (c.hasSecret ? `to ${c.url}` : 'no URL')
+          : c.type === 'push' ? (c.subs.length ? `${c.subs.length} device${c.subs.length === 1 ? '' : 's'}: ${c.subs.map((x) => x.label).join(', ')}` : 'no device yet')
+            : `to ${c.to.join(', ')} via ${c.host}`);
 
 function renderAlerts() {
   $('al-add').replaceChildren(el('option', { value: '', text: 'Add channel…' }), ...Object.entries(al.channelTypes).map(([k, label]) => el('option', { value: k, text: label })));
@@ -1946,8 +1948,74 @@ $('al-refresh').addEventListener('click', loadAlerts);
 $('al-add').addEventListener('change', (e) => {
   const type = e.target.value;
   e.target.value = '';
-  if (type) openChannel({ id: null, type, name: '', enabled: true, url: 'https://ntfy.sh', topic: '', auth: 'none', security: 'starttls', port: 587, tlsMode: 'verify', to: [] });
+  if (type) openChannel({ id: null, type, name: '', enabled: true, url: type === 'ntfy' ? 'https://ntfy.sh' : '', topic: '', auth: 'none', security: 'starttls', port: 587, tlsMode: 'verify', to: [] });
 });
+
+// --- push to this browser ---
+
+const PUSH_ID = 'lookout-push-sub'; // which subscription is this browser's (per channel)
+const pushMine = () => {
+  try {
+    return JSON.parse(localStorage.getItem(PUSH_ID) || '{}');
+  } catch {
+    return {};
+  }
+};
+const setPushMine = (o) => {
+  try {
+    localStorage.setItem(PUSH_ID, JSON.stringify(o));
+  } catch {
+    /* only a convenience */
+  }
+};
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const dev = /iPhone/.test(ua) ? 'iPhone' : /iPad|Macintosh.*Mobile/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Browser';
+  const app = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  return [dev, standalone ? 'app' : app].filter(Boolean).join(' · ');
+}
+async function pushTurnOn(c) {
+  const ios = /iPhone|iPad/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  if (!window.isSecureContext) throw new Error('Push needs the dashboard over https:// with a trusted certificate.');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    throw new Error(ios ? 'On iPhone and iPad, add the dashboard to the Home Screen first (Share → Add to Home Screen), open it from there, and turn push on in the app.' : 'This browser cannot receive push notifications.');
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Notifications are blocked for this site. Allow them in the browser’s site settings, then try again.');
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  const { publicKey } = await api('GET', '/api/admin/push/key');
+  const key = Uint8Array.from(atob(publicKey.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0));
+  let sub = await reg.pushManager.getSubscription();
+  const same = (a) => a && new Uint8Array(a).length === key.length && new Uint8Array(a).every((b, i) => b === key[i]);
+  if (sub && !same(sub.options?.applicationServerKey)) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  try {
+    sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  } catch (e) {
+    throw new Error(`The browser could not sign up at its push service (${e.message}). Some browsers block it: in Brave, turn on “Use Google services for push messaging”; Chromium builds without Google services can’t.`);
+  }
+  const r = await api('POST', `/api/admin/alerts/channels/${c.id}/subscriptions`, { subscription: sub.toJSON(), label: deviceLabel() });
+  setPushMine({ ...pushMine(), [c.id]: r.sub.id });
+  return r.status;
+}
+async function pushTurnOff(c, x) {
+  const r = await api('DELETE', `/api/admin/alerts/channels/${c.id}/subscriptions/${x.id}`);
+  const mine = pushMine();
+  if (mine[c.id] === x.id) {
+    delete mine[c.id];
+    setPushMine(mine);
+    // still used by another push channel? then keep the browser's subscription
+    if (!Object.keys(mine).length) {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      await (await reg?.pushManager?.getSubscription())?.unsubscribe();
+    }
+  }
+  return r;
+}
 
 const randomTopic = () => `homelab-${Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 20)}`;
 
@@ -1989,7 +2057,7 @@ function openChannel(c) {
         }
       }
     };
-    input('name', 'Name', { placeholder: { ntfy: 'Phone (ntfy)', telegram: 'Telegram', discord: 'Discord #homelab', email: 'E-mail', sendblue: 'iMessage' }[c.type] });
+    input('name', 'Name', { placeholder: { ntfy: 'Phone (ntfy)', telegram: 'Telegram', discord: 'Discord #homelab', email: 'E-mail', sendblue: 'iMessage', webhook: 'Home Assistant', push: 'Phones' }[c.type] });
     const en = el('input', { type: 'checkbox', checked: chanDraft.enabled });
     en.addEventListener('change', () => (chanDraft.enabled = en.checked));
     fields.push(el('label', { class: 'check' }, en, ' Enabled'));
@@ -2007,6 +2075,11 @@ function openChannel(c) {
       input('chatId', 'Chat ID', { placeholder: '123456789' });
     }
     if (c.type === 'discord') secret('Webhook URL');
+    if (c.type === 'webhook') {
+      input('secret', 'Webhook URL', { type: 'password', autocomplete: 'new-password', placeholder: c.hasSecret ? `Stored: ${c.url}/… (leave blank to keep)` : 'https://…' }, null, 'wide');
+      tlsFields(true);
+    }
+    if (c.type === 'push') fields.push(pushBox());
     if (c.type === 'sendblue') {
       input('keyId', 'API key ID', { placeholder: 'From the Sendblue dashboard' });
       secret('API secret key');
@@ -2031,6 +2104,47 @@ function openChannel(c) {
     fieldsBox.replaceChildren(...fields);
     renderWarnings();
   };
+  const pushBox = () => {
+    const box = el('div', { class: 'wide push-box' });
+    const out = el('span', { class: 'msg', role: 'status' });
+    const draw = () => {
+      const cur = al.channels.find((x) => x.id === c.id);
+      const mine = pushMine()[c.id];
+      if (!c.id) return box.replaceChildren(el('p', { class: 'hint', text: 'Save the channel, then turn push on here on each phone, tablet or computer that should get the alerts.' }));
+      box.replaceChildren(
+        el('span', { class: 'small muted', text: 'Devices' }),
+        cur.subs.length ? el('ul', { class: 'push-subs' }, cur.subs.map((x) => el('li', null,
+          el('span', null, el('strong', { text: x.label }), x.id === mine ? el('span', { class: 'pill small', text: 'this device' }) : null),
+          el('span', { class: 'small muted', text: `turned on ${new Date(x.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}${x.by ? ` by ${x.by}` : ''} · ${x.service}` }),
+          el('button', { type: 'button', class: 'small', text: 'Remove', onclick: async () => {
+            try {
+              al = await pushTurnOff(c, x);
+              draw();
+              renderAlerts();
+            } catch (e) {
+              out.textContent = e.message;
+              out.className = 'msg error';
+            }
+          } })))) : el('p', { class: 'small muted', text: 'None yet.' }),
+        el('div', { class: 'form-actions' },
+          el('button', { type: 'button', class: mine && cur.subs.some((x) => x.id === mine) ? '' : 'primary', text: mine && cur.subs.some((x) => x.id === mine) ? 'Turn on again for this device' : 'Turn on for this device', onclick: async () => {
+            out.textContent = 'Asking the browser…';
+            out.className = 'msg';
+            try {
+              al = await pushTurnOn(c);
+              out.textContent = 'On: press Send test to try it';
+              out.className = 'msg ok';
+              draw();
+              renderAlerts();
+            } catch (e) {
+              out.textContent = e.message;
+              out.className = 'msg error';
+            }
+          } }), out));
+    };
+    draw();
+    return box;
+  };
   const renderWarnings = () => {
     const notes = [];
     if (c.type === 'ntfy') {
@@ -2043,6 +2157,8 @@ function openChannel(c) {
       el('li', { text: 'Open https://api.telegram.org/bot<token>/getUpdates in your browser and copy "chat":{"id": …}. Group IDs start with -100.' }))));
     if (c.type === 'discord') notes.push(el('p', { class: 'hint', text: 'In Discord: Server settings → Integrations → Webhooks → New webhook → Copy webhook URL. The URL is the secret.' }));
     if (c.type === 'sendblue') notes.push(el('p', { class: 'hint', text: 'Sendblue sends a blue-bubble iMessage, or an SMS to a phone without iMessage. Find the API key ID and secret key under API keys in the Sendblue dashboard; the line is one of the numbers on your account. Each alert is one message per number, which Sendblue counts toward your plan.' }));
+    if (c.type === 'webhook') notes.push(el('p', { class: 'hint', text: 'Each alert is a JSON POST: source, site, severity, title, text, link, ackUrl (to acknowledge it) and alerts (each with type, event, severity, title, detail and since). Works with Home Assistant (an automation with a Webhook trigger), n8n and Node-RED. The URL is kept like a password, since its path is often the secret.' }));
+    if (c.type === 'push') notes.push(el('p', { class: 'hint', text: 'Notifications straight to this dashboard on your phone or computer, without another app. On iPhone and iPad, add the dashboard to the Home Screen first and turn push on in that app (iOS 16.4 or newer). The device must trust the dashboard’s certificate. Messages go through the browser’s push service (Apple, Google, Mozilla or Microsoft), encrypted so only your device can read them.' }));
     if (c.type === 'email') notes.push(el('p', { class: 'hint', text: 'Gmail: smtp.gmail.com, STARTTLS, port 587, with an app password (Google account → Security → App passwords).' }));
     extra.replaceChildren(...notes);
   };
@@ -2050,7 +2166,7 @@ function openChannel(c) {
     fpBox.classList.remove('hidden');
     fpBox.replaceChildren('Connecting…');
     try {
-      const address = c.type === 'ntfy' ? (() => { const u = new URL(chanDraft.url); return `${u.hostname}:${u.port || 443}`; })() : `${chanDraft.host}:${chanDraft.port}`;
+      const address = c.type === 'ntfy' || c.type === 'webhook' ? (() => { const u = new URL(c.type === 'webhook' ? chanDraft.secret || chanDraft.url : chanDraft.url); return `${u.hostname}:${u.port || 443}`; })() : `${chanDraft.host}:${chanDraft.port}`;
       const r = await api('POST', '/api/admin/fingerprint', { type: 'idrac', address });
       fpBox.replaceChildren(
         el('div', null, el('strong', { text: 'SHA-256: ' }), el('code', { text: r.fingerprint })),
@@ -2072,7 +2188,9 @@ function openChannel(c) {
           const r = c.id ? await api('PUT', `/api/admin/alerts/channels/${c.id}`, body()) : await api('POST', '/api/admin/alerts/channels', body());
           al = r.status;
           if (r.note) alert(r.note);
-          closeChannel();
+          // a new push channel: straight on to turning it on for this device
+          if (c.type === 'push' && !c.id) openChannel(al.channels.find((x) => x.id === r.channel.id));
+          else closeChannel();
         } catch (e) {
           msg.textContent = e.message;
           msg.className = 'msg error';

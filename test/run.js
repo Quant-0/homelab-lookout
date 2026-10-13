@@ -148,6 +148,7 @@ async function main() {
     { file: 'test/checks.test.js', fresh: true },
     { file: 'test/dependencies.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', CHECKIN_MINUTE_MS: '1000' } },
     { file: 'test/docker.test.js', fresh: true },
+    { file: 'test/push.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', PUSH_HOSTS: '127.0.0.1:18476', NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem') } },
     { file: 'test/incidents.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', REMIND_HOUR_MS: '2000' } },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/sessions-restart.test.js', fresh: false },
