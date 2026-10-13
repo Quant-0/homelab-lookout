@@ -174,6 +174,21 @@ sudo systemctl restart homelab-dashboard
 
 After the restart the graph history moves from `history.json` into `history.db` by itself.
 
+### Packages without full sudo
+
+`deploy/allow-packages.sh USER` lets the user who deploys (or an assistant working as that user) keep the server's packages up to date without full sudo. It installs `/usr/local/sbin/homelab-pkg` and one sudoers line that allows exactly:
+
+- `sudo -n homelab-pkg install NAME…`: only packages on the owner's list (`/etc/homelab-pkg/allowed`), only from the signed repositories already set up; no files, versions or apt options
+- `sudo -n homelab-pkg upgrade`: `apt-get update` and upgrade of what is installed (the dashboard is restarted if Node.js changed)
+- `sudo -n homelab-pkg setup-nodesource-24`: adds the NodeSource 24 repository once, after checking its signing key against a pinned fingerprint
+- `sudo -n homelab-pkg list`
+
+The list starts with what the dashboard uses (nodejs, rsync, openssh-client, iputils-ping, openssl, ca-certificates, curl, gnupg). Only the owner changes it, with their own password: `sudo homelab-pkg allow NAME` or `disallow NAME`. Every run is logged (`journalctl -t homelab-pkg`). Remove the permission with `sudo sh deploy/allow-packages.sh --remove`.
+
+```sh
+sudo sh deploy/allow-packages.sh claude
+```
+
 ### HTTPS and the local CA
 
 The dashboard listens on **https://HOST:8443** by default, and on **http://HOST:8080** with a redirect to HTTPS. In Admin → System → Web server you can turn HTTP and HTTPS on or off, change their ports, and choose whether HTTP redirects or serves. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.
