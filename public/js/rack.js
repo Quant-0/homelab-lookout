@@ -34,7 +34,7 @@ const Rack = (() => {
     for (const link of item.links || []) {
       if (link.startsWith('host:')) {
         const id = link.slice(5);
-        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada', 'ping']) {
+        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass']) {
           const host = (data?.[type] || []).find((x) => x.id === id);
           if (host) out.push({ type, host, widget: `${type}:${id}` });
         }
@@ -83,6 +83,9 @@ const Rack = (() => {
       case 'omada':
         return 'good';
       case 'ping':
+      case 'shelly':
+      case 'tasmota':
+      case 'hass':
         return l.host.ok === false ? 'critical' : 'good';
       default:
         return '';
@@ -95,7 +98,9 @@ const Rack = (() => {
     const syno = links.find((l) => l.type === 'synology')?.host?.data;
     const ud = links.find((l) => l.type === 'unifi')?.device;
     let measuredW = null;
+    const plug = links.find((l) => ['shelly', 'tasmota', 'hass'].includes(l.type))?.host?.data;
     if (idrac && typeof idrac.watts === 'number') measuredW = idrac.watts;
+    else if (plug && typeof plug.watts === 'number') measuredW = plug.watts;
     const poeW = ud?.poe ? ud.poe.usedW : null;
     const sub = idrac?.model || syno?.system?.model || ud?.model || item.model?.name || (item.links?.length ? '' : KIND_LABELS[item.kind]);
     // what the alerts say about the device counts too (a failed power supply, a full volume…)

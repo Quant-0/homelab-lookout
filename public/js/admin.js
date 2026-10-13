@@ -46,6 +46,24 @@ const TYPE_TEXT = {
     secret: 'Password',
     address: 'UniFi OS console host or IP (e.g. the UDM Pro, default port 443)',
   },
+  shelly: {
+    username: 'User name (if it has a password)',
+    usernameHint: 'Usually admin. Leave both empty if the plug has no login. Gen 2 and newer: keep the login off.',
+    secret: 'Password (optional)',
+    address: 'The plug\'s host or IP (plain HTTP, port 80)',
+  },
+  tasmota: {
+    username: 'User name (if it has a web password)',
+    usernameHint: 'Usually admin. Leave both empty without a web password.',
+    secret: 'Web password (optional)',
+    address: 'The plug\'s host or IP (plain HTTP, port 80)',
+  },
+  hass: {
+    username: 'Entity ID',
+    usernameHint: 'The power sensor in watts or kilowatts, e.g. sensor.server_plug_power (Settings → Entities in Home Assistant).',
+    secret: 'Long-lived access token',
+    address: 'Home Assistant URL, e.g. http://homeassistant.local:8123',
+  },
   ping: {
     username: null,
     secret: null,
@@ -364,7 +382,7 @@ $('pw-form').addEventListener('submit', async (ev) => {
 let rackData = null; // dashboard data, for live faceplates and status LEDs
 let draft = null; // device in the editor; typed secrets live here only until saved
 
-const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway', ping: 'other' };
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway', ping: 'other', shelly: 'server', tasmota: 'server', hass: 'server' };
 const SNMP_TYPES = ['synology', 'snmp'];
 const deviceForm = () => $('device-form').elements;
 const hostsOf = (dev) => state.hosts.filter((h) => h.deviceId === dev.id);
@@ -578,7 +596,7 @@ function connFromHost(h) {
 
 function newConn(type) {
   return {
-    id: null, type, address: '', username: '', tlsMode: 'pin', fingerprint: '',
+    id: null, type, address: '', username: '', tlsMode: type === 'hass' ? 'verify' : 'pin', fingerprint: '',
     options: SNMP_TYPES.includes(type) ? { snmpAuth: 'sha' } : type === 'proxmox' ? { node: '' } : type === 'omada' ? { mac: '' } : {},
     secret: '', secret2: '', clearSecret: false, hasSecret: false, status: null, nodes: [], found: [], orig: null,
   };
@@ -606,6 +624,7 @@ function openDevice(dev, preset = {}) {
   f.height.value = draft.height;
   f.u.value = draft.u ?? '';
   f.estimateW.value = draft.estimateW ?? '';
+  draft.powerSource ||= 'auto';
   $('device-editor-title').textContent = dev ? `Edit ${dev.name}` : 'Add device';
   $('device-catalog-hint').textContent = draft.catalogNote || '';
   $('device-origin').textContent = dev?.discovered
@@ -638,6 +657,7 @@ function syncDraft() {
   draft.height = Number(f.height.value) || 1;
   draft.u = f.u.value === '' ? null : Number(f.u.value);
   draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
+  if (f.powerSource.value) draft.powerSource = f.powerSource.value;
   draft.model = f.brand.value.trim() || f.modelName.value.trim() ? { brand: f.brand.value.trim(), name: f.modelName.value.trim() } : null;
   draft.front = { model: f.frontModel.value || 'auto', drives: f.frontDrives.value || 'auto' };
   for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
@@ -647,6 +667,17 @@ function syncDraft() {
   $('device-drives-label').classList.toggle('hidden', !Rack.WITH_DRIVES.has(fr.model));
   $('device-front-hint').textContent = `Automatic here: ${Rack.FRONT_LABELS[fr.auto.model]}${fr.auto.drives ? `, ${Rack.DRIVE_LABELS[fr.auto.drives]}` : ''}${item.links.length ? ', from what the device reports.' : '.'}`;
   const types = draft.connections.map((c) => c.type);
+  // where the power comes from: one source per device, so nothing is counted twice
+  const hasIdrac = types.includes('idrac');
+  const hasPlug = types.some((t) => ['shelly', 'tasmota', 'hass'].includes(t));
+  const autoFrom = hasIdrac ? 'Redfish' : hasPlug ? 'the smart plug' : draft.estimateW ? 'the estimate' : 'nothing yet';
+  const opts = [['auto', `Automatic (now: ${autoFrom})`], hasIdrac && ['idrac', 'Redfish (iDRAC, iLO…)'], hasPlug && ['plug', 'Smart plug'], ['estimate', 'The estimate below'], ['none', 'Not counted']].filter(Boolean);
+  if (!opts.some(([v]) => v === draft.powerSource)) draft.powerSource = 'auto';
+  $('device-power').replaceChildren(...opts.map(([v, t]) => el('option', { value: v, text: t })));
+  $('device-power').value = draft.powerSource;
+  $('device-power-hint').textContent = draft.powerSource === 'none'
+    ? 'Left out of the power total and the cost, e.g. when it hangs on a plug that measures another device too.'
+    : 'Counted once, from this source, in the power total and the cost. Automatic takes Redfish, then a smart plug, then the estimate.';
   $('device-est-hint').textContent = types.includes('idrac')
     ? 'Power is measured by the iDRAC; an estimate is ignored.'
     : draft.kind === 'ap' ? 'Usually powered by PoE, which is already measured at the switch: leave empty.'
@@ -670,7 +701,10 @@ function connCard(c) {
   const snmp = SNMP_TYPES.includes(c.type);
   const nut = c.type === 'nut';
   const ping = c.type === 'ping';
+  const plugHttp = c.type === 'shelly' || c.type === 'tasmota'; // plain HTTP, an optional password
+  const hassHttp = c.type === 'hass' && !/^https:/i.test(c.address || '');
   const plain = nut || ping; // nothing secret is sent: no password and no certificate
+  const noTls = plain || plugHttp || hassHttp;
   const stored = c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set';
   const result = el('div', { class: 'conn-result', role: 'status' });
   const warn = el('p', { class: 'banner hidden' });
@@ -709,12 +743,17 @@ function connCard(c) {
     ? c.status.ok ? status('OK', 'good') : status('Error', 'critical')
     : c.id ? status('Pending', '') : status('Not saved yet', '');
   const fields = [
-    field('Address', input('address', { placeholder: ping ? 'host or IP' : 'host or IP[:port]' }), t.address),
+    field('Address', (() => {
+      const a = input('address', { placeholder: ping ? 'host or IP' : c.type === 'hass' ? 'http://homeassistant.local:8123' : 'host or IP[:port]' });
+      // Home Assistant over https:// gets the certificate fields
+      if (c.type === 'hass') a.addEventListener('change', () => hassHttp !== !/^https:/i.test(a.value) && renderConnections());
+      return a;
+    })(), t.address),
     ping ? null : field(t.username, input('username'), t.usernameHint),
     plain ? null : field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
   ].filter(Boolean);
-  if (plain) {
-    // nothing secret is sent and there's no TLS here: no secret, no certificate
+  if (noTls) {
+    // no TLS here: nothing to verify or pin
   } else if (snmp) {
     fields.push(field('Privacy password (AES)', input('secret2', { type: 'password', autocomplete: 'new-password', placeholder: stored })));
     fields.push(field('Authentication protocol', select([['sha', 'SHA (SHA-1)'], ['sha256', 'SHA-256']], c.options.snmpAuth || 'sha', (v) => (c.options.snmpAuth = v))));
@@ -736,7 +775,7 @@ function connCard(c) {
     fields.push(field('Which Omada device', select([['', 'The whole controller (all its devices)'], ...found.map((x) => [x.mac, `${x.name}${x.model ? ` · ${x.model}` : ''}`])], c.options.mac || '', (v) => (c.options.mac = v)),
       'Pick the switch, gateway or access point this device is. Press Test to list them.'));
   }
-  if (!plain) fields.push(fpField);
+  if (!noTls) fields.push(fpField);
   if (c.hasSecret) {
     const clear = el('input', { type: 'checkbox', checked: c.clearSecret });
     clear.addEventListener('change', () => {
@@ -765,9 +804,9 @@ function connCard(c) {
     c.type === 'unifi' ? el('p', { class: 'hint', text: 'Switches and access points found through this console appear as their own devices automatically.' }) : null,
     el('div', { class: 'form-grid two' }, fields),
     el('div', { class: 'form-actions' },
-      plain ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
+      noTls ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
       el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
-      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : plugHttp ? 'Only reads the power; never switches the plug. Plain HTTP, so a password would travel unencrypted.' : c.type === 'hass' ? 'Reads that one sensor; the token is stored encrypted.' : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
     result,
     warn);
   updateWarning();
@@ -837,7 +876,7 @@ $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
 $('device-new').addEventListener('click', openCatalog);
 
 // --- Add device: start from the catalog ---
-const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
+const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
 function presetFrom(x) {
   const desktopNas = x.front === 'synology-ds' || x.unifi?.rackFront === 'synology-ds';
@@ -966,7 +1005,7 @@ $('device-form').addEventListener('submit', async (ev) => {
   syncDraft();
   const d = draft;
   const body = {
-    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, hidden: false, front: d.front, model: d.model,
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, powerSource: d.powerSource || 'auto', hidden: false, front: d.front, model: d.model,
     connections: d.connections.map((c) => ({
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
       options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,

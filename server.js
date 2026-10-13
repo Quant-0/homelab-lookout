@@ -60,7 +60,14 @@ const HOST_TYPES = {
   nut: { label: 'NUT (UPS over USB)', short: 'NUT', port: 3493 },
   omada: { label: 'Omada controller', short: 'Omada', port: 443 },
   ping: { label: 'Ping (reachable or not)', short: 'Ping', port: null }, // ICMP: a host without a port
+  // smart plugs and power meters: what a device draws
+  shelly: { label: 'Shelly smart plug', short: 'Shelly', port: 80 },
+  tasmota: { label: 'Tasmota smart plug', short: 'Tasmota', port: 80 },
+  hass: { label: 'Home Assistant power sensor', short: 'Home Assistant', port: null }, // a URL, an entity and a token
 };
+const PLUG_TYPES = new Set(['shelly', 'tasmota', 'hass']);
+const OPTIONAL_SECRET = new Set(['shelly', 'tasmota']); // a plug's web password, if it has one
+const POWER_SOURCES = ['auto', 'idrac', 'plug', 'estimate', 'none'];
 const SNMP_TYPES = new Set(['synology', 'snmp']); // engine ID instead of a certificate, two passwords
 const NO_SECRET = new Set(['nut', 'ping']); // nothing secret is sent: no password, nothing to pin
 const shortLabel = (type) => HOST_TYPES[type].short || HOST_TYPES[type].label;
@@ -615,7 +622,21 @@ function formatFingerprint(hex) {
 function validateHostInput(body, type) {
   const name = String(body.name ?? '').trim();
   if (!name || name.length > 64 || hasControlChars(name)) throw new UserError('Name is required (max 64 characters)');
+  if (type === 'hass') {
+    // Home Assistant: its URL, the sensor's entity ID (in the user name field) and a long-lived token
+    const u = parseServiceUrl(String(body.address || '').trim());
+    const entity = String(body.username ?? '').trim();
+    if (!/^[a-z_]+\.[a-z0-9_]{1,120}$/.test(entity)) throw new UserError('Entity ID: like sensor.server_plug_power');
+    const tlsMode = u.https && body.tlsMode === 'pin' ? 'pin' : u.https ? 'verify' : 'none';
+    return { name, address: u.href, username: entity, tlsMode, fingerprint: tlsMode === 'pin' ? normalizeFingerprint(body.fingerprint) : '', options: {} };
+  }
   const address = normalizeAddress(body.address, type);
+  if (type === 'shelly' || type === 'tasmota') {
+    // plain HTTP on the local network; a password only if the plug has one
+    const username = String(body.username ?? '').trim();
+    if (username.length > 64 || hasControlChars(username) || /[\s:]/.test(username)) throw new UserError('Invalid user name');
+    return { name, address, username, tlsMode: 'none', fingerprint: '', options: {} };
+  }
   const username = String(body.username ?? '').trim();
   if (username.length > 128 || hasControlChars(username) || /\s/.test(username)) throw new UserError('Invalid username');
   if (type === 'idrac' && username.includes(':')) throw new UserError('Redfish username cannot contain ":"');
@@ -875,7 +896,8 @@ function validateDeviceFields(b, selfId) {
   if (!name || name.length > 48 || hasControlChars(name)) throw new UserError('Name is required (max 48 characters)');
   if (!RACK_KINDS.includes(b.kind)) throw new UserError('Invalid device type');
   const estimateW = b.estimateW === null || b.estimateW === undefined || b.estimateW === '' ? null : num(b.estimateW, 0, 5000, 'Estimated power');
-  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
+  if (b.powerSource !== undefined && !POWER_SOURCES.includes(b.powerSource)) throw new UserError('Invalid power source');
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.powerSource !== undefined ? { powerSource: b.powerSource } : {}), ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
 }
 
 // Creates or updates a connection from request data. A changed address, user name or pinned
@@ -2764,7 +2786,60 @@ function pingHost(host, count = 3) {
 }
 const collectPing = (h) => pingHost(splitAddress(h.address).host);
 
-const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada, ping: collectPing };
+// --- Smart plugs: the power a device draws ---
+
+// Shelly: Gen 1 (/status) and Gen 2 and newer (JSON-RPC). Gen 1 can have a password (HTTP Basic);
+// a Gen 2+ plug with its login switched on is refused, as it needs digest authentication.
+async function collectShelly(h, secret) {
+  const headers = secret ? { Authorization: `Basic ${Buffer.from(`${h.username || 'admin'}:${secret}`).toString('base64')}` } : {};
+  const get = async (p) => {
+    const r = await connRequest({ url: `http://${h.address}` }, p, { headers, full: true, timeoutMs: 8000 });
+    if (r.status === 401) throw new UserError(secret ? 'The plug refused the password' : 'The plug asks for a password (on Shelly Gen 2 and newer, switch the login off: this dashboard only reads)');
+    if (r.status < 200 || r.status >= 300 || !r.json) throw new UserError(`HTTP ${r.status}: is this a Shelly?`);
+    return r.json;
+  };
+  const info = await get('/shelly');
+  const gen = Number(info.gen) || 1;
+  if (gen >= 2) {
+    let st = await get('/rpc/Switch.GetStatus?id=0').catch(() => null);
+    if (typeof st?.apower !== 'number') st = await get('/rpc/PM1.GetStatus?id=0').catch(() => null);
+    if (typeof st?.apower !== 'number') throw new UserError('This Shelly does not measure power');
+    return { watts: Math.round(st.apower * 10) / 10, on: typeof st.output === 'boolean' ? st.output : null, voltage: st.voltage ?? null, current: st.current ?? null, totalWh: st.aenergy?.total ?? null, model: info.model || info.app || 'Shelly', gen };
+  }
+  const st = await get('/status');
+  const m = st.meters?.[0] || st.emeters?.[0];
+  if (typeof m?.power !== 'number') throw new UserError('This Shelly does not measure power');
+  // Gen 1 counts energy in watt-minutes
+  return { watts: Math.round(m.power * 10) / 10, on: st.relays?.[0]?.ison ?? null, voltage: m.voltage ?? null, current: m.current ?? null, totalWh: typeof m.total === 'number' ? Math.round(m.total / 60) : null, model: info.type || 'Shelly', gen: 1 };
+}
+
+// Tasmota: Status 0 has the energy meter and the relay. With a web password, it goes in the query.
+async function collectTasmota(h, secret) {
+  const auth = secret ? `user=${encodeURIComponent(h.username || 'admin')}&password=${encodeURIComponent(secret)}&` : '';
+  const r = await connRequest({ url: `http://${h.address}` }, `/cm?${auth}cmnd=Status%200`, { full: true, timeoutMs: 8000 });
+  if (r.status === 401 || /Need user=/.test(JSON.stringify(r.json || {}))) throw new UserError(secret ? 'Tasmota refused the password' : 'Tasmota asks for its web password');
+  if (r.status < 200 || r.status >= 300 || !r.json) throw new UserError(`HTTP ${r.status}: is this a Tasmota device?`);
+  const e = r.json.StatusSNS?.ENERGY;
+  const power = Array.isArray(e?.Power) ? e.Power.reduce((a, v) => a + (Number(v) || 0), 0) : e?.Power;
+  if (typeof power !== 'number') throw new UserError('This Tasmota device does not measure power');
+  const on = r.json.StatusSTS?.POWER ?? r.json.StatusSTS?.POWER1;
+  return { watts: power, on: on === 'ON' ? true : on === 'OFF' ? false : null, voltage: e.Voltage ?? null, current: e.Current ?? null, totalWh: typeof e.Total === 'number' ? Math.round(e.Total * 1000) : null, model: r.json.Status?.DeviceName || 'Tasmota' };
+}
+
+// Home Assistant: any power sensor it has (W or kW), with a long-lived access token
+async function collectHass(h, secret) {
+  const r = await connRequest({ url: h.address, tlsMode: h.tlsMode, fingerprint: h.fingerprint }, `/api/states/${encodeURIComponent(h.username)}`, { headers: { Authorization: `Bearer ${secret}` }, full: true, timeoutMs: 8000 });
+  if (r.status === 401) throw new UserError('Home Assistant refused the token');
+  if (r.status === 404) throw new UserError(`Home Assistant has no entity ${h.username}`);
+  if (r.status < 200 || r.status >= 300 || !r.json) throw new UserError(`HTTP ${r.status}`);
+  const unit = r.json.attributes?.unit_of_measurement;
+  const v = Number(r.json.state);
+  if (unit !== 'W' && unit !== 'kW') throw new UserError(`${h.username} is not a power sensor (its unit is ${unit || 'none'}; W or kW is needed)`);
+  if (!Number.isFinite(v)) throw new UserError(`${h.username} is ${r.json.state}`);
+  return { watts: Math.round((unit === 'kW' ? v * 1000 : v) * 10) / 10, on: null, model: r.json.attributes?.friendly_name || h.username };
+}
+
+const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada, ping: collectPing, shelly: collectShelly, tasmota: collectTasmota, hass: collectHass };
 
 function safeErrorMessage(e, secret) {
   let msg = e instanceof UserError ? e.message : 'Unexpected error while collecting data';
@@ -4044,7 +4119,7 @@ async function unifiDocsData(h) {
 
 // Facts gathered automatically for the documentation (login only)
 async function docsAuto() {
-  const hostIp = (h) => splitAddress(h.address).host;
+  const hostIp = (h) => (/^https?:\/\//.test(h.address) ? new URL(h.address).hostname : splitAddress(h.address).host);
   const devices = config.devices.filter((d) => !d.hidden).map((d) => {
     const conns = deviceHosts(d);
     const data = (type) => results.get(conns.find((h) => h.type === type)?.id)?.data;
@@ -4111,7 +4186,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36})$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts)$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4355,6 +4430,8 @@ function recordHistory(h, data, t) {
     }
   } else if (h.type === 'ping') {
     histRecord(`ping:${h.id}:ms`, data.ms, t);
+  } else if (PLUG_TYPES.has(h.type)) {
+    histRecord(`plug:${h.id}:watts`, data.watts, t);
   } else if (h.type === 'omada') {
     for (const d of data.devices.filter((x) => x.online)) {
       histRecord(`omada:${h.id}:${d.mac}:clients`, d.clients, t);
@@ -4398,8 +4475,8 @@ async function runCollector(h, plainSecret = null, poll = false) {
   let secret = plainSecret;
   try {
     if (!NO_SECRET.has(h.type)) {
-      if (!secret && !h.secret) throw new UserError('No credentials set; enter them in Admin');
-      secret ||= decryptSecret(h);
+      if (!secret && !h.secret && !OPTIONAL_SECRET.has(h.type)) throw new UserError('No credentials set; enter them in Admin');
+      if (!secret && h.secret) secret = decryptSecret(h);
     }
     const data = await withTimeout(COLLECTORS[h.type](h, secret, poll), COLLECT_TIMEOUT_MS, 'Data collection');
     return { ok: true, data };
@@ -4439,7 +4516,10 @@ async function pollHostNow(h) {
   if (r.ok) {
     results.set(h.id, { ok: true, data: r.data, updatedAt: now, lastOkAt: now });
     recordHistory(h, r.data, now);
-    if (h.type === 'idrac' && typeof r.data.watts === 'number') recordPower(`idrac:${h.id}`, r.data.watts, now, false, h.deviceId);
+    // only the source the device's power is read from (see powerSourceOf)
+    const owner = config.devices.find((d) => d.id === h.deviceId);
+    const src = owner ? powerSourceOf(owner) : null;
+    if (src?.host === h && typeof r.data.watts === 'number') recordPower(`${src.kind === 'idrac' ? 'idrac' : 'plug'}:${h.id}`, r.data.watts, now, false, h.deviceId);
     if (h.type === 'unifi') {
       // PoE a switch delivers counts for that switch
       for (const d of r.data.devices) if (d.poe) recordPower(`poe:${h.id}:${d.mac}`, d.poe.usedW, now, false, config.devices.find((v) => v.unifi?.hostId === h.id && v.unifi.mac === d.mac)?.id || null);
@@ -4841,11 +4921,26 @@ function energyCsv(r, format) {
   return (no ? '﻿' : '') + lines.join('\r\n') + '\r\n';
 }
 
-// Rack equipment estimates; devices linked to an iDRAC are measured instead.
-// Estimated draw of devices without a power sensor; devices with an iDRAC are measured instead.
-// Devices without a power sensor that have an estimate (a device with an iDRAC is measured)
+// Where a device's power comes from: its Redfish controller, a smart plug, its estimate, or nowhere.
+// "auto" takes the first of those it has. One source per device, so nothing is counted twice; PoE
+// a switch delivers is counted on the switch, as before.
+function powerSourceOf(d) {
+  const conns = deviceHosts(d);
+  const idrac = conns.find((h) => h.type === 'idrac');
+  const plug = conns.find((h) => PLUG_TYPES.has(h.type));
+  const want = d.powerSource || 'auto';
+  if (want === 'none') return { kind: 'none' };
+  if (want === 'idrac' && idrac) return { kind: 'idrac', host: idrac };
+  if (want === 'plug' && plug) return { kind: 'plug', host: plug };
+  if (want === 'estimate') return d.estimateW > 0 ? { kind: 'estimate' } : { kind: 'none' };
+  if (idrac) return { kind: 'idrac', host: idrac }; // auto, or the chosen source was removed
+  if (plug) return { kind: 'plug', host: plug };
+  return d.estimateW > 0 ? { kind: 'estimate' } : { kind: 'none' };
+}
+
+// Devices whose power is their estimate
 function estimatedDevices() {
-  return config.devices.filter((d) => !d.hidden && d.estimateW > 0 && !deviceHosts(d).some((h) => h.type === 'idrac'));
+  return config.devices.filter((d) => !d.hidden && powerSourceOf(d).kind === 'estimate');
 }
 
 function estimatedWatts() {
@@ -4854,14 +4949,24 @@ function estimatedWatts() {
 
 function measuredWatts() {
   let idrac = null;
+  let plug = null;
   let poe = null;
-  for (const h of config.hosts) {
-    const r = results.get(h.id);
+  for (const d of config.devices) {
+    const src = powerSourceOf(d);
+    if (src.kind !== 'idrac' && src.kind !== 'plug') continue;
+    const r = results.get(src.host.id);
     if (!r?.ok && !inGrace(r)) continue; // a missed poll doesn't drop the server from the total
-    if (h.type === 'idrac' && typeof r.data?.watts === 'number') idrac = (idrac || 0) + r.data.watts;
-    if (h.type === 'unifi') for (const d of r.data.devices) if (d.poe) poe = (poe || 0) + d.poe.usedW;
+    if (typeof r.data?.watts !== 'number') continue;
+    if (src.kind === 'idrac') idrac = (idrac || 0) + r.data.watts;
+    else plug = (plug || 0) + r.data.watts;
   }
-  return { idrac, poe, total: idrac === null && poe === null ? null : (idrac || 0) + (poe || 0) };
+  for (const h of config.hosts.filter((x) => x.type === 'unifi')) {
+    const r = results.get(h.id);
+    if (!r?.ok && !inGrace(r)) continue;
+    for (const d of r.data.devices) if (d.poe) poe = (poe || 0) + d.poe.usedW;
+  }
+  const parts = [idrac, plug, poe];
+  return { idrac, plug, poe, total: parts.every((x) => x === null) ? null : parts.reduce((a, x) => a + (x || 0), 0) };
 }
 
 function powerSummary() {
@@ -5873,6 +5978,8 @@ function dashboardPayload() {
       u: d.u,
       height: d.height,
       estimateW: d.estimateW,
+      powerSource: d.powerSource || 'auto',
+      powerFrom: powerSourceOf(d).kind, // what it is read from now
       front: d.front || null,
       model: d.model || null,
       unifi: d.unifi,
@@ -5900,6 +6007,9 @@ function dashboardPayload() {
     nut: group('nut'),
     omada: group('omada'),
     ping: group('ping'),
+    shelly: group('shelly'),
+    tasmota: group('tasmota'),
+    hass: group('hass'),
     devices,
     rack: { ...config.rack }, // its items are `devices` (the page puts them back; not sent twice)
     power: powerSummary(),
@@ -6306,7 +6416,7 @@ async function handleApi(req, res, url, session, viewer = null) {
         throw new UserError('The address or identity changed: enter the secret again to test');
       secret = decryptSecret(old);
     }
-    if (!secret && !NO_SECRET.has(type)) throw new UserError('Enter the password/token/key to test');
+    if (!secret && !NO_SECRET.has(type) && !OPTIONAL_SECRET.has(type)) throw new UserError('Enter the password/token/key to test');
     const r = await runCollector(h, secret);
     if (!old) for (const m2 of [unifiSessions, omadaSessions]) for (const k of m2.keys()) if (k.startsWith(h.id + '|')) m2.delete(k);
     if (!r.ok) return sendJson(res, 200, { ok: false, error: r.error });
@@ -6321,6 +6431,9 @@ async function handleApi(req, res, url, session, viewer = null) {
       nut: () => [[d.ups.maker, d.ups.model].filter(Boolean).join(' ') || 'UPS', d.ups.charge != null ? `battery ${d.ups.charge} %` : null].filter(Boolean).join(' · '),
       omada: () => `${d.devices.length} device${d.devices.length === 1 ? '' : 's'} found`,
       ping: () => `replies in ${d.ms} ms`,
+      shelly: () => `${d.model} · ${d.watts} W`,
+      tasmota: () => `${d.model} · ${d.watts} W`,
+      hass: () => `${d.model} · ${d.watts} W`,
     }[type]();
     return sendJson(res, 200, {
       ok: true,
@@ -7021,8 +7134,10 @@ async function handleApi(req, res, url, session, viewer = null) {
     // Connects and reads the certificate only; no application data is sent.
     const body = await readBody(req);
     if (!HOST_TYPES[body.type]) throw new UserError('Invalid host type');
-    const address = normalizeAddress(body.address, body.type);
-    if (NO_SECRET.has(body.type)) throw new UserError(`${shortLabel(body.type)} has no certificate or identity to fetch`);
+    const hassUrl = body.type === 'hass' ? parseServiceUrl(String(body.address || '')) : null;
+    if (hassUrl && !hassUrl.https) throw new UserError('This Home Assistant URL is http://, so there is no certificate');
+    const address = hassUrl ? (net.isIPv6(hassUrl.host) ? `[${hassUrl.host}]:${hassUrl.port}` : `${hassUrl.host}:${hassUrl.port}`) : normalizeAddress(body.address, body.type);
+    if (NO_SECRET.has(body.type) || OPTIONAL_SECRET.has(body.type)) throw new UserError(`${shortLabel(body.type)} has no certificate or identity to fetch`);
     if (SNMP_TYPES.has(body.type)) {
       // SNMPv3 discovery: unauthenticated, carries no user name or credentials
       const { host, port } = splitAddress(address);

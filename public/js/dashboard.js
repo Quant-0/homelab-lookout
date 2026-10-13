@@ -127,6 +127,7 @@ function deviceContext(dev, d) {
   const nutH = host('nut');
   const omadaH = host('omada');
   const pingH = host('ping');
+  const plugH = host('shelly') || host('tasmota') || host('hass');
   const omadaMac = conn('omada')?.mac || null;
   const linkHost = dev.unifi && (d.unifi || []).find((h) => h.id === dev.unifi.hostId);
   const ud = linkHost?.data?.devices?.find((x) => x.mac === dev.unifi.mac) || null;
@@ -137,7 +138,8 @@ function deviceContext(dev, d) {
     snmpH, snmp: snmpH?.data, nutH, ups: snmpH?.data?.ups || nutH?.data?.ups || null, upsH: snmpH?.data?.ups ? snmpH : nutH?.data?.ups ? nutH : null,
     omadaH, om, omd: omadaMac && om ? om.devices.find((x) => x.mac === omadaMac) || null : null, omadaMac,
     pingH, ping: pingH?.ok === false ? null : pingH?.data || null,
-    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH, pingH].filter(Boolean),
+    plugH, plug: plugH?.data || null,
+    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH, pingH, plugH].filter(Boolean),
     showVms: d.vms?.host !== false,
   };
 }
@@ -182,6 +184,8 @@ function keyMetrics(dev, ctx, max = 4) {
     if (inlet) add(fmt.n(inlet.celsius), '°C', 'Inlet', null, inlet.warn && inlet.celsius >= inlet.warn ? 'warning' : '');
     else if (t.length) add(fmt.n(Math.max(...t.map((x) => x.celsius))), '°C', 'Hottest');
   }
+  // a smart plug: the power, unless Redfish already measures it
+  if (ctx.plug && !ctx.idrac) add(fmt.n(ctx.plug.watts, ctx.plug.watts < 10 ? 1 : 0), 'W', 'Power');
   if (ctx.ups) {
     const u = ctx.ups;
     add(u.charge != null ? fmt.n(u.charge) : null, '%', 'Battery', u.charge != null ? u.charge / 100 : null, u.lowBattery ? 'critical' : u.onBattery ? 'warning' : '');
@@ -274,6 +278,7 @@ const ISSUE_ICONS = { critical: 'octagon-alert', warning: 'triangle-alert', seri
 // The one history graph that says most about the device
 function mainSpark(ctx) {
   if (ctx.idrac) return [`idrac:${ctx.idracH.id}:watts`, 'Power', ' W'];
+  if (ctx.plug) return [`plug:${ctx.plugH.id}:watts`, 'Power', ' W', 1];
   if (ctx.ups) return [`ups:${ctx.upsH.id}:load`, 'UPS load', ' %'];
   if (ctx.node) return [`pve:${ctx.pveH.id}:${ctx.node.name}:cpu`, 'CPU', ' %'];
   if (ctx.syno) return [`syno:${ctx.synoH.id}:temp`, 'Temperature', ' °C'];
@@ -776,6 +781,24 @@ function renderNut(hosts) {
   });
 }
 
+// Smart plugs and Home Assistant power sensors
+const PLUG_NAMES = { shelly: 'Shelly', tasmota: 'Tasmota', hass: 'Home Assistant' };
+function renderPlugs(d) {
+  return ['shelly', 'tasmota', 'hass'].flatMap((type) => (d[type] || []).map((h) => {
+    const card = hostCard(PLUG_NAMES[type], h, h.data?.model || '', null, (x) => [
+      sparks([[`plug:${h.id}:watts`, 'Power', ' W', 1]]),
+      kv([
+        ['Power now', `${fmt.n(x.watts, x.watts < 10 ? 1 : 0)} W`],
+        ['Switch', x.on === true ? 'On' : x.on === false ? 'Off' : null],
+        ['Voltage', x.voltage != null ? `${fmt.n(x.voltage, 0)} V` : null],
+        ['Current', x.current != null ? `${fmt.n(x.current, 2)} A` : null],
+        ['Measured in total', x.totalWh != null ? `${fmt.n(x.totalWh / 1000, 1)} kWh` : null],
+      ]),
+    ]);
+    return [h.id, { ...card, title: `Power · ${PLUG_NAMES[type]}` }];
+  }));
+}
+
 function renderPing(hosts) {
   return hosts.map((h) => {
     const card = hostCard('Ping', h, '', null, (d) => [
@@ -912,6 +935,7 @@ function deviceSections(d) {
     ...renderNut(d.nut || []),
     ...renderOmada(d.omada || [], (id) => macFor.get(id)),
     ...renderPing(d.ping || []),
+    ...renderPlugs(d),
   ]);
 }
 
@@ -919,7 +943,7 @@ function deviceSections(d) {
 function deviceInfos(d) {
   const sections = deviceSections(d);
   const consoles = new Map((d.unifi || []).map((h) => [h.id, h]));
-  const order = { idrac: 0, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5, ping: 6 };
+  const order = { idrac: 0, shelly: 1, tasmota: 1, hass: 1, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5, ping: 6 };
   return d.devices
     .filter((dev) => dev.connections.length || dev.unifi)
     .map((dev) => {
@@ -1044,7 +1068,7 @@ function powerTile(p) {
       el('span', null, el('strong', { text: fmt.kr(u.today.cost) }), ' today'),
       el('span', null, el('strong', { text: fmt.kr(u.month.cost, 0) }), ' this month'),
       pn ? el('span', null, el('strong', { text: `${fmt.n(pn.total, 1)} øre` }), ' per kWh now') : null),
-    p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W', range: '24h' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish or a UniFi switch with PoE to measure power.' }));
+    p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W', range: '24h' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish, a smart plug, or a UniFi switch with PoE to measure power.' }));
   b.addEventListener('click', openPower);
   return b;
 }
@@ -1687,7 +1711,7 @@ function render(d) {
   refreshDrawer();
   HD.fillSparks();
   pruneFans();
-  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada', 'ping'].every((k) => !(d[k] || []).length);
+  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass'].every((k) => !(d[k] || []).length);
   $('empty-hint').classList.toggle('hidden', !noHosts);
   $('empty-hint').replaceChildren('Nothing is monitored yet. ', d.loggedIn ? el('a', { href: '/admin#devices', text: 'Add your first device in Admin' }) : '');
 }

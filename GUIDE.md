@@ -212,6 +212,9 @@ The device form: name, type, **brand and model**, and where it sits:
 | SNMPv3 | Switches and routers (Cisco, Aruba, MikroTik, Netgear…), QNAP, UPS network cards (APC, Eaton) | A read-only SNMPv3 user with SHA and AES | User, passwords, then **Fetch engine ID** |
 | NUT | A USB UPS, through the machine it's plugged into | NUT with `upsd` listening on the network (`LISTEN` in upsd.conf) | Address of that machine, the UPS name from ups.conf. No password: only values are read. |
 | Omada | TP-Link Omada gateways, switches and access points | A local *Viewer* account on the Omada controller | User, password; after **Test**, pick which Omada device this is (or the whole controller) |
+| Shelly | Shelly smart plugs, Gen 1 and Gen 2 and newer (Plus Plug S, Plug S Gen3…) | Nothing, if the plug has no login. Gen 1 can have a password; on Gen 2 and newer, keep the login off | Host or IP. Only reads the power (plain HTTP on your network); never switches the plug. |
+| Tasmota | Plugs flashed with Tasmota | Nothing, or its web password | Host or IP, and the web password if it has one. |
+| Home Assistant power sensor | Any plug or meter Home Assistant already reads (Tapo, Kasa, Zigbee, a P1 meter…) | A long-lived access token (your profile in Home Assistant → Security) | Home Assistant's URL, the sensor's **Entity ID** (in watts or kilowatts, e.g. `sensor.nas_plug_power`) and the token. |
 | Ping | Anything without an API: a printer, a Raspberry Pi, an access point of another brand | Nothing; it only has to answer ping | Host or IP (no port). The device is *Online* while it answers, with its response time; when it stops, *Device offline* alerts as for any other connection. |
 
 The SNMP connection reads standard values only: the ports (up, speed, traffic), CPU, memory and storage, and for a UPS its battery, runtime, load and output. A UPS running on battery, with a low battery or one that needs replacing shows up under *Needs you*.
@@ -303,7 +306,8 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 
 - **Plan:** *Norgespris* or *spot price* with your price area, plus VAT, supplier markup and subsidy.
 - **Grid tariff (nettleie):** day and night/weekend rates and when the day starts and ends, *Elavgift*, the Enova fee, and the fixed monthly costs. Copy them from your grid company's price page (the grid company).
-- **Include estimated power in cost** decides whether estimated devices count, or only measured ones (Redfish and PoE).
+- **Include estimated power in cost** decides whether estimated devices count, or only measured ones (Redfish, smart plugs and PoE).
+- **Where each device's power comes from** is set on the device (Admin → Devices → the device → **Power reading from**): *Automatic* takes Redfish, then a smart plug, then the estimate. Choose the plug instead of Redfish, only the estimate, or *Not counted* (for example when one plug feeds several devices: count it on one and set the others to *Not counted*). Each device is counted once, so a server with both an iDRAC and a plug is never counted twice. PoE stays counted on the switch that delivers it.
 
 ### Dashboard & look
 
