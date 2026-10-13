@@ -259,7 +259,7 @@ const server = https.createServer(opts, (req, res) => {
       { name: 'tank', health: 'DEGRADED', size: 8e12, alloc: 2e12, free: 6e12, frag: 3, dedup: 1 },
     ] }));
     // backups: a PBS datastore shared by the nodes, and local dumps on pve1
-    if (u === '/api2/json/nodes/pve1/storage?content=backup&enabled=1') return res.end(R({ data: [
+    if (u === '/api2/json/nodes/pve1/storage?content=backup') return res.end(R({ data: [
       { storage: 'pbs', type: 'pbs', shared: 1, active: 1, enabled: 1 },
       { storage: 'local', type: 'dir', shared: 0, active: 1, enabled: 1 },
     ] }));
@@ -271,7 +271,14 @@ const server = https.createServer(opts, (req, res) => {
     if (u === '/api2/json/nodes/pve1/storage/local/content?content=backup') return res.end(R({ data: [
       { volid: 'local:backup/vzdump-qemu-100.vma.zst', vmid: '100', ctime: Math.round(sec) - 30 * 86400, size: 10e9, format: 'vma.zst' },
     ] }));
-    if (u === '/api2/json/cluster/tasks') return res.end(R({ data: [
+    // backup jobs: VM 100 every night, the container every Saturday, a disabled monthly one for all
+    if (u === '/api2/json/cluster/backup') return res.end(R({ data: [
+      { id: 'backup-nightly', type: 'vzdump', schedule: '02:00', vmid: '100', storage: 'pbs', enabled: 1, 'next-run': Math.round(sec) + 3600 },
+      { id: 'backup-weekly', type: 'vzdump', schedule: 'sat 02:00', vmid: '101', storage: 'pbs', enabled: 1 },
+      { id: 'backup-old', type: 'vzdump', schedule: 'monthly', all: 1, storage: 'local', enabled: 0 },
+    ] }));
+    // the node's task log (the cluster's recent list is too short for a monthly job)
+    if (u === '/api2/json/nodes/pve1/tasks?typefilter=vzdump&limit=10') return res.end(R({ data: [
       { upid: 'UPID:pve1:1', node: 'pve1', type: 'vzdump', status: 'job errors', starttime: Math.round(sec) - 7200, endtime: Math.round(sec) - 3600, user: 'root@pam' },
       { upid: 'UPID:pve1:2', node: 'pve1', type: 'vzdump', status: 'OK', starttime: Math.round(sec) - 93600, endtime: Math.round(sec) - 90000, user: 'root@pam' },
       { upid: 'UPID:pve1:3', node: 'pve1', type: 'qmstart', status: 'OK', starttime: Math.round(sec) - 600, endtime: Math.round(sec) - 590, id: '100' },

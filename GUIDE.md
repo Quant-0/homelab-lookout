@@ -121,7 +121,9 @@ Every VM and container on your Proxmox hosts, one row each: status, CPU, memory,
 - The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem. The address under the name comes from the guest agent too.
 - **Last backup** is the newest backup Proxmox has of the VM on any backup storage, including Proxmox Backup Server. *None* means none was found.
 - Click a row for the details: OS, addresses, size, graphs of CPU, memory, network and disk activity, every filesystem, the backups (newest, where, how many, verified), and **Open in Proxmox** (signed in only).
-- A VM that has backups, but none newer than the limit (3 days unless you change it under *Admin → Alerts → Backup failed*), raises a *Backup failed* warning. A VM that has never been backed up is shown, not alerted.
+- The details also show the VM's **backup job** from Proxmox (its schedule, e.g. *monthly*, and its storage) and when it runs next, or *In no backup job*.
+- A VM is **overdue** when it has no backup newer than its job's interval plus a day: a monthly job allows 32 days, a weekly one 8. A VM in no job (backed up by hand) uses the limit under *Admin → Alerts → Backup failed* (35 days unless you change it). Overdue raises a *Backup failed* warning. A VM that has never been backed up is shown, not alerted.
+- Under the list, **Backups looked for on** names every backup storage and how many backups it held (or why it couldn't be read), so a *None* can be checked against Proxmox.
 
 ### Energy report
 

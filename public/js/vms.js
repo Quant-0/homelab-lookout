@@ -23,9 +23,14 @@ function backupState(g, days) {
   if (g.backup === undefined) return { cls: '', text: '…', title: 'Not read yet (every 5 minutes)' };
   if (g.backup === null) return { cls: '', text: '–', title: 'The backups could not be read from Proxmox' };
   if (!g.backup.last) return { cls: 'none', text: 'None', title: 'No backup found on the storages Proxmox lists' };
+  // a VM in a backup job may be as old as the job's interval plus a day; others the limit in Admin
+  const limit = g.backup.job ? g.backup.job.every + 1 : days;
   const age = (Date.now() - g.backup.last) / DAY;
-  return { cls: age >= days ? 'old' : 'ok', text: fmt.ago(g.backup.last), title: `${new Date(g.backup.last).toLocaleString('en-GB')} on ${g.backup.storage}` };
+  return { cls: age >= limit ? 'old' : 'ok', text: fmt.ago(g.backup.last), title: `${new Date(g.backup.last).toLocaleString('en-GB')} on ${g.backup.storage}` };
 }
+
+// "monthly (every 31 days)", "sat 02:00 (every 7 days)"
+const jobText = (j) => `${j.schedule || 'scheduled'} (every ${j.every} day${j.every === 1 ? '' : 's'})`;
 
 function bar(f, text) {
   const i = el('i');
@@ -74,7 +79,7 @@ function render(d) {
   $('vm-summary').replaceChildren(...[
     el('span', { class: 'pill good' }, el('span', { class: 'dot good' }), el('strong', { text: String(on) }), ' running'),
     items.length - on ? el('span', { class: 'pill' }, el('strong', { text: String(items.length - on) }), ' stopped') : null,
-    behind ? el('span', { class: 'pill warning' }, el('strong', { text: String(behind) }), ` backup older than ${d.backupDays} day${d.backupDays === 1 ? '' : 's'}`) : null,
+    behind ? el('span', { class: 'pill warning' }, el('strong', { text: String(behind) }), ' backup overdue') : null,
     none ? el('span', { class: 'pill' }, el('strong', { text: String(none) }), ' without a backup') : null,
   ].filter(Boolean));
   // filters: all, running, stopped, and the ones whose backup needs a look
@@ -92,7 +97,12 @@ function render(d) {
   $('vm-list').replaceChildren(
     el('div', { class: 'vm-head', 'aria-hidden': 'true' }, ['Name', 'Status', 'CPU', 'Memory', 'Disk', 'Network', 'Last backup'].map((t) => el('span', { text: t }))),
     ...(shown.length ? shown.map(row) : [el('p', { class: 'empty', text: items.length ? 'Nothing matches.' : 'No VMs or containers.' })]));
-  $('vm-notes').replaceChildren(...(d.notes || []).map((n) => el('p', { class: 'hint', text: n })));
+  // where backups were looked for, so "None" can be checked against Proxmox
+  const st = d.backupStorages || [];
+  $('vm-notes').replaceChildren(
+    ...(d.notes || []).map((n) => el('p', { class: 'hint', text: n })),
+    st.length ? el('p', { class: 'hint' }, el('strong', { text: 'Backups looked for on: ' }),
+      st.map((x) => (x.name ? `${x.name}${nodes.length > 1 ? ` (${x.node})` : ''}: ${x.error || `${x.count} backup${x.count === 1 ? '' : 's'}`}` : `${x.node}: ${x.error}`)).join(' · ')) : '');
   if (openKey) fillDrawer();
 }
 
@@ -165,8 +175,12 @@ function fillDrawer() {
           ['Backups kept', String(g.backup.count)],
           ['Size', g.backup.size ? fmt.bytes(g.backup.size) : null],
           ['Verified', g.backup.verified ? (g.backup.verified === 'ok' ? 'OK' : g.backup.verified) : null],
-          ['Limit', `${b.cls === 'old' ? 'Older than ' : 'Alert after '}${last.backupDays} day${last.backupDays === 1 ? '' : 's'} (Admin → Alerts)`],
         ]),
+    g.backup ? kv([
+      ['Backup job', g.backup.job ? `${jobText(g.backup.job)}${g.backup.job.storage ? ` to ${g.backup.job.storage}` : ''}` : 'In no backup job'],
+      ['Next run', g.backup.job?.nextRun ? new Date(g.backup.job.nextRun).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null],
+      ['Overdue after', g.backup.last ? `${g.backup.job ? g.backup.job.every + 1 : last.backupDays} days without a new backup` : null],
+    ]) : null,
     g.proxmoxUrl ? el('div', { class: 'detail-actions' }, el('a', { class: 'button', href: g.proxmoxUrl, target: '_blank', rel: 'noopener' }, HD.icon('external-link'), ' Open in Proxmox')) : null,
   ].flat(2).filter(Boolean));
   HD.fillSparks();

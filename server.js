@@ -1947,7 +1947,7 @@ const SKIP_FS = /^(tmpfs|devtmpfs|squashfs|overlay|iso9660|udf|proc|sysfs|cgroup
 
 async function collectProxmox(h, secret, poll = false) {
   const headers = { Authorization: `PVEAPIToken=${h.username}=${secret}` };
-  const get = (p) => httpsRequest(connectHost(h), h.address, { path: p, headers }).then((r) => r.data);
+  const get = (p, timeoutMs) => httpsRequest(connectHost(h), h.address, { path: p, headers, ...(timeoutMs ? { timeoutMs } : {}) }).then((r) => r.data);
   const [nodes, guests, storage] = await Promise.all([
     get('/api2/json/nodes'),
     get('/api2/json/cluster/resources?type=vm'),
@@ -2053,32 +2053,70 @@ async function pveDetails(get, data) {
       zfs: Array.isArray(zfs) ? zfs.map((z) => ({ name: z.name, health: z.health || null, size: z.size ?? null, alloc: z.alloc ?? null, frag: z.frag ?? null })) : null,
     };
   }
-  // the last backup job (vzdump) per node, from the cluster's recent tasks
+  // the last backup job (vzdump) per node, from the node's own task log: the cluster's list of
+  // recent tasks is too short for a job that runs once a month
   const backups = [];
-  const tasks = await get('/api2/json/cluster/tasks').catch(() => null);
-  for (const t of (Array.isArray(tasks) ? tasks : []).filter((x) => x.type === 'vzdump' && x.endtime).sort((a, b) => b.endtime - a.endtime)) {
-    if (backups.some((b) => b.node === t.node)) continue;
-    backups.push({ node: t.node, at: t.endtime * 1000, status: String(t.status || ''), ok: t.status === 'OK', warnings: /^WARNINGS/i.test(t.status || ''), vmid: t.id || null });
+  for (const n of data.nodes.filter((x) => x.status === 'online')) {
+    const tasks = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/tasks?typefilter=vzdump&limit=10`).catch(() => null);
+    const t = (Array.isArray(tasks) ? tasks : []).filter((x) => x.type === 'vzdump' && x.endtime).sort((x, y) => y.endtime - x.endtime)[0];
+    if (t) backups.push({ node: n.name, at: t.endtime * 1000, status: String(t.status || ''), ok: t.status === 'OK', warnings: /^WARNINGS/i.test(t.status || ''), vmid: t.id || null });
   }
-  // the newest backup of each VM, from the storages that hold backups (also Proxmox Backup Server)
+  // the newest backup of each VM, from the storages that hold backups (NFS, CIFS, a directory,
+  // Proxmox Backup Server…). Each storage looked at is reported, with what it held or why not.
   let vmBackups = null;
+  const backupStorages = [];
   const seenStorage = new Set();
   for (const n of data.nodes.filter((x) => x.status === 'online')) {
-    const list = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/storage?content=backup&enabled=1`).catch(() => null);
-    if (!Array.isArray(list)) continue;
+    const list = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/storage?content=backup`).catch((e) => e);
+    if (list instanceof Error) {
+      backupStorages.push({ node: n.name, name: null, error: `Could not list the storages: ${list.message}` });
+      continue;
+    }
     vmBackups ||= {};
-    for (const st of list.filter((x) => x.active !== 0)) {
+    if (!list.length) backupStorages.push({ node: n.name, name: null, error: 'No storage is set to hold backups (content "VZDump backup file")' });
+    for (const st of list) {
       if (st.shared && seenStorage.has(st.storage)) continue; // NFS or PBS: the same backups on every node
       seenStorage.add(st.storage);
-      const items = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/storage/${encodeURIComponent(st.storage)}/content?content=backup`)
-        .catch((e) => (denied(e) && notes.add('Backups per VM need Datastore.Audit on /storage (the PVEAuditor role has it).'), null));
-      for (const b of Array.isArray(items) ? items : []) {
-        const id = Number(b.vmid);
-        if (!Number.isInteger(id) || !Number.isFinite(b.ctime)) continue;
+      const rec = { node: n.name, name: st.storage, type: st.type || null, count: 0, error: null };
+      backupStorages.push(rec);
+      if (st.enabled === 0 || st.active === 0) {
+        rec.error = st.enabled === 0 ? 'Disabled in Proxmox' : 'Not mounted (inactive)';
+        continue;
+      }
+      const items = await httpsTimeout(get, `/api2/json/nodes/${encodeURIComponent(n.name)}/storage/${encodeURIComponent(st.storage)}/content?content=backup`).catch((e) => e);
+      if (items instanceof Error) {
+        rec.error = denied(items) ? 'Not allowed: the token needs Datastore.Audit on /storage' : items.message;
+        continue;
+      }
+      for (const bk of Array.isArray(items) ? items : []) {
+        const id = Number(bk.vmid);
+        if (!Number.isInteger(id) || !Number.isFinite(bk.ctime)) continue;
+        rec.count++;
         const cur = (vmBackups[id] ||= { last: null, count: 0, size: null, storage: null, verified: null });
         cur.count++;
-        if (!cur.last || b.ctime * 1000 > cur.last) Object.assign(cur, { last: b.ctime * 1000, size: b.size ?? null, storage: st.storage, verified: b.verification?.state || null });
+        if (!cur.last || bk.ctime * 1000 > cur.last) Object.assign(cur, { last: bk.ctime * 1000, size: bk.size ?? null, storage: st.storage, verified: bk.verification?.state || null });
       }
+    }
+  }
+  // the backup jobs: which VMs each covers and how often it runs, so a monthly job isn't late
+  // after three days
+  const jobs = [];
+  const rawJobs = await get('/api2/json/cluster/backup').catch((e) => (denied(e) && notes.add('To read the backup jobs, give the token Sys.Audit on / (the PVEAuditor role has it).'), null));
+  for (const j of Array.isArray(rawJobs) ? rawJobs : []) {
+    if (j.enabled === 0 || j.enabled === false || j.enabled === '0') continue;
+    const every = backupEveryDays(j);
+    const exclude = new Set(String(j.exclude || '').split(/[,\s]+/).filter(Boolean).map(Number));
+    const vmids = j.all
+      ? data.guests.filter((g) => (!j.node || g.node === j.node) && !exclude.has(g.vmid)).map((g) => g.vmid)
+      : String(j.vmid || '').split(/[,\s]+/).filter(Boolean).map(Number).filter(Number.isInteger);
+    jobs.push({ id: String(j.id || ''), schedule: String(j.schedule || j.dow || ''), every, storage: j.storage || null, vmids, pool: j.pool || null, nextRun: Number.isFinite(j['next-run']) ? j['next-run'] * 1000 : null });
+  }
+  if (vmBackups) {
+    for (const g of data.guests) {
+      const mine = jobs.filter((j) => j.vmids.includes(g.vmid));
+      const job = mine.sort((x, y) => x.every - y.every)[0];
+      const rec = (vmBackups[g.vmid] ||= { last: null, count: 0, size: null, storage: null, verified: null });
+      rec.job = job ? { schedule: job.schedule, every: job.every, storage: job.storage, nextRun: job.nextRun } : null;
     }
   }
   // inside the VMs, through the QEMU guest agent (where it's installed and switched on)
@@ -2111,7 +2149,48 @@ async function pveDetails(get, data) {
       };
     }));
   }
-  return { nodes, backups, agents, vmBackups, notes: [...notes] };
+  return { nodes, backups, agents, vmBackups, backupStorages, backupJobs: jobs.length, notes: [...notes] };
+}
+
+// Listing the backups on a big NFS share can take a while: a minute instead of the usual 15 s
+function httpsTimeout(get, p) {
+  return get(p, 60000);
+}
+
+// Days between runs of a backup job, from its schedule: Proxmox calendar events ("monthly",
+// "sat 02:00", "mon..fri 21:00", "*-*-01 03:00") or, before Proxmox 7, its days of the week
+function backupEveryDays(job) {
+  const s = String(job.schedule || '').trim().toLowerCase();
+  const DOW = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const gap = (days) => {
+    const d = [...new Set(days)].sort((a, b) => a - b);
+    if (!d.length) return 7;
+    let max = 0;
+    for (let i = 0; i < d.length; i++) max = Math.max(max, ((d[(i + 1) % d.length] - d[i] + 7) % 7) || 7);
+    return max;
+  };
+  if (!s) return job.dow ? gap(String(job.dow).split(',').map((x) => DOW.indexOf(x.trim())).filter((x) => x >= 0)) : 31;
+  const named = { minutely: 1, hourly: 1, daily: 1, weekly: 7, monthly: 31, quarterly: 92, semiannually: 183, yearly: 366, annually: 366 };
+  if (named[s]) return named[s];
+  // a date part (YYYY-MM-DD with * and lists): a fixed day of the month, or of the year
+  const date = /(?:^|\s)(?:[\d*.,]+-)?([\d*.,/]+)-([\d*.,/]+)(?=\s|$)/.exec(s);
+  if (date) {
+    if (date[1] !== '*') return 366;
+    if (date[2] !== '*') return date[2].includes(',') ? 16 : 31;
+  }
+  // weekdays: "sat", "mon,wed,fri", "mon..fri"
+  const wd = [];
+  for (const part of s.split(/\s+/)[0].split(',')) {
+    const r = /^(mon|tue|wed|thu|fri|sat|sun)(?:\.\.(mon|tue|wed|thu|fri|sat|sun))?$/.exec(part);
+    if (!r) continue;
+    const a = DOW.indexOf(r[1]);
+    const b = r[2] ? DOW.indexOf(r[2]) : a;
+    for (let i = a; ; i = (i + 1) % 7) {
+      wd.push(i);
+      if (i === b) break;
+    }
+  }
+  return wd.length ? gap(wd) : 1; // only a time: every day
 }
 
 // The last background details on top of a poll's numbers
@@ -2127,6 +2206,7 @@ function withPveExtra(data, ex) {
       backup: ex.vmBackups ? ex.vmBackups[g.vmid] || { last: null, count: 0 } : null,
     })),
     backups: ex.backups || [],
+    backupStorages: ex.backupStorages || [],
     notes: ex.notes || [],
   };
 }
@@ -3872,6 +3952,7 @@ function vmsPayload(visitor = false, admin = false) {
   if (!pve.length) return null;
   const items = [];
   const notes = [];
+  const backupStorages = []; // where backups were looked for, and what was found
   for (const h of pve) {
     const r = results.get(h.id);
     const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
@@ -3892,9 +3973,10 @@ function vmsPayload(visitor = false, admin = false) {
       });
     }
     for (const n of r?.data?.notes || []) if (!notes.includes(n)) notes.push(n);
+    for (const st of r?.data?.backupStorages || []) if (!backupStorages.some((x) => x.name === st.name && x.node === st.node)) backupStorages.push(st);
   }
   const v = config.settings.dashboard.vms;
-  return { items, notes, backupDays: config.alerts.rules.backup.vmDays, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
+  return { items, notes, backupStorages, backupDays: config.alerts.rules.backup.vmDays, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
@@ -7387,9 +7469,9 @@ const ALERT_TYPES = {
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
   backup: {
     label: 'Backup failed',
-    hint: 'An automatic backup of the dashboard or one of its destinations failed, a Proxmox backup job did, or a VM that has backups has none newer than the limit.',
+    hint: 'An automatic backup of the dashboard or one of its destinations failed, a Proxmox backup job did, or a VM has no backup newer than its backup job\'s interval plus a day (VMs in no job: the limit here).',
     delay: null,
-    params: { vmDays: { label: 'VM backups older than', unit: 'days', min: 1, max: 90, def: 3 } },
+    params: { vmDays: { label: 'VMs in no backup job: backups older than', unit: 'days', min: 1, max: 365, def: 35 } },
   },
 };
 const SEVERITY_RANK = { warning: 1, critical: 2 };
@@ -8004,11 +8086,12 @@ function alertConditions(all = false) {
         if (g.disk != null) full(`ct:${g.vmid}`, `${g.name}'s disk`, g.disk, g.maxdisk);
         for (const f of g.agent?.fs || []) full(`vm:${g.vmid}:${f.mount}`, `${g.name} ${f.mount}`, f.used, f.size);
       }
-      // a VM that is backed up, but not lately (VMs without any backup are shown on the VMs page, not alerted)
-      const vmDays = rules.backup.vmDays;
+      // a VM that is backed up, but not lately: later than its backup job's interval plus a day, or
+      // (backed up by hand, in no job) the limit set in Admin. VMs without any backup aren't alerted.
       for (const g of d.guests.filter((x) => ours(x.node) && x.backup?.last)) {
+        const limit = g.backup.job ? g.backup.job.every + 1 : rules.backup.vmDays;
         const age = Math.floor((Date.now() - g.backup.last) / 86400e3);
-        if (age >= vmDays) add('backup', `${h.id}:vmbackup:${g.vmid}`, 'warning', `${name}: ${g.name} last backed up ${age} days ago`, `Newest backup on ${g.backup.storage}, ${osloText(g.backup.last)}; limit ${vmDays} days`, own);
+        if (age >= limit) add('backup', `${h.id}:vmbackup:${g.vmid}`, 'warning', `${name}: ${g.name} last backed up ${age} days ago`, `Newest backup on ${g.backup.storage}, ${osloText(g.backup.last)}; ${g.backup.job ? `its backup job runs every ${g.backup.job.every} days` : `limit ${limit} days`}`, own);
       }
       for (const b of (d.backups || []).filter((x) => ours(x.node) && !x.ok)) {
         add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${osloText(b.at)}`, own);
