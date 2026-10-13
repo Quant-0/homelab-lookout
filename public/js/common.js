@@ -12,7 +12,57 @@ const HD = (() => {
     return s;
   }
 
-  async function api(method, url, body) {
+  // A risky change answers "confirm your password" (step-up): ask for it once, then try again
+  async function retryAfterPassword(e, again) {
+    if (!e.reauth || !(await confirmPassword())) throw e;
+    return again();
+  }
+
+  function confirmPassword() {
+    return new Promise((resolve) => {
+      let confirmed = false;
+      const input = el('input', { type: 'password', autocomplete: 'current-password', required: true, 'aria-label': 'Password' });
+      const msg = el('p', { class: 'msg error', role: 'alert' });
+      const submit = el('button', { type: 'submit', class: 'primary', text: 'Confirm' });
+      const form = el('form', { class: 'confirm-form' },
+        el('h3', { text: 'Confirm your password' }),
+        el('p', { class: 'small muted', text: 'This change needs your password. It stays confirmed for 15 minutes.' }),
+        input, msg,
+        el('div', { class: 'form-actions' }, submit, el('button', { type: 'button', text: 'Cancel', onclick: () => dlg.close() })));
+      const dlg = el('dialog', { class: 'confirm-dialog', 'aria-label': 'Confirm your password' }, form);
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        submit.disabled = true;
+        msg.textContent = '';
+        try {
+          if (!csrf) await session();
+          const r = await fetch('/api/reauth', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf || '' }, body: JSON.stringify({ password: input.value }), credentials: 'same-origin', cache: 'no-store' });
+          const data = await r.json().catch(() => ({}));
+          if (r.ok) {
+            confirmed = true;
+            dlg.close();
+            return;
+          }
+          msg.textContent = data.error || `HTTP ${r.status}`;
+          input.select();
+        } catch {
+          msg.textContent = 'Network error';
+        } finally {
+          submit.disabled = false;
+        }
+      });
+      dlg.addEventListener('close', () => {
+        input.value = '';
+        dlg.remove();
+        resolve(confirmed);
+      });
+      document.body.append(dlg);
+      dlg.showModal();
+      input.focus();
+    });
+  }
+
+  async function api(method, url, body, again = true) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (method !== 'GET') {
@@ -26,7 +76,12 @@ const HD = (() => {
       credentials: 'same-origin',
       cache: 'no-store',
     });
-    return handle(r, url);
+    try {
+      return await handle(r, url);
+    } catch (e) {
+      if (!again) throw e;
+      return retryAfterPassword(e, () => api(method, url, body, false));
+    }
   }
 
   async function upload(url, file) {
@@ -47,7 +102,8 @@ const HD = (() => {
   }
 
   // For non-JSON requests and responses (backup files). Adds the CSRF token; throws on errors.
-  async function raw(method, url, { body, json, headers = {} } = {}) {
+  async function raw(method, url, opts = {}, again = true) {
+    const { body, json, headers = {} } = opts;
     if (!csrf) await session();
     const r = await fetch(url, {
       method,
@@ -56,7 +112,14 @@ const HD = (() => {
       credentials: 'same-origin',
       cache: 'no-store',
     });
-    if (!r.ok) await handle(r, url);
+    if (!r.ok) {
+      try {
+        await handle(r, url);
+      } catch (e) {
+        if (!again) throw e;
+        return retryAfterPassword(e, () => raw(method, url, opts, false));
+      }
+    }
     return r;
   }
 
@@ -83,6 +146,7 @@ const HD = (() => {
     if (!r.ok) {
       const e = new Error((data && data.error) || `HTTP ${r.status}`);
       e.status = r.status;
+      e.reauth = r.status === 403 && Boolean(data?.reauth);
       throw e;
     }
     return data;

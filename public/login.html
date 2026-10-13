@@ -18,7 +18,8 @@
       <p class="small muted" id="reauth" hidden>This device is remembered for viewing. Enter the password to change settings.</p>
       <label><span>Username</span><input id="username" name="username" autocomplete="username" required autofocus></label>
       <label><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
-      <label class="check" id="remember-row"><input type="checkbox" id="remember"> Remember this device for viewing (30 days)</label>
+      <label class="check"><input type="checkbox" id="keep"> Keep me signed in on this device (30 days; risky changes still ask for the password)</label>
+      <label class="check" id="remember-row"><input type="checkbox" id="remember"> Remember this device for viewing only (30 days, e.g. a wall tablet)</label>
       <button class="primary" type="submit">Sign in</button>
       <p class="msg error" id="login-error" role="alert"></p>
     </form>

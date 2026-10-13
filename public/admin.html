@@ -487,6 +487,13 @@
       </section>
       <section class="card">
         <div class="card-head">
+          <div class="title"><h3>Signed-in browsers</h3><p class="hint">Where you are signed in. A normal sign-in lasts 12 hours (2 without use); "Keep me signed in" 30 days (a week without use). Either way, backups, backup and alert destinations, the web server and making things public ask for the password again after 15 minutes. Changing the password signs out all but this one.</p></div>
+          <button type="button" class="danger" id="sessions-others" hidden>Sign out everywhere else</button>
+        </div>
+        <div id="sessions"></div>
+      </section>
+      <section class="card">
+        <div class="card-head">
           <div class="title"><h3>Remembered devices</h3><p class="hint">Where "Remember this device for viewing" was ticked at sign-in. They can view the dashboard, services, energy, docs and updates for 30 days from then; changing anything asks for the password. A new password signs out all but this one.</p></div>
           <button type="button" class="danger" id="remembered-all" hidden>Sign out all</button>
         </div>

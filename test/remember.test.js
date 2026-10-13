@@ -145,13 +145,14 @@ async function run() {
   // at most 20 per account; the least recently used go first
   let newest = null;
   for (let i = 0; i < 21; i++) newest = await login(true);
-  r = await call('GET', '/api/admin/remembered', { cookie: c.session });
-  ok(r.json.devices.length === 20 && (await call('GET', '/api/dashboard', { cookie: c.device })).status === 401, `at most 20 remembered devices (${r.json.devices.length}); the oldest went`);
+  // (asked with the newest sign-in: at most 20 sessions are kept too, so the oldest one has ended)
+  r = await call('GET', '/api/admin/remembered', { cookie: newest.session });
+  ok(r.json.devices.length === 20 && (await call('GET', '/api/session', { cookie: c.session })).status === 401 && (await call('GET', '/api/dashboard', { cookie: c.device })).status === 401, `at most 20 remembered devices (${r.json.devices.length}); the oldest went`);
 
   // --- the installable app ---
-  const scsrf = (await call('GET', '/api/session', { cookie: c.session })).json.csrf;
-  const dash = (await call('GET', '/api/admin/config', { cookie: c.session })).json.settings.dashboard;
-  await call('PUT', '/api/admin/settings', { cookie: c.session, csrf: scsrf, body: { dashboard: { ...dash, title: 'Ola sin lab' } } });
+  const scsrf = (await call('GET', '/api/session', { cookie: newest.session })).json.csrf;
+  const dash = (await call('GET', '/api/admin/config', { cookie: newest.session })).json.settings.dashboard;
+  await call('PUT', '/api/admin/settings', { cookie: newest.session, csrf: scsrf, body: { dashboard: { ...dash, title: 'Ola sin lab' } } });
   r = await call('GET', '/manifest.webmanifest');
   ok(r.status === 200 && /^application\/manifest\+json/.test(r.headers.get('content-type')) && r.json.name === 'Homelab Lookout' && r.json.start_url === '/' && r.json.display === 'standalone', 'manifest: public, and without a login it says only "Homelab Lookout"');
   ok(r.json.icons.some((i) => i.purpose === 'maskable' && i.sizes === '512x512') && r.json.icons.some((i) => i.sizes === '192x192'), 'manifest icons: 192, 512 and maskable');

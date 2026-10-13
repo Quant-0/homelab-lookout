@@ -266,7 +266,7 @@ const server = https.createServer(opts, (req, res) => {
     if (u === '/api2/json/nodes/pve1/storage/pbs/content?content=backup') return res.end(R({ data: [
       { volid: 'pbs:backup/vm/100/a', vmid: 100, ctime: Math.round(sec) - 86400, size: 12e9, format: 'pbs-vm', verification: { state: 'ok' } },
       { volid: 'pbs:backup/vm/100/b', vmid: 100, ctime: Math.round(sec) - 2 * 86400, size: 11e9, format: 'pbs-vm' },
-      { volid: 'pbs:backup/ct/101/a', vmid: 101, ctime: Math.round(sec) - 10 * 86400, size: 2e9, format: 'pbs-ct' },
+      { volid: 'pbs:backup/ct/101/a', vmid: 101, ctime: Math.floor(sec) - 10 * 86400 - 60, size: 2e9, format: 'pbs-ct' },
     ] }));
     if (u === '/api2/json/nodes/pve1/storage/local/content?content=backup') return res.end(R({ data: [
       { volid: 'local:backup/vzdump-qemu-100.vma.zst', vmid: '100', ctime: Math.round(sec) - 30 * 86400, size: 10e9, format: 'vma.zst' },

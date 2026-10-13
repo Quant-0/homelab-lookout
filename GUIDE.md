@@ -37,7 +37,14 @@ The CA can only vouch for this server (its network and its host names), so trust
 
 ### Sign in
 
-Open **https://192.168.1.140:8443** and sign in with the admin account. After 5 wrong passwords you have to wait: 30 seconds at first, doubling up to an hour. A login lasts 2 hours without use and 12 hours at most, and ends when the dashboard restarts.
+Open **https://192.168.1.140:8443** and sign in with the admin account. After 5 wrong passwords you have to wait: 30 seconds at first, doubling up to an hour.
+
+- A normal sign-in lasts 12 hours (2 hours without use).
+- **Keep me signed in on this device**: 30 days, ending after a week without use. Use it on your own phone and computer.
+- Restarts and updates of the dashboard don't sign you out.
+- Either way, a few risky changes ask for the password again if you haven't typed it in the last 15 minutes: downloading or restoring a backup, backup settings and destinations, alert channels, the web server settings, and making the dashboard or the status page public. Everything else just works.
+- **Admin → System → Signed-in browsers** lists where you are signed in, with **Sign out** for each and **Sign out everywhere else**. A new password signs out every other browser.
+- **Remember this device for viewing only** is for a wall tablet: it can look, never change anything.
 
 Away from home, the same address works through Tailscale.
 

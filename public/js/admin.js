@@ -2660,7 +2660,47 @@ showTab(location.hash.slice(1));
 
 const shortIp = (ip) => String(ip || '').replace(/^::ffff:/, '');
 
+// Signed-in browsers (full sessions); remembered view-only devices are listed below them
+async function loadSessions() {
+  try {
+    const r = await api('GET', '/api/admin/sessions');
+    $('sessions-others').hidden = r.sessions.length < 2;
+    $('sessions').replaceChildren(el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, el('th', { text: 'Browser' }), el('th', { text: 'Last used' }), el('th', { text: 'Signed in until' }), el('th'))),
+      el('tbody', null, r.sessions.map((x) => el('tr', null,
+        el('td', null,
+          el('div', null, x.name, x.current ? el('span', { class: 'small muted', text: ' · this browser' }) : ''),
+          el('div', { class: 'small muted num', text: `${x.keep ? `Kept signed in (${r.keepDays} days)` : 'Normal sign-in'} · from ${shortIp(x.lastIp)}` })),
+        el('td', { class: 'small num', text: fmt.time(x.lastSeen) }),
+        el('td', { class: 'small num', text: fmt.time(x.expires) }),
+        el('td', { class: 'r' }, el('button', { type: 'button', text: 'Sign out', onclick: () => endSession(x) }))))))));
+  } catch (e) {
+    $('sessions').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+async function endSession(x) {
+  if (x.current && !confirm('Sign out this browser?')) return;
+  try {
+    await api('DELETE', `/api/admin/sessions/${x.id}`);
+  } catch {
+    /* listed again below */
+  }
+  if (x.current) location.href = '/login';
+  else loadSessions();
+}
+
+$('sessions-others').addEventListener('click', async () => {
+  if (!confirm('Sign out every other browser? They will need the password again.')) return;
+  try {
+    await api('DELETE', '/api/admin/sessions');
+  } finally {
+    loadSessions();
+  }
+});
+
 async function loadRemembered() {
+  loadSessions();
   try {
     const r = await api('GET', '/api/admin/remembered');
     $('remembered-all').hidden = r.devices.length < 2;

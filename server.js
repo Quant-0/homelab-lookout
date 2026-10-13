@@ -45,6 +45,12 @@ const REMEMBER_FILE = path.join(DATA_DIR, 'remembered.json');
 
 const SESSION_IDLE_MS = 2 * 3600 * 1000;
 const SESSION_MAX_MS = 12 * 3600 * 1000;
+// "Keep me signed in": 30 days at most, and over after a week without use
+const KEEP_IDLE_MS = 7 * 86400 * 1000;
+const KEEP_MAX_MS = 30 * 86400 * 1000;
+// Risky changes need the password typed within this time (step-up), however long the session is
+const STEP_UP_MS = (Number(process.env.STEP_UP_S) || 15 * 60) * 1000;
+const MAX_SESSIONS = 20;
 const REMEMBER_MS = 30 * 86400 * 1000; // "Remember this device": view-only, fixed 30 days from login
 const REMEMBER_MAX = 20;
 const MAX_BODY = 64 * 1024;
@@ -5145,7 +5151,53 @@ function powerSummary() {
 // ---------------------------------------------------------------------------
 // Sessions, rate limiting
 
-const sessions = new Map(); // id -> { user, csrf, created, seen }
+// Sessions are keyed by the SHA-256 of the cookie's token and saved (0600) so a restart or deploy
+// doesn't sign anyone out; the file holds no token, so it can't be used to sign in. A session made
+// under an earlier password is dropped when loaded.
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const sessions = new Map(); // token hash -> { id (= hash), pub, user, csrf, created, seen, secure, keep, authAt, pw, name, ip }
+let sessionsDirty = false;
+const sessionHash = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+const sessionLimits = (s) => (s.keep ? [KEEP_IDLE_MS, KEEP_MAX_MS] : [SESSION_IDLE_MS, SESSION_MAX_MS]);
+const sessionExpired = (s, now = Date.now()) => now - s.seen > sessionLimits(s)[0] || now - s.created > sessionLimits(s)[1];
+const freshAuth = (s) => Boolean(s && !s.readOnly && Date.now() - (s.authAt || 0) < STEP_UP_MS);
+
+function saveSessions() {
+  sessionsDirty = false;
+  writeJsonAtomic(SESSIONS_FILE, { sessions: [...sessions.values()] });
+}
+
+function loadSessions() {
+  const admin = readAdmin();
+  const now = Date.now();
+  for (const r of readJson(SESSIONS_FILE, {}).sessions || []) {
+    const ok = r && /^[0-9a-f]{64}$/.test(r.id) && /^[0-9a-f]{16}$/.test(r.pub) && typeof r.csrf === 'string' && r.csrf.length >= 32
+      && [r.created, r.seen, r.authAt].every(Number.isFinite) && typeof r.secure === 'boolean'
+      && admin && r.user === admin.username && r.pw === (admin.changedAt ?? null);
+    if (ok && !sessionExpired(r, now)) sessions.set(r.id, { id: r.id, pub: r.pub, user: r.user, csrf: r.csrf, created: r.created, seen: r.seen, secure: r.secure, keep: r.keep === true, authAt: r.authAt, pw: r.pw, name: String(r.name || '').slice(0, 60), ip: String(r.ip || '').slice(0, 64) });
+  }
+}
+
+// What a stolen, still-signed-in browser must not do without the password: change how the server
+// listens, touch backups (they carry every secret, encrypted) or where they go, or where alerts are
+// sent. Tests of a channel or destination are left out; so is the password change, which asks for
+// the current password itself. Making the dashboard or status page public is checked in its route.
+function needsStepUp(p, m) {
+  if (m === 'GET') return p.startsWith('/api/admin/backup/local/');
+  if (/\/test$/.test(p)) return false;
+  return p === '/api/admin/server' || p === '/api/admin/backup/settings' || p === '/api/admin/backup/download'
+    || p === '/api/admin/backup/restore' || p === '/api/admin/backup/restore-local'
+    || p.startsWith('/api/admin/backup/destinations') || p.startsWith('/api/admin/backup/local/') || p.startsWith('/api/admin/alerts/channels');
+}
+
+function stepUpRequired(res) {
+  return sendJson(res, 403, { error: 'Confirm your password to make this change', reauth: true });
+}
+
+function endSession(s) {
+  sessions.delete(s.id);
+  saveSessions();
+}
 
 // HTTPS requests get a __Host- cookie with the Secure flag; plain HTTP a separate cookie, so a
 // session created over HTTPS is never sent over HTTP. COOKIE_SECURE=1 is for TLS-terminating proxies.
@@ -5164,25 +5216,35 @@ function parseCookies(header) {
 }
 
 function getSession(req) {
-  const id = parseCookies(req.headers.cookie)[cookieName(req)];
-  if (!id) return null;
-  const s = sessions.get(id);
+  const token = parseCookies(req.headers.cookie)[cookieName(req)];
+  if (!token || token.length > 100) return null;
+  const s = sessions.get(sessionHash(token));
   if (!s || s.secure !== secureRequest(req)) return null; // HTTPS sessions are only valid over HTTPS (and vice versa)
   const now = Date.now();
-  if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) {
-    sessions.delete(id);
+  if (sessionExpired(s, now)) {
+    endSession(s);
     return null;
   }
+  if (now - s.seen > 60e3) sessionsDirty = true; // "last used" is saved now and then, not on every request
   s.seen = now;
-  s.id = id;
+  s.ip = req.socket.remoteAddress || s.ip;
   return s;
 }
 
-function createSession(req, res, user) {
-  const id = crypto.randomBytes(32).toString('base64url');
-  const s = { user, csrf: crypto.randomBytes(32).toString('base64url'), created: Date.now(), seen: Date.now(), secure: secureRequest(req) };
-  sessions.set(id, s);
-  setCookie(req, res, id, SESSION_MAX_MS / 1000);
+function createSession(req, res, user, { keep = false } = {}) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const now = Date.now();
+  const admin = readAdmin();
+  const s = {
+    id: sessionHash(token), pub: crypto.randomBytes(8).toString('hex'), user, csrf: crypto.randomBytes(32).toString('base64url'),
+    created: now, seen: now, secure: secureRequest(req), keep: Boolean(keep), authAt: now, pw: admin?.changedAt ?? null,
+    name: deviceName(req.headers['user-agent']), ip: req.socket.remoteAddress || '',
+  };
+  sessions.set(s.id, s);
+  // at most 20 at a time: the longest unused go
+  for (const old of [...sessions.values()].filter((x) => x.user === user).sort((a, b) => b.seen - a.seen).slice(MAX_SESSIONS)) sessions.delete(old.id);
+  saveSessions();
+  setCookie(req, res, token, (keep ? KEEP_MAX_MS : SESSION_MAX_MS) / 1000);
   return s;
 }
 
@@ -5262,7 +5324,12 @@ function getViewer(req) {
 
 setInterval(() => {
   const now = Date.now();
-  for (const [id, s] of sessions) if (now - s.seen > SESSION_IDLE_MS || now - s.created > SESSION_MAX_MS) sessions.delete(id);
+  for (const [id, s] of sessions) {
+    if (!sessionExpired(s, now)) continue;
+    sessions.delete(id);
+    sessionsDirty = true;
+  }
+  if (sessionsDirty) saveSessions();
   for (const r of remembered.values()) if (r.expires <= now) forgetDevice(r);
   for (const [k, v] of loginFailures) if (now - v.last > 24 * 3600 * 1000) loginFailures.delete(k);
 }, 60 * 1000).unref();
@@ -6173,12 +6240,13 @@ async function handleLogin(req, res) {
   loginFailures.delete('ip:' + ip);
   const old = getSession(req);
   if (old) sessions.delete(old.id);
-  createSession(req, res, admin.username);
+  const keep = body.keep === true;
+  createSession(req, res, admin.username, { keep });
   const known = rememberedFor(req);
   if (body.remember === true && !known) rememberDevice(req, res, admin);
   const ctx = requestCtx.getStore();
   if (ctx) ctx.user = admin.username;
-  event('sign-in', `Signed in from ${ip}${body.remember === true && !known ? ' (device remembered for viewing)' : ''}`);
+  event('sign-in', `Signed in from ${ip}${keep ? ' (kept signed in for 30 days)' : ''}${body.remember === true && !known ? ' (device remembered for viewing)' : ''}`);
   sendJson(res, 200, { ok: true, remembered: Boolean(known) || body.remember === true });
 }
 
@@ -6276,9 +6344,63 @@ async function handleApi(req, res, url, session, viewer = null) {
   // Everything below changes state or exposes admin data: require CSRF token on writes.
   if (m !== 'GET' && !csrfOk(req, session)) return sendError(res, 403, 'Invalid CSRF token');
 
+  // Risky changes need the password typed in the last 15 minutes (see needsStepUp)
+  if (!session.readOnly && needsStepUp(p, m) && !freshAuth(session)) return stepUpRequired(res);
+
+  if (p === '/api/reauth' && m === 'POST') {
+    // Confirming the password: locked out like the login form, logged either way
+    const ip = req.socket.remoteAddress || '?';
+    const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+    if (wait) {
+      res.setHeader('Retry-After', String(wait));
+      return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+    }
+    if (session.readOnly) return sendError(res, 403, 'Sign in with the password first');
+    const body = await readBody(req);
+    const admin = readAdmin();
+    const ok = admin && session.user === admin.username && (await verifyPassword(typeof body.password === 'string' ? body.password.slice(0, 1024) : '', admin.hash));
+    if (!ok) {
+      registerFailure('ip:' + ip, 5);
+      registerFailure('global', 20);
+      event('sign-in', `Wrong password when confirming a change, from ${ip}`);
+      await new Promise((r) => setTimeout(r, 400 + crypto.randomInt(400)));
+      return sendError(res, 403, 'Wrong password');
+    }
+    loginFailures.delete('ip:' + ip);
+    session.authAt = Date.now();
+    saveSessions();
+    event('sign-in', 'Password confirmed for a change');
+    return sendJson(res, 200, { ok: true, until: session.authAt + STEP_UP_MS });
+  }
+
+  // --- Signed-in browsers ---
+  if (p === '/api/admin/sessions' && m === 'GET') {
+    const list = [...sessions.values()].filter((x) => x.user === session.user && !sessionExpired(x)).sort((a, b) => b.seen - a.seen);
+    return sendJson(res, 200, {
+      keepDays: KEEP_MAX_MS / 86400e3,
+      sessions: list.map((x) => ({ id: x.pub, name: x.name, keep: x.keep, created: x.created, lastSeen: x.seen, lastIp: x.ip, expires: Math.min(x.created + sessionLimits(x)[1], x.seen + sessionLimits(x)[0]), current: x === session })),
+    });
+  }
+  if (p === '/api/admin/sessions' && m === 'DELETE') {
+    // everywhere but here
+    let n = 0;
+    for (const x of [...sessions.values()]) if (x !== session && x.user === session.user) n += sessions.delete(x.id) ? 1 : 0;
+    saveSessions();
+    event('sign-in', `Signed out ${n} other browser${n === 1 ? '' : 's'}`);
+    return sendJson(res, 200, { ok: true, count: n });
+  }
+  const sx = p.match(/^\/api\/admin\/sessions\/([0-9a-f]{16})$/);
+  if (sx && m === 'DELETE') {
+    const x = [...sessions.values()].find((y) => y.pub === sx[1] && y.user === session.user);
+    if (!x) return sendError(res, 404, 'Not found');
+    endSession(x);
+    event('sign-in', `Signed out: ${x.name}${x === session ? ' (this browser)' : ''}`);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (p === '/api/logout' && m === 'POST') {
     // Logging out also forgets this device, if it was remembered
-    if (!session.readOnly) sessions.delete(session.id);
+    if (!session.readOnly) endSession(session);
     const device = rememberedFor(req);
     if (device) {
       forgetDevice(device);
@@ -6342,7 +6464,10 @@ async function handleApi(req, res, url, session, viewer = null) {
     const prevRefresh = config.settings.dashboard.refreshSeconds;
     const prevPower = JSON.stringify(config.settings.power);
     const before = structuredClone(config.settings);
-    config.settings = validateSettings(body, config.settings);
+    const next = validateSettings(body, config.settings);
+    // making the dashboard or the status page public is a step-up change too
+    if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled)) && !freshAuth(session)) return stepUpRequired(res);
+    config.settings = next;
     saveConfig();
     if (config.settings.dashboard.refreshSeconds !== prevRefresh) schedulePolling();
     else if (JSON.stringify(config.settings.power) !== prevPower) ensurePrices().catch(() => {});
@@ -7306,6 +7431,9 @@ async function handleApi(req, res, url, session, viewer = null) {
     const changedAt = Date.now();
     writeJsonAtomic(ADMIN_FILE, { username: admin.username, hash: await hashPassword(body.password), changedAt });
     for (const id of sessions.keys()) if (id !== session.id) sessions.delete(id);
+    session.pw = changedAt; // this one stays, under the new password
+    session.authAt = Date.now();
+    saveSessions();
     const here = rememberedFor(req);
     for (const r of [...remembered.values()]) if (r !== here) forgetDevice(r);
     if (here) here.pw = changedAt;
@@ -8870,6 +8998,8 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     writeJsonAtomic(ADMIN_FILE, bundle.admin);
     for (const r of [...remembered.values()]) forgetDevice(r); // they belonged to the replaced password
     saveRemembered();
+    sessions.clear(); // so did every sign-in, this one too: sign in with the restored password
+    saveSessions();
   }
   results.clear();
   serviceResults.clear();
@@ -9421,6 +9551,7 @@ async function main() {
   loadDocs();
   loadDocsHistory();
   loadRemembered();
+  loadSessions();
   loadStatic();
   initAllowedHosts();
   DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
@@ -9445,6 +9576,7 @@ async function main() {
   setInterval(saveEnergy, 5 * 60 * 1000).unref();
   setInterval(saveHistory, 5 * 60 * 1000).unref();
   setInterval(() => rememberedDirty && saveRemembered(), 5 * 60 * 1000).unref(); // "last used"
+  setInterval(() => sessionsDirty && saveSessions(), 5 * 60 * 1000).unref();
   setInterval(backupTick, 30 * 1000).unref();
   setInterval(() => config.checkins.length && alertsSoon(), 30 * 1000).unref(); // a missed check-in needs no poll to be noticed
   setTimeout(updatesTick, 2 * 60 * 1000).unref(); // after the first polls, so Proxmox nodes are known
@@ -9456,6 +9588,7 @@ async function main() {
       histDb?.close(); // folds the write-ahead log into history.db
       saveAlertState();
       if (rememberedDirty) saveRemembered();
+      if (sessionsDirty) saveSessions();
     } finally {
       process.exit(0);
     }

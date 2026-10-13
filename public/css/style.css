@@ -2227,3 +2227,10 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 }
 .vm-tools .seg { margin: 0; flex: none; }
 .vm-tools .seg button { padding: 0 12px; }
+
+/* Confirm your password (step-up for risky changes) */
+.confirm-dialog { width: min(400px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); }
+.confirm-dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+.confirm-form { display: flex; flex-direction: column; gap: 10px; padding: 20px; }
+.confirm-form h3 { font-size: 17px; }
+.confirm-form .form-actions { margin-top: 4px; }
