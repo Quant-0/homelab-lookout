@@ -102,7 +102,7 @@ function render(d) {
   $('vm-notes').replaceChildren(
     ...(d.notes || []).map((n) => el('p', { class: 'hint', text: n })),
     st.length ? el('p', { class: 'hint' }, el('strong', { text: 'Backups looked for on: ' }),
-      st.map((x) => (x.name ? `${x.name}${nodes.length > 1 ? ` (${x.node})` : ''}: ${x.error || `${x.count} backup${x.count === 1 ? '' : 's'}`}` : `${x.node}: ${x.error}`)).join(' · ')) : '');
+      st.map((x) => (x.name ? `${x.name}${nodes.length > 1 ? ` (${x.node})` : ''}: ${x.error || (x.hidden ? 'files not visible to the read-only token, times read from the backup job\'s log' : `${x.count} backup${x.count === 1 ? '' : 's'}`)}` : `${x.node}: ${x.error}`)).join(' · ')) : '');
   if (openKey) fillDrawer();
 }
 
@@ -172,7 +172,9 @@ function fillDrawer() {
         : kv([
           ['Newest', `${new Date(g.backup.last).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} (${fmt.ago(g.backup.last)})`],
           ['Storage', g.backup.storage],
-          ['Backups kept', String(g.backup.count)],
+          ['Backups kept', g.backup.count ? String(g.backup.count) : null],
+          ['Last attempt', g.backup.failedAt && g.backup.failedAt > g.backup.last ? `Failed ${fmt.ago(g.backup.failedAt)}` : null],
+          ['Read from', g.backup.fromLog && !g.backup.count ? 'The backup job\'s log (the files are hidden from a read-only token)' : null],
           ['Size', g.backup.size ? fmt.bytes(g.backup.size) : null],
           ['Verified', g.backup.verified ? (g.backup.verified === 'ok' ? 'OK' : g.backup.verified) : null],
         ]),

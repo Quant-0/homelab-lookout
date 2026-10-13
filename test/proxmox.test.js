@@ -79,7 +79,9 @@ async function until(fn, ms = 20000) {
   const b100 = card.backup;
   const b101 = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 101).backup;
   const b102 = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 102).backup;
-  ok(b100?.count === 3 && b100.storage === 'pbs' && b100.verified === 'ok' && Date.now() - b100.last < 2 * 86400e3 && b102?.last === null && b102.count === 0, `backups per VM (${JSON.stringify(b100)})`);
+  ok(b100?.count === 3 && b100.storage === 'pbs' && b100.verified === 'ok' && Date.now() - b100.last < 2 * 86400e3, `backups per VM (${JSON.stringify(b100)})`);
+  // VM 102's files aren't listed (as for a read-only token); its backup job's log says when and where
+  ok(b102?.fromLog === true && b102.storage === 'nfs-dump' && Math.abs(Date.now() - 90000e3 - b102.last) < 120e3 && b102.failedAt > b102.last, `a backup read from the job log, with the newer failed attempt (${JSON.stringify(b102)})`);
   const att2 = (await req('GET', '/api/dashboard')).json.attention;
   ok(att2.some((a) => /^docker last backed up 10 days ago$/.test(a.text) && a.severity === 'warning' && /its backup job runs every 7 days$/.test(a.detail)) && !att2.some((a) => /truenas last backed up|win11 last backed up/.test(a.text)), 'overdue against its job (weekly: after 8 days); one never backed up is not alerted');
   ok(b100.job?.every === 1 && b100.job.schedule === '02:00' && b100.job.nextRun > Date.now() && b102.job === null, `each VM's backup job and how often it runs (${JSON.stringify(b100.job)})`);

@@ -277,6 +277,20 @@ const server = https.createServer(opts, (req, res) => {
       { id: 'backup-weekly', type: 'vzdump', schedule: 'sat 02:00', vmid: '101', storage: 'pbs', enabled: 1 },
       { id: 'backup-old', type: 'vzdump', schedule: 'monthly', all: 1, storage: 'local', enabled: 0 },
     ] }));
+    // the backup jobs' logs: VM 102 was backed up to an NFS share by the older run, the newest failed
+    if (u.startsWith('/api2/json/nodes/pve1/tasks/UPID%3Apve1%3A1/log')) return res.end(R({ data: [
+      { n: 1, t: 'INFO: starting new backup job: vzdump 102 --storage nfs-dump' },
+      { n: 2, t: 'INFO: Starting Backup of VM 102 (qemu)' },
+      { n: 3, t: 'ERROR: Backup of VM 102 failed - unable to open file' },
+      { n: 4, t: 'INFO: Backup job finished with errors' },
+    ] }));
+    if (u.startsWith('/api2/json/nodes/pve1/tasks/UPID%3Apve1%3A2/log')) return res.end(R({ data: [
+      { n: 1, t: 'INFO: starting new backup job: vzdump 102 --storage nfs-dump' },
+      { n: 2, t: 'INFO: Starting Backup of VM 102 (qemu)' },
+      { n: 3, t: "INFO: creating vzdump archive '/mnt/pve/nfs-dump/dump/vzdump-qemu-102-2026_10_01-03_00_02.vma.zst'" },
+      { n: 4, t: 'INFO: Finished Backup of VM 102 (00:01:02)' },
+      { n: 5, t: 'INFO: Backup job finished successfully' },
+    ] }));
     // the node's task log (the cluster's recent list is too short for a monthly job)
     if (u === '/api2/json/nodes/pve1/tasks?typefilter=vzdump&limit=10') return res.end(R({ data: [
       { upid: 'UPID:pve1:1', node: 'pve1', type: 'vzdump', status: 'job errors', starttime: Math.round(sec) - 7200, endtime: Math.round(sec) - 3600, user: 'root@pam' },

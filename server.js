@@ -2056,10 +2056,13 @@ async function pveDetails(get, data) {
   // the last backup job (vzdump) per node, from the node's own task log: the cluster's list of
   // recent tasks is too short for a job that runs once a month
   const backups = [];
+  const vzdumps = []; // [{ node, task }] newest first, for the per-VM results in their logs
   for (const n of data.nodes.filter((x) => x.status === 'online')) {
     const tasks = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/tasks?typefilter=vzdump&limit=10`).catch(() => null);
-    const t = (Array.isArray(tasks) ? tasks : []).filter((x) => x.type === 'vzdump' && x.endtime).sort((x, y) => y.endtime - x.endtime)[0];
+    const done = (Array.isArray(tasks) ? tasks : []).filter((x) => x.type === 'vzdump' && x.endtime && x.upid).sort((x, y) => y.endtime - x.endtime);
+    const t = done[0];
     if (t) backups.push({ node: n.name, at: t.endtime * 1000, status: String(t.status || ''), ok: t.status === 'OK', warnings: /^WARNINGS/i.test(t.status || ''), vmid: t.id || null });
+    vzdumps.push(...done.slice(0, 4).map((task) => ({ node: n.name, task })));
   }
   // the newest backup of each VM, from the storages that hold backups (NFS, CIFS, a directory,
   // Proxmox Backup Server…). Each storage looked at is reported, with what it held or why not.
@@ -2098,6 +2101,43 @@ async function pveDetails(get, data) {
       }
     }
   }
+  // Proxmox hides backup files from a token that may not make backups itself (that needs
+  // Datastore.AllocateSpace and VM.Backup), so a read-only token often sees none. The backup jobs'
+  // logs say which VMs were backed up, and where, and only need Sys.Audit: read the newest ones.
+  const fromLog = {}; // vmid -> { at, storage, failed }
+  for (const { node: nn, task } of vzdumps.sort((x, y) => y.task.endtime - x.task.endtime).slice(0, 8)) {
+    const log = await get(`/api2/json/nodes/${encodeURIComponent(nn)}/tasks/${encodeURIComponent(task.upid)}/log?limit=20000`).catch(() => null);
+    if (!Array.isArray(log)) continue;
+    let current = null;
+    let storage = null;
+    for (const { t: line } of log) {
+      const text = String(line || '');
+      const start = /Starting Backup of VM (\d+)/.exec(text);
+      if (start) {
+        current = Number(start[1]);
+        storage = null;
+      }
+      const where = /\/mnt\/pve\/([A-Za-z0-9._-]+)\/|archive '([A-Za-z0-9._-]+):/.exec(text) || /storage '([A-Za-z0-9._-]+)'/.exec(text);
+      if (where && current !== null) storage = where[1] || where[2];
+      const fin = /Finished Backup of VM (\d+)/.exec(text);
+      const fail = /Backup of VM (\d+) failed/.exec(text);
+      const id = fin ? Number(fin[1]) : fail ? Number(fail[1]) : null;
+      if (id === null || fromLog[id]?.done) continue;
+      // the newest task decides; an older success still gives the time of the last good backup
+      const cur = (fromLog[id] ||= { at: null, storage: null, failedAt: null });
+      if (fin && !cur.at) Object.assign(cur, { at: task.endtime * 1000, storage: storage || cur.storage, done: true });
+      if (fail && !cur.at && !cur.failedAt) cur.failedAt = task.endtime * 1000;
+    }
+  }
+  if (Object.keys(fromLog).length) {
+    vmBackups ||= {};
+    for (const [id, x] of Object.entries(fromLog)) {
+      const cur = (vmBackups[id] ||= { last: null, count: 0, size: null, storage: null, verified: null });
+      if (x.at && (!cur.last || x.at > cur.last)) Object.assign(cur, { last: x.at, storage: x.storage || cur.storage, fromLog: true });
+      if (x.failedAt) cur.failedAt = x.failedAt;
+    }
+    for (const st of backupStorages) if (st.name && !st.count && !st.error) st.hidden = true;
+  }
   // the backup jobs: which VMs each covers and how often it runs, so a monthly job isn't late
   // after three days
   const jobs = [];
@@ -2117,6 +2157,7 @@ async function pveDetails(get, data) {
       const job = mine.sort((x, y) => x.every - y.every)[0];
       const rec = (vmBackups[g.vmid] ||= { last: null, count: 0, size: null, storage: null, verified: null });
       rec.job = job ? { schedule: job.schedule, every: job.every, storage: job.storage, nextRun: job.nextRun } : null;
+      if (rec.last && !rec.storage && job) rec.storage = job.storage;
     }
   }
   // inside the VMs, through the QEMU guest agent (where it's installed and switched on)
