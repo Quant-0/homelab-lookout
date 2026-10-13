@@ -2136,7 +2136,9 @@ async function pveDetails(get, data) {
       if (x.at && (!cur.last || x.at > cur.last)) Object.assign(cur, { last: x.at, storage: x.storage || cur.storage, fromLog: true });
       if (x.failedAt) cur.failedAt = x.failedAt;
     }
-    for (const st of backupStorages) if (st.name && !st.count && !st.error) st.hidden = true;
+    // the storages the logs name, where the listing showed nothing: the files are there, just hidden
+    const named = new Set(Object.values(fromLog).map((x) => x.storage).filter(Boolean));
+    for (const st of backupStorages) if (st.name && !st.count && !st.error && named.has(st.name)) st.hidden = true;
   }
   // the backup jobs: which VMs each covers and how often it runs, so a monthly job isn't late
   // after three days
