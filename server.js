@@ -4414,7 +4414,7 @@ function loadHistory() {
   history = cleanHistory(readJson(HISTORY_FILE, null));
 }
 
-// What runs the dashboard, for Admin → System. NODE_END: when each Node.js line stops getting
+// What runs the dashboard, for Admin → Server. NODE_END: when each Node.js line stops getting
 // security fixes upstream. VERSION is written by the deploy script (commit and time).
 const NODE_END = { 18: '2025-04-30', 19: '2023-06-01', 20: '2026-04-30', 21: '2024-06-01', 22: '2027-04-30', 23: '2025-06-01', 24: '2028-04-30', 25: '2026-06-01' };
 function runtimeInfo() {
@@ -5259,7 +5259,7 @@ function setCookie(req, res, value, maxAge, name = cookieName(req)) {
 // Remembered devices. "Remember this device" at login gives that browser 30 days of view-only
 // access: what the dashboard shows, plus Docs and Updates, but no changes and no Admin; those ask
 // for the password. The cookie holds a random token; only its SHA-256 hash is stored, so the file
-// can't be used to sign in. Admin → System lists the devices and can sign them out.
+// can't be used to sign in. Admin → Sign-in & security lists the devices and can sign them out.
 const remembered = new Map(); // hash -> { id, hash, user, name, created, lastSeen, lastIp, expires, secure }
 const viewerCsrf = new Map(); // device id -> CSRF token for its log-out (memory only)
 let rememberedDirty = false;

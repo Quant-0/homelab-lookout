@@ -66,11 +66,15 @@ let offline = false; // failed requests are expected while offline
   await page.fill('#password', 'correct horse battery');
   await page.click('button[type=submit]');
   await page.waitForURL(B + '/admin');
-  await page.click('#tabbtn-system');
+  // a phone: the sections are one menu
+  check(await page.isVisible('#tab-select') && !(await page.isVisible('#tabbtn-security')), 'on a phone, Admin sections are a menu');
+  await page.selectOption('#tab-select', 'security');
   await page.waitForSelector('#remembered tbody tr');
   const row = await page.textContent('#remembered tbody tr');
-  check(/Chrome on Android/.test(row) && /this device/.test(row) && /from 127\.0\.0\.1/.test(row), `Admin → System lists it: ${row.replace(/\s+/g, ' ').trim()}`);
-  check(await page.isVisible('#app-card') && /Add to Home Screen/.test(await page.textContent('#app-card')), 'install instructions in Admin → System');
+  check(/Chrome on Android/.test(row) && /this device/.test(row) && /from 127\.0\.0\.1/.test(row), `Admin → Sign-in & security lists it: ${row.replace(/\s+/g, ' ').trim()}`);
+  await page.selectOption('#tab-select', 'system');
+  await page.waitForSelector('#tab-system:not([hidden])');
+  check(/#system$/.test(page.url()) && await page.isVisible('#app-card') && /Add to Home Screen/.test(await page.textContent('#app-card')), 'install instructions in Admin → Server');
   await page.locator('#app-card').scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${S}/app-admin.png`, fullPage: false });
 

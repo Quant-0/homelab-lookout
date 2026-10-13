@@ -21,7 +21,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(cookie && cookie.expires * 1000 > Date.now() + 29 * 86400e3 && cookie.httpOnly && cookie.sameSite === 'Strict', 'a 30-day cookie, HttpOnly, SameSite=Strict');
 
   // Admin → System lists this browser
-  await page.goto(B + '/admin#system');
+  await page.goto(B + '/admin#security');
   await page.waitForSelector('#sessions table');
   check(/this browser/.test(await page.textContent('#sessions')) && /Kept signed in/.test(await page.textContent('#sessions')), 'Signed-in browsers lists this one, kept signed in');
 

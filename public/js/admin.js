@@ -1522,7 +1522,7 @@ $('web-form').addEventListener('submit', async (ev) => {
     if (!still) {
       const next = r.urls.https || r.urls.http;
       showMsg('web-msg', `Saved. Moving to ${next} …`, true);
-      setTimeout(() => (location.href = `${next.replace(/\/$/, '')}/admin#dashboard`), 1200);
+      setTimeout(() => (location.href = `${next.replace(/\/$/, '')}/admin#system`), 1200);
       return;
     }
     showMsg('web-msg', `Saved: ${[r.urls.https, r.urls.http].filter(Boolean).join(' and ')}`, true);
@@ -1545,8 +1545,6 @@ async function loadAlerts() {
   } catch (e) {
     showMsg('al-rules-msg', e.message, false);
   }
-  loadCheckins();
-  loadMaintenance();
 }
 
 // ---------------------------------------------------------------------------
@@ -2620,8 +2618,10 @@ $('ap-revert').addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 // Tabs (remembered in the URL, e.g. /admin#devices)
 
-const TABS = ['devices', 'services', 'alerts', 'power', 'dashboard', 'system'];
-const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'dashboard', backup: 'system', account: 'system' }; // links from before
+// In three groups: Monitoring (devices … check-ins), Dashboard (dashboard, look, power), System
+const TABS = ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look', 'power', 'backups', 'security', 'system'];
+// links from before: older tab names, and the cards that moved out of Alerts, "Dashboard & look" and System
+const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'look', backup: 'backups', account: 'security', checkins: 'schedules', maintenance: 'schedules', sessions: 'security', server: 'system' };
 
 function showTab(name, focus) {
   name = OLD_TABS[name] || name;
@@ -2636,18 +2636,25 @@ function showTab(name, focus) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
   if (name === 'services') loadServices();
-  if (name === 'system') {
-    loadWeb();
-    loadBackup();
-    loadRemembered();
-  }
+  if (name === 'system') loadWeb();
+  if (name === 'backups') loadBackup();
+  if (name === 'security') loadRemembered();
   if (name === 'alerts') loadAlerts();
+  if (name === 'schedules') {
+    loadCheckins();
+    loadMaintenance();
+  }
+  $('tab-select').value = name;
 }
+
+// phones: one menu instead of ten buttons
+$('tab-select').addEventListener('change', (e) => showTab(e.target.value));
 
 for (const t of TABS) $(`tabbtn-${t}`).addEventListener('click', () => showTab(t));
 document.querySelector('.page-tabs').addEventListener('keydown', (e) => {
   const i = TABS.findIndex((t) => $(`tabbtn-${t}`) === document.activeElement);
-  const keys = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 };
+  // the list is vertical on a wide screen and a row on a narrow one: both arrow pairs work
+  const keys = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: TABS.length - 1 };
   if (i < 0 || !(e.key in keys)) return;
   e.preventDefault();
   showTab(TABS[(keys[e.key] + TABS.length) % TABS.length], true);

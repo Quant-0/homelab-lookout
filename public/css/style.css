@@ -1101,6 +1101,9 @@ dialog.drawer::backdrop { background: rgb(0 0 0 / 0.45); -webkit-backdrop-filter
 .page-tabs [role="tab"]:hover { color: var(--text); background: none; }
 .page-tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .tab-panel[hidden] { display: none; }
+/* Admin: tabs in three groups (a heading each in the list on the left), one menu on a phone */
+.tab-select { display: none; }
+.page-tabs .tab-group { display: none; }
 .admin main { max-width: 1240px; }
 
 /* ---------- Admin rack ---------- */
@@ -1919,6 +1922,8 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
   .admin main > .page-tabs { grid-column: 1; grid-row: 1 / span 30; position: sticky; top: 72px; flex-direction: column; gap: 2px; margin: 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--glass); box-shadow: inset 0 1px 0 var(--edge-hi), var(--shadow); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
   .admin .page-tabs [role="tab"] { margin: 0; padding: 9px 12px; border: 0; border-radius: 10px; text-align: left; }
   .admin .page-tabs [role="tab"][aria-selected="true"] { background: color-mix(in srgb, var(--text) 7%, transparent); border: 0; }
+  .admin .page-tabs .tab-group { display: block; padding: 12px 12px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .admin .page-tabs .tab-group:first-child { padding-top: 4px; }
 }
 .admin .card { padding: 20px 22px; }
 .device-row { grid-template-columns: 76px auto minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--text) 3%, transparent); border: 1px solid transparent; }
@@ -1998,11 +2003,11 @@ a.svc-card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 var(--
 .icon-results:empty { display: none; }
 /* phones: the names beside the rack get a bigger share, so they are not cut after a few letters */
 @media (max-width: 560px) { .rack2 { grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 44%); gap: 0 6px; } }
-/* phones: all six Admin sections visible at once (3 × 2) instead of a row cut off at the edge */
+/* phones: one menu with the ten sections in their groups, instead of a row cut off at the edge */
 @media (max-width: 640px) {
-  .admin main > .page-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--glass); overflow: visible; }
-  .admin .page-tabs [role="tab"] { margin: 0; padding: 9px 4px; border: 0; border-radius: 10px; justify-content: center; text-align: center; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .admin .page-tabs [role="tab"][aria-selected="true"] { border: 0; background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .admin main > .page-tabs { display: none; }
+  .admin .tab-select { display: block; margin-bottom: 16px; }
+  .admin .tab-select select { width: 100%; height: 44px; font-size: 16px; font-weight: 600; }
 }
 /* phones: the three totals as rows (label left, number right) instead of three columns too narrow for the numbers */
 @media (max-width: 640px) {

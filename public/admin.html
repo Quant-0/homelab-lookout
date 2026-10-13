@@ -20,13 +20,25 @@
     </header>
     <main>
       <p class="banner hidden" id="global-error" role="alert"></p>
+      <label class="tab-select"><span class="sr-only">Admin section</span><select id="tab-select" aria-label="Admin section">
+        <optgroup label="Monitoring"><option value="devices">Devices</option><option value="services">Services</option><option value="alerts">Alerts</option><option value="schedules">Check-ins &amp; maintenance</option></optgroup>
+        <optgroup label="Dashboard"><option value="dashboard">Dashboard</option><option value="look">Look</option><option value="power">Power &amp; cost</option></optgroup>
+        <optgroup label="System"><option value="backups">Backups</option><option value="security">Sign-in &amp; security</option><option value="system">Server</option></optgroup>
+      </select></label>
       <nav class="page-tabs" role="tablist" aria-label="Admin sections">
+        <span class="tab-group" aria-hidden="true">Monitoring</span>
         <button type="button" role="tab" id="tabbtn-devices" aria-controls="tab-devices" aria-selected="false" tabindex="-1">Devices</button>
         <button type="button" role="tab" id="tabbtn-services" aria-controls="tab-services" aria-selected="false" tabindex="-1">Services</button>
         <button type="button" role="tab" id="tabbtn-alerts" aria-controls="tab-alerts" aria-selected="false" tabindex="-1">Alerts</button>
+        <button type="button" role="tab" id="tabbtn-schedules" aria-controls="tab-schedules" aria-selected="false" tabindex="-1">Check-ins &amp; maintenance</button>
+        <span class="tab-group" aria-hidden="true">Dashboard</span>
+        <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard</button>
+        <button type="button" role="tab" id="tabbtn-look" aria-controls="tab-look" aria-selected="false" tabindex="-1">Look</button>
         <button type="button" role="tab" id="tabbtn-power" aria-controls="tab-power" aria-selected="false" tabindex="-1">Power &amp; cost</button>
-        <button type="button" role="tab" id="tabbtn-dashboard" aria-controls="tab-dashboard" aria-selected="false" tabindex="-1">Dashboard &amp; look</button>
-        <button type="button" role="tab" id="tabbtn-system" aria-controls="tab-system" aria-selected="false" tabindex="-1">System</button>
+        <span class="tab-group" aria-hidden="true">System</span>
+        <button type="button" role="tab" id="tabbtn-backups" aria-controls="tab-backups" aria-selected="false" tabindex="-1">Backups</button>
+        <button type="button" role="tab" id="tabbtn-security" aria-controls="tab-security" aria-selected="false" tabindex="-1">Sign-in &amp; security</button>
+        <button type="button" role="tab" id="tabbtn-system" aria-controls="tab-system" aria-selected="false" tabindex="-1">Server</button>
       </nav>
       <div class="tab-panel" role="tabpanel" id="tab-devices" aria-labelledby="tabbtn-devices" hidden>
       <section class="card">
@@ -216,6 +228,17 @@
           <div class="form-actions"><button type="submit" class="primary">Save</button><span class="msg" id="al-rules-msg" role="status"></span></div>
         </form>
       </section>
+      <section class="card">
+        <div class="card-head">
+          <div class="title"><h3>Active now</h3></div>
+          <button type="button" id="al-refresh">Refresh</button>
+        </div>
+        <div id="al-active"></div>
+        <h4>Recent notifications</h4>
+        <div id="al-log"></div>
+      </section>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="tab-schedules" aria-labelledby="tabbtn-schedules" hidden>
       <section class="card" id="ck-card">
         <div class="card-head">
           <div class="title"><h3>Check-ins</h3><p class="hint">For backups and cron jobs: the job calls its own address when it has run. If it doesn't within the time you set, or reports a failure, you get a <em>Check-in missed</em> alert.</p></div>
@@ -232,14 +255,88 @@
         <div class="dest-editor hidden" id="mw-editor"></div>
         <div id="mw-list"></div>
       </section>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="tab-dashboard" aria-labelledby="tabbtn-dashboard" hidden>
       <section class="card">
-        <div class="card-head">
-          <div class="title"><h3>Active now</h3></div>
-          <button type="button" id="al-refresh">Refresh</button>
+        <h3>Dashboard</h3>
+        <form id="dash-form">
+          <div class="form-grid">
+            <label><span>Title</span><input name="title" maxlength="60"></label>
+            <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
+            <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
+            <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
+          </div>
+          <div class="carrier-pick" id="carrier-pick"></div>
+          <p class="hint">A public dashboard shows host names and status data to anyone who can reach the server, but never addresses, usernames or secrets. Admin always requires login.</p>
+
+          <h4>Services on Home</h4>
+          <div class="form-grid two">
+            <label><span>Show</span>
+              <select name="homeServices">
+                <option value="line">One line with the count (default)</option>
+                <option value="tiles">Tiles</option>
+                <option value="compact">Compact list</option>
+                <option value="down">Only the ones that are down</option>
+                <option value="off">Off (only on the Services tab)</option>
+              </select>
+            </label>
+            <label class="check wide"><input type="checkbox" name="serviceAlerts"> A service that is down shows under “Needs you” and in the top summary</label>
+          </div>
+          <p class="hint">This also applies to the wall display. To leave out single services, untick “Show on Home” on the service. Alert notifications are set on the Alerts tab and are not changed by this.</p>
+
+          <h4>VMs and containers</h4>
+          <fieldset class="checks" aria-label="Where VMs and containers show">
+            <legend class="small muted">Show them</legend>
+            <label class="check"><input type="checkbox" name="vms.home"> On Home</label>
+            <label class="check"><input type="checkbox" name="vms.host"> In the Proxmox server's details</label>
+            <label class="check"><input type="checkbox" name="vms.rack"> As a count on the server in the rack</label>
+          </fieldset>
+          <fieldset class="checks" aria-label="What to show about each VM or container">
+            <legend class="small muted">With</legend>
+            <label class="check"><input type="checkbox" name="vms.stopped"> Stopped ones too</label>
+            <label class="check"><input type="checkbox" name="vms.cpu"> CPU</label>
+            <label class="check"><input type="checkbox" name="vms.ram"> Memory</label>
+            <label class="check"><input type="checkbox" name="vms.uptime"> Uptime</label>
+            <label class="check"><input type="checkbox" name="vms.homeNumbers"> On Home as a section with names and numbers (otherwise one line with the count)</label>
+          </fieldset>
+          <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
+        </form>
+      </section>
+      <section class="card" id="sp-card">
+        <h3>Status page</h3>
+        <p class="hint">A public page at <a href="/status" target="_blank" rel="noopener">/status</a> that shows only whether your services are up, and their uptime over 90 days. No addresses, links, hardware or VMs. It works while the dashboard itself stays private.</p>
+        <form id="sp-form" autocomplete="off">
+          <div class="form-grid two">
+            <label class="check wide"><input type="checkbox" name="enabled"> Show the status page to everyone</label>
+            <label><span>Title</span><input name="title" maxlength="60" placeholder="Same as the dashboard, plus “status”"></label>
+          </div>
+          <div class="form-actions"><button type="submit" class="primary">Save</button><a class="button" href="/status" target="_blank" rel="noopener">Open the status page</a><span class="msg" id="sp-msg" role="status"></span></div>
+        </form>
+      </section>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="tab-look" aria-labelledby="tabbtn-look" hidden>
+      <section class="card" id="appearance-card">
+        <h3>Appearance</h3>
+        <p class="hint">The default look for everyone. Viewers can pick their own theme and accent on their device with the palette button. Changes preview on this page right away; save to apply them everywhere. To reorder or hide tiles, use <a href="/">Customize</a> on Home.</p>
+        <h4>Theme</h4>
+        <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
+        <h4>Accent</h4>
+        <div class="swatches-row" id="accent-row" role="group" aria-label="Accent"></div>
+        <h4>Logo</h4>
+        <div class="logo-pick" id="logo-pick"></div>
+        <h4>Background</h4>
+        <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
+        <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
+        <div class="form-grid">
+          <label><span>Background blur</span><div class="range-row"><input type="range" id="ap-blur" min="0" max="40" step="1"><output id="ap-blur-out"></output></div></label>
+          <label><span>Dim background (towards the theme color)</span><div class="range-row"><input type="range" id="ap-dim" min="0" max="90" step="1"><output id="ap-dim-out"></output></div></label>
+          <label><span>Card opacity (lower = frosted glass)</span><div class="range-row"><input type="range" id="ap-opacity" min="30" max="100" step="1"><output id="ap-opacity-out"></output></div></label>
         </div>
-        <div id="al-active"></div>
-        <h4>Recent notifications</h4>
-        <div id="al-log"></div>
+        <div class="form-actions">
+          <button type="button" class="primary" id="ap-save">Save appearance</button>
+          <button type="button" id="ap-revert">Revert</button>
+          <span class="msg" id="ap-msg" role="status"></span>
+        </div>
       </section>
       </div>
       <div class="tab-panel" role="tabpanel" id="tab-power" aria-labelledby="tabbtn-power" hidden>
@@ -302,127 +399,7 @@
         </form>
       </section>
       </div>
-      <div class="tab-panel" role="tabpanel" id="tab-dashboard" aria-labelledby="tabbtn-dashboard" hidden>
-      <section class="card" id="sp-card">
-        <h3>Status page</h3>
-        <p class="hint">A public page at <a href="/status" target="_blank" rel="noopener">/status</a> that shows only whether your services are up, and their uptime over 90 days. No addresses, links, hardware or VMs. It works while the dashboard itself stays private.</p>
-        <form id="sp-form" autocomplete="off">
-          <div class="form-grid two">
-            <label class="check wide"><input type="checkbox" name="enabled"> Show the status page to everyone</label>
-            <label><span>Title</span><input name="title" maxlength="60" placeholder="Same as the dashboard, plus “status”"></label>
-          </div>
-          <div class="form-actions"><button type="submit" class="primary">Save</button><a class="button" href="/status" target="_blank" rel="noopener">Open the status page</a><span class="msg" id="sp-msg" role="status"></span></div>
-        </form>
-      </section>
-      <section class="card">
-        <h3>Dashboard</h3>
-        <form id="dash-form">
-          <div class="form-grid">
-            <label><span>Title</span><input name="title" maxlength="60"></label>
-            <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
-            <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
-            <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
-          </div>
-          <div class="carrier-pick" id="carrier-pick"></div>
-          <p class="hint">A public dashboard shows host names and status data to anyone who can reach the server, but never addresses, usernames or secrets. Admin always requires login.</p>
-
-          <h4>Services on Home</h4>
-          <div class="form-grid two">
-            <label><span>Show</span>
-              <select name="homeServices">
-                <option value="line">One line with the count (default)</option>
-                <option value="tiles">Tiles</option>
-                <option value="compact">Compact list</option>
-                <option value="down">Only the ones that are down</option>
-                <option value="off">Off (only on the Services tab)</option>
-              </select>
-            </label>
-            <label class="check wide"><input type="checkbox" name="serviceAlerts"> A service that is down shows under “Needs you” and in the top summary</label>
-          </div>
-          <p class="hint">This also applies to the wall display. To leave out single services, untick “Show on Home” on the service. Alert notifications are set on the Alerts tab and are not changed by this.</p>
-
-          <h4>VMs and containers</h4>
-          <fieldset class="checks" aria-label="Where VMs and containers show">
-            <legend class="small muted">Show them</legend>
-            <label class="check"><input type="checkbox" name="vms.home"> On Home</label>
-            <label class="check"><input type="checkbox" name="vms.host"> In the Proxmox server's details</label>
-            <label class="check"><input type="checkbox" name="vms.rack"> As a count on the server in the rack</label>
-          </fieldset>
-          <fieldset class="checks" aria-label="What to show about each VM or container">
-            <legend class="small muted">With</legend>
-            <label class="check"><input type="checkbox" name="vms.stopped"> Stopped ones too</label>
-            <label class="check"><input type="checkbox" name="vms.cpu"> CPU</label>
-            <label class="check"><input type="checkbox" name="vms.ram"> Memory</label>
-            <label class="check"><input type="checkbox" name="vms.uptime"> Uptime</label>
-            <label class="check"><input type="checkbox" name="vms.homeNumbers"> On Home as a section with names and numbers (otherwise one line with the count)</label>
-          </fieldset>
-          <div class="form-actions"><button type="submit" class="primary">Save dashboard settings</button><span class="msg" id="dash-msg" role="status"></span></div>
-        </form>
-      </section>
-      <section class="card" id="appearance-card">
-        <h3>Appearance</h3>
-        <p class="hint">The default look for everyone. Viewers can pick their own theme and accent on their device with the palette button. Changes preview on this page right away; save to apply them everywhere. To reorder or hide tiles, use <a href="/">Customize</a> on Home.</p>
-        <h4>Theme</h4>
-        <div class="theme-grid" id="theme-grid" role="group" aria-label="Theme"></div>
-        <h4>Accent</h4>
-        <div class="swatches-row" id="accent-row" role="group" aria-label="Accent"></div>
-        <h4>Logo</h4>
-        <div class="logo-pick" id="logo-pick"></div>
-        <h4>Background</h4>
-        <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
-        <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>
-        <div class="form-grid">
-          <label><span>Background blur</span><div class="range-row"><input type="range" id="ap-blur" min="0" max="40" step="1"><output id="ap-blur-out"></output></div></label>
-          <label><span>Dim background (towards the theme color)</span><div class="range-row"><input type="range" id="ap-dim" min="0" max="90" step="1"><output id="ap-dim-out"></output></div></label>
-          <label><span>Card opacity (lower = frosted glass)</span><div class="range-row"><input type="range" id="ap-opacity" min="30" max="100" step="1"><output id="ap-opacity-out"></output></div></label>
-        </div>
-        <div class="form-actions">
-          <button type="button" class="primary" id="ap-save">Save appearance</button>
-          <button type="button" id="ap-revert">Revert</button>
-          <span class="msg" id="ap-msg" role="status"></span>
-        </div>
-      </section>
-      </div>
-      <div class="tab-panel" role="tabpanel" id="tab-system" aria-labelledby="tabbtn-system" hidden>
-      <section class="card" id="runtime-card">
-        <h3>This server</h3>
-        <div id="runtime"></div>
-      </section>
-      <section class="card" id="web-card">
-        <h3>Web server</h3>
-        <p class="hint">How the dashboard is reached. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.</p>
-        <form id="web-form">
-          <div class="web-grid">
-            <label class="check"><input type="checkbox" name="httpsEnabled"> HTTPS</label>
-            <label><span>HTTPS port</span><input name="httpsPort" type="number" min="1" max="65535" step="1"></label>
-            <span></span>
-            <label class="check"><input type="checkbox" name="httpEnabled"> HTTP</label>
-            <label><span>HTTP port</span><input name="httpPort" type="number" min="1" max="65535" step="1"></label>
-            <label><span>HTTP does</span>
-              <select name="httpMode">
-                <option value="redirect">Redirect to HTTPS</option>
-                <option value="serve">Serve the dashboard (unencrypted)</option>
-              </select>
-            </label>
-          </div>
-          <p class="banner hidden" id="web-warning"></p>
-          <p class="hint">Ports below 1024 (e.g. 443) need: <code>sudo sh deploy/install.sh --low-ports</code>. Locked out? <code>sudo sh deploy/install.sh --reset-network</code></p>
-          <div class="form-actions"><button type="submit" class="primary">Save web server settings</button><span class="msg" id="web-msg" role="status"></span></div>
-        </form>
-        <h4>Certificate</h4>
-        <div id="web-cert"></div>
-      </section>
-      <section class="card" id="app-card">
-        <h3>Install as an app</h3>
-        <p class="hint">The dashboard can be installed on a phone or PC and then opens in its own window with its own icon. The device has to trust the certificate above first (import the CA once), otherwise the browser doesn't offer to install it.</p>
-        <div class="form-actions" id="app-actions" hidden><button type="button" class="primary" id="app-install" hidden>Install on this device</button><span class="small muted" id="app-state"></span></div>
-        <ul class="small">
-          <li>Android (Chrome): menu ⋮ → Install app.</li>
-          <li>iPhone/iPad (Safari): Share → Add to Home Screen.</li>
-          <li>Windows, macOS, Linux (Chrome, Edge): the install icon at the right end of the address bar.</li>
-        </ul>
-        <p class="hint">Only the offline screen is kept on the device, nothing from the dashboard. To stay signed in on a phone, tick "Remember this device for viewing" when signing in from the app.</p>
-      </section>
+      <div class="tab-panel" role="tabpanel" id="tab-backups" aria-labelledby="tabbtn-backups" hidden>
       <section class="card">
         <h3>Download or restore a backup</h3>
         <p class="hint">A backup contains settings, devices with their credentials, services, docs, energy history and uploaded images, encrypted with a passphrase you choose. Keep the passphrase somewhere safe: without it the backup cannot be opened.</p>
@@ -474,6 +451,8 @@
         <p class="hint">Kept on this server (newest first); restore from one, or download it to keep elsewhere.</p>
         <div id="bk-local"></div>
       </section>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="tab-security" aria-labelledby="tabbtn-security" hidden>
       <section class="card">
         <h3>Admin password</h3>
         <form id="pw-form" autocomplete="off">
@@ -498,6 +477,47 @@
           <button type="button" class="danger" id="remembered-all" hidden>Sign out all</button>
         </div>
         <div id="remembered"></div>
+      </section>
+      </div>
+      <div class="tab-panel" role="tabpanel" id="tab-system" aria-labelledby="tabbtn-system" hidden>
+      <section class="card" id="runtime-card">
+        <h3>This server</h3>
+        <div id="runtime"></div>
+      </section>
+      <section class="card" id="web-card">
+        <h3>Web server</h3>
+        <p class="hint">How the dashboard is reached. A new port is opened before the old one is closed, so a port that can't be used never takes the dashboard offline.</p>
+        <form id="web-form">
+          <div class="web-grid">
+            <label class="check"><input type="checkbox" name="httpsEnabled"> HTTPS</label>
+            <label><span>HTTPS port</span><input name="httpsPort" type="number" min="1" max="65535" step="1"></label>
+            <span></span>
+            <label class="check"><input type="checkbox" name="httpEnabled"> HTTP</label>
+            <label><span>HTTP port</span><input name="httpPort" type="number" min="1" max="65535" step="1"></label>
+            <label><span>HTTP does</span>
+              <select name="httpMode">
+                <option value="redirect">Redirect to HTTPS</option>
+                <option value="serve">Serve the dashboard (unencrypted)</option>
+              </select>
+            </label>
+          </div>
+          <p class="banner hidden" id="web-warning"></p>
+          <p class="hint">Ports below 1024 (e.g. 443) need: <code>sudo sh deploy/install.sh --low-ports</code>. Locked out? <code>sudo sh deploy/install.sh --reset-network</code></p>
+          <div class="form-actions"><button type="submit" class="primary">Save web server settings</button><span class="msg" id="web-msg" role="status"></span></div>
+        </form>
+        <h4>Certificate</h4>
+        <div id="web-cert"></div>
+      </section>
+      <section class="card" id="app-card">
+        <h3>Install as an app</h3>
+        <p class="hint">The dashboard can be installed on a phone or PC and then opens in its own window with its own icon. The device has to trust the certificate above first (import the CA once), otherwise the browser doesn't offer to install it.</p>
+        <div class="form-actions" id="app-actions" hidden><button type="button" class="primary" id="app-install" hidden>Install on this device</button><span class="small muted" id="app-state"></span></div>
+        <ul class="small">
+          <li>Android (Chrome): menu ⋮ → Install app.</li>
+          <li>iPhone/iPad (Safari): Share → Add to Home Screen.</li>
+          <li>Windows, macOS, Linux (Chrome, Edge): the install icon at the right end of the address bar.</li>
+        </ul>
+        <p class="hint">Only the offline screen is kept on the device, nothing from the dashboard. To stay signed in on a phone, tick "Remember this device for viewing" when signing in from the app.</p>
       </section>
       </div>
     </main>

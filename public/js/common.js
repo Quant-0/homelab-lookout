@@ -740,8 +740,17 @@ const HD = (() => {
       for (const r of docs.docs.network?.reservations || []) items.push({ kind: 'IP', title: `${r.ip}${r.name ? ` · ${r.name}` : ''}`, sub: 'Network plan', href: '/docs#network', words: r.name || '' });
       items.push({ kind: 'Page', title: 'Updates', sub: 'What can be updated', href: '/updates', words: 'versions firmware upgrade' });
       if (!docs.readOnly) items.push({ kind: 'Page', title: 'Log', sub: 'Every change, problem and sign-in', href: '/log', words: 'history changes audit events ip timeline' });
-      if (!docs.readOnly) for (const [tab, title, words] of [['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada ping shelly tasmota home assistant smart plug power cisco mikrotik'], ['services', 'Services', 'integration icon ping tcp port certificate status check'], ['alerts', 'Alerts', 'ntfy telegram discord e-mail imessage sendblue sms notifications check-in checkin heartbeat cron dead man maintenance window'],
-        ['power', 'Power & cost', 'price tariff norgespris spot grid'], ['dashboard', 'Dashboard & look', 'title theme accent colour background public logo internet provider carrier isp status page uptime'], ['system', 'System', 'web server https port certificate backup password account']]) {
+      if (!docs.readOnly) for (const [tab, title, words] of [
+        ['devices', 'Devices and rack', 'panel connection catalog add device redfish idrac ilo xclarity supermicro proxmox truenas synology unifi snmp nut ups omada ping shelly tasmota home assistant smart plug power cisco mikrotik'],
+        ['services', 'Services', 'integration icon ping tcp port certificate status check'],
+        ['alerts', 'Alerts', 'ntfy telegram discord e-mail imessage sendblue sms notifications channels'],
+        ['schedules', 'Check-ins & maintenance', 'check-in checkin heartbeat cron dead man backup job maintenance window planned'],
+        ['dashboard', 'Dashboard', 'title internet provider carrier isp refresh public status page uptime home vms'],
+        ['look', 'Look', 'theme accent colour background logo appearance'],
+        ['power', 'Power & cost', 'price tariff norgespris spot grid'],
+        ['backups', 'Backups', 'backup restore download automatic destination nas s3 rsync passphrase'],
+        ['security', 'Sign-in & security', 'password account sessions signed in browsers remembered devices sign out'],
+        ['system', 'Server', 'web server https port certificate install app node version']]) {
         items.push({ kind: 'Settings', title, sub: 'Admin', href: `/admin#${tab}`, words });
       }
     }

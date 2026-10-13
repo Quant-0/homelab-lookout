@@ -59,19 +59,31 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.keyboard.press('Control+k');
   await page.keyboard.type('backup');
   await page.waitForFunction(() => /Settings/.test(document.getElementById('search-results').textContent));
-  check((await results()).includes('Settings: System'), 'settings are found too ("backup" → System)');
+  check((await results()).includes('Settings: Backups'), 'settings are found too ("backup" → Backups)');
   await page.screenshot({ path: `${S}/search.png` });
   await page.keyboard.press('Escape');
 
-  // admin: six tabs, old links still work, no up/down buttons
+  // admin: ten tabs in three groups, old links still work, no up/down buttons
   await page.goto(B + '/admin#backup');
-  await page.waitForSelector('#tab-system:not([hidden])');
+  await page.waitForSelector('#tab-backups:not([hidden])');
   const tabs = await page.$$eval('.page-tabs [role=tab]', (n) => n.map((x) => x.textContent));
-  check(tabs.join() === 'Devices,Services,Alerts,Power & cost,Dashboard & look,System', `six tabs (${tabs.join(', ')}); #backup opens System`);
-  check(await page.isVisible('#web-form') && await page.isVisible('#bk-schedule') && await page.isVisible('#pw-form, form:has(input[name=current])'), 'System: web server, backup and password together');
+  const groups = await page.$$eval('.page-tabs .tab-group', (n) => n.map((x) => x.textContent));
+  check(tabs.join() === 'Devices,Services,Alerts,Check-ins & maintenance,Dashboard,Look,Power & cost,Backups,Sign-in & security,Server' && groups.join() === 'Monitoring,Dashboard,System', `ten tabs in three groups (${tabs.join(', ')}); #backup opens Backups`);
+  check(await page.isVisible('#bk-schedule') && !(await page.isVisible('#web-form')) && !(await page.isVisible('#pw-form, form:has(input[name=current])')), 'Backups on its own; the web server and the password are elsewhere');
+  await page.goto(B + '/admin#account');
+  await page.waitForSelector('#tab-security:not([hidden])');
+  check(await page.isVisible('#sessions') && await page.isVisible('#remembered'), '#account opens Sign-in & security: password, browsers, remembered devices');
+  await page.goto(B + '/admin#system');
+  await page.waitForSelector('#tab-system:not([hidden])');
+  check(await page.isVisible('#web-form') && await page.isVisible('#runtime-card'), '#system opens Server: this server and the web server');
   await page.goto(B + '/admin#appearance');
-  await page.waitForSelector('#tab-dashboard:not([hidden])');
-  check(await page.isVisible('#appearance-card'), '#appearance opens Dashboard & look');
+  await page.waitForSelector('#tab-look:not([hidden])');
+  check(await page.isVisible('#appearance-card'), '#appearance opens Look');
+  await page.goto(B + '/admin#alerts');
+  await page.waitForSelector('#tab-alerts:not([hidden])');
+  check(!(await page.isVisible('#ck-card')) && !(await page.isVisible('#mw-card')), 'Alerts without check-ins and maintenance');
+  await page.click('#tabbtn-schedules');
+  check(await page.isVisible('#ck-card') && await page.isVisible('#mw-card') && /#schedules$/.test(page.url()), 'they have their own tab');
   await page.goto(B + '/admin#services');
   await page.waitForSelector('#svc-list .svc-row');
   check(await page.locator('#svc-list button:has-text("↑")').count() === 0, 'no up/down buttons (Customize does the order)');

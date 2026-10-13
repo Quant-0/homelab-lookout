@@ -21,8 +21,8 @@ This guide is for using it day to day. The technical details (installation, the 
 
 The dashboard uses its own small certificate authority (a "local CA"). Until a device trusts it, the browser shows a warning and won't let you install the app.
 
-1. Download the CA: **https://192.168.1.140:8443/ca.crt**, or **Admin → System → Web server → Download CA certificate**.
-2. Check that its fingerprint matches **Local CA fingerprint** under **Admin → System → Web server → Certificate** (on a device you already trust). This stops someone on the network from slipping you a different CA.
+1. Download the CA: **https://192.168.1.140:8443/ca.crt**, or **Admin → Server → Web server → Download CA certificate**.
+2. Check that its fingerprint matches **Local CA fingerprint** under **Admin → Server → Web server → Certificate** (on a device you already trust). This stops someone on the network from slipping you a different CA.
 3. Import it:
 
 | Device | How |
@@ -43,7 +43,7 @@ Open **https://192.168.1.140:8443** and sign in with the admin account. After 5 
 - **Keep me signed in on this device**: 30 days, ending after a week without use. Use it on your own phone and computer.
 - Restarts and updates of the dashboard don't sign you out.
 - Either way, a few risky changes ask for the password again if you haven't typed it in the last 15 minutes: downloading or restoring a backup, backup settings and destinations, alert channels, the web server settings, and making the dashboard or the status page public. Everything else just works.
-- **Admin → System → Signed-in browsers** lists where you are signed in, with **Sign out** for each and **Sign out everywhere else**. A new password signs out every other browser.
+- **Admin → Sign-in & security → Signed-in browsers** lists where you are signed in, with **Sign out** for each and **Sign out everywhere else**. A new password signs out every other browser.
 - **Remember this device for viewing only** is for a wall tablet: it can look, never change anything.
 
 Away from home, the same address works through Tailscale.
@@ -73,14 +73,14 @@ The pages are in the **bar at the top**: **Home · Rack · Services · Energy ·
   - **Snooze** (signed in as admin): the clock button at the end of a row hides it from the top of Home and from the wall display for **1 day** or **1 week**, for everyone. The device itself keeps showing the problem, alerts are still sent, and the snooze ends early if a warning turns into a fault. **N snoozed · Show** under the list shows them again; the bell button on a snoozed row ends the snooze.
 - **Power** and **Internet**, two big cards with a large number and a glowing graph of the last hours (amber for power, teal for the network):
   - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d**) is remembered per browser; the cards on Home always show the last 24 hours.
-  - **Internet** comes from the UniFi console (up or down, latency, clients on Wi-Fi and wired) and opens the gateway. The bars show the traffic going through the connection right now against your last speed test (*142 of 684 Mbps*), and the graph shows the last 24 hours of traffic: download as the filled area, upload as the thin line (point at it for both values at that time). Next to the heading is your **internet provider** with its logo: what the console reports, or the name you set in *Admin → Dashboard & look*. The card also shows your **public IP** (only to people who are signed in; never on a public dashboard).
+  - **Internet** comes from the UniFi console (up or down, latency, clients on Wi-Fi and wired) and opens the gateway. The bars show the traffic going through the connection right now against your last speed test (*142 of 684 Mbps*), and the graph shows the last 24 hours of traffic: download as the filled area, upload as the thin line (point at it for both values at that time). Next to the heading is your **internet provider** with its logo: what the console reports, or the name you set in *Admin → Dashboard*. The card also shows your **public IP** (only to people who are signed in; never on a public dashboard).
   - When the public IP changes, a teal **Public IP changed** row (old → new) appears at the top of Home and on the wall display. An admin closes it with **×**, for everyone; it stays in the **Log**.
 - **Devices:** a tile per device, drawn as it looks (its rack front, or its shape for access points, cameras and desktop NAS), grouped *In the rack* and *Elsewhere*. Each tile has one status (**OK**, **Warning**, **Fault** or **Offline**), its worst problem or its model, and one key number. Click a tile to open its **details** (from the right, or from the bottom on a phone):
   - its problems first, then up to eight numbers
   - every connection's full view: fans, power supplies, pools, disks, ports, UPS battery, graphs (hover for value and time)
   - **Server sheet** (its Docs page), **Update available**, and **Edit in Admin**
   - on a **Proxmox** server: its storage, ZFS pools, the disks with their SMART health and SSD wear, and the last backup job. Click a VM or container in the table to open its network and disk graphs, its filesystems and its address. These details are read every 5 minutes; a full disk or storage, a degraded pool, a failing disk or a failed backup job shows under **Needs you**.
-- **At the bottom**, one quiet line: services up, VMs running and updates, each a link. Services and VMs can also be shown as tiles or a list (Admin → Dashboard & look).
+- **At the bottom**, one quiet line: services up, VMs running and updates, each a link. Services and VMs can also be shown as tiles or a list (Admin → Dashboard).
 - **Rack** (in the top bar): the rack drawn to scale. On a wide screen the chosen device's details stand beside it.
 - **Customize** (signed in): drag tiles into another order, and use the eye to hide one from Home. It stays in the rack and in search. **Save** keeps it on the server, so it's the same everywhere.
 
@@ -112,7 +112,7 @@ Tap anything to open it on Home. The full-screen button keeps the screen awake w
 
 ### The look on this device
 
-The **palette** button (top right, or **More** on a phone) changes the look **on this device only**: **Auto / Dark / Light**, eight more themes, and an **accent** colour. Everyone else keeps the owner's look, which is set in Admin → Dashboard & look. **Use the owner's look** goes back.
+The **palette** button (top right, or **More** on a phone) changes the look **on this device only**: **Auto / Dark / Light**, eight more themes, and an **accent** colour. Everyone else keeps the owner's look, which is set in Admin → Look. **Use the owner's look** goes back.
 
 ### Services
 
@@ -190,7 +190,11 @@ Use ↑ ↓ to choose, **Enter** to open and **Esc** to close.
 
 ## 3. Setting things up in Admin
 
-**Admin** (top right, or **More** on a phone) has six tabs: **Devices · Services · Alerts · Power & cost · Dashboard & look · System**.
+**Admin** (top right, or **More** on a phone) has ten tabs in three groups, in the list on the left (on a phone: the **section** menu at the top):
+
+- **Monitoring:** Devices · Services · Alerts · Check-ins & maintenance
+- **Dashboard:** Dashboard · Look · Power & cost
+- **System:** Backups · Sign-in & security · Server
 
 > **Passwords, tokens and keys are entered here and nowhere else.** They're stored encrypted and never shown again. A form only says whether a secret is set. To change one, type the new one. If you change a device's address or user name without retyping the secret, the old secret is deleted, so it's never sent anywhere new.
 
@@ -294,6 +298,8 @@ To arrange the page, press **Customize** on the Services page:
 
 **Active now** shows current alerts and **Recent notifications** shows what was sent. At most 30 messages go to one channel per hour.
 
+### Check-ins & maintenance
+
 #### Check-ins (backups and cron jobs)
 
 A check-in catches the job that silently stopped running, which no other check can see.
@@ -307,7 +313,7 @@ The address works over plain HTTP too, so `curl` needs no trusted certificate. A
 
 #### Maintenance
 
-**Plan maintenance** for work you know about: choose **Everything**, or the devices, services and check-ins it covers, and when: **Starting now** (for 30 minutes to a day), **Once** (from–to), or **Every week** (days, start time and length, in Norwegian time).
+**Plan maintenance** (Admin → Check-ins & maintenance) for work you know about: choose **Everything**, or the devices, services and check-ins it covers, and when: **Starting now** (for 30 minutes to a day), **Once** (from–to), or **Every week** (days, start time and length, in Norwegian time).
 
 While it is on, problems on what it covers are listed on Home as *Maintenance* but muted. They don't count as faults, no alerts are sent, and the time doesn't count against uptime. A device tile and a service card say **Maintenance**. **End now** stops it early; for a weekly window, only this time.
 
@@ -318,7 +324,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 - **Include estimated power in cost** decides whether estimated devices count, or only measured ones (Redfish, smart plugs and PoE).
 - **Where each device's power comes from** is set on the device (Admin → Devices → the device → **Power reading from**): *Automatic* takes Redfish, then a smart plug, then the estimate. Choose the plug instead of Redfish, only the estimate, or *Not counted* (for example when one plug feeds several devices: count it on one and set the others to *Not counted*). Each device is counted once, so a server with both an iDRAC and a plug is never counted twice. PoE stays counted on the switch that delivers it.
 
-### Dashboard & look
+### Dashboard
 
 **Status page**: a public page at `/status` showing only whether your services are up, with their uptime over the last 90 days (30 days on a phone) and any planned maintenance. No links, addresses, devices or VMs. Switch it on with **Show the status page to everyone**. It works while the dashboard itself stays private, so you can give people the status page instead of making the whole dashboard public. Services with a status check are listed, in the groups from the Services page.
 
@@ -327,15 +333,18 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
 - **VMs and containers:** choose where they show besides the **VMs** page (**On Home**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). On Home they are one line with the count at the bottom, unless you tick **On Home as a section with names and numbers**.
+- **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.
+
+### Look
+
 - **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
 - **Logo:** **Default**, a **Built-in icon** in one of eight colours, or an **Image** (upload PNG, JPEG, WebP or SVG up to 1 MB, or search the icon library). It is shown in the top bar, on the sign-in page and as the browser tab icon. SVG files with scripts or links to other files are refused.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
-- **Layout:** press **Customize** on Home to reorder and hide device tiles. It's saved on the server, so it's the same everywhere.
 
-### System
+### Backups
 
-- **Web server:** ports for HTTPS and HTTP. Keep *HTTP does* = **Redirect to HTTPS**. **Certificate** shows the names it covers, when it expires and the CA fingerprint.
-- **Install as an app:** the same steps as in part 1.
+Changes here ask for the password if you haven't typed it in the last 15 minutes.
+
 - **Download or restore a backup:**
   - **Download now** gives one encrypted file with *everything*, including all passwords. Choose a passphrase of at least 12 characters and keep it in your password manager. Without it the file can't be opened.
   - **Restore** reads such a file. The current state is saved as a local copy first. The admin login and web server ports are only restored if you tick them.
@@ -345,8 +354,18 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
   - **S3** (Backblaze B2, Wasabi, R2, MinIO…).
   - **rsync over SSH:** save the destination, generate the SSH key, add the public key to the target's `authorized_keys`, then **Fetch host key** → **Trust this host key** → **Test**.
 - **Local copies** are on lookout: download, restore or delete them.
-- **Admin password:** changing it signs out every other session and remembered device.
-- **Remembered devices** lists every device ticked *Remember this device*, with browser, last use and address. **Sign out** forgets one; **Sign out all** forgets all of them.
+
+### Sign-in & security
+
+- **Admin password:** changing it signs out every other browser and remembered device.
+- **Signed-in browsers** lists where you are signed in (normal or *kept signed in*), with last use and address. **Sign out** ends one; **Sign out everywhere else** ends all but this one.
+- **Remembered devices** lists every device ticked *Remember this device for viewing only*, with browser, last use and address. **Sign out** forgets one; **Sign out all** forgets all of them.
+
+### Server
+
+- **This server:** the deployed version, the Node.js version and when its security fixes end, and where the graph history is stored.
+- **Web server:** ports for HTTPS and HTTP. Keep *HTTP does* = **Redirect to HTTPS**. **Certificate** shows the names it covers, when it expires and the CA fingerprint. Changes ask for the password if you haven't typed it in the last 15 minutes.
+- **Install as an app:** the same steps as in part 1.
 
 ---
 
@@ -361,7 +380,7 @@ This is what the safety check found worth doing in daily use.
 - **HTTPS only:** keep HTTP on *Redirect to HTTPS*. *Serve* sends logins in plain text.
 
 **Devices and logins**
-- **Remember devices only on your own phone or PC.** If one is lost: **Admin → System → Remembered devices → Sign out**, or change the password, which signs out all others.
+- **Remember devices only on your own phone or PC.** If one is lost: **Admin → Sign-in & security → Remembered devices → Sign out**, or change the password, which signs out all others.
 - **Change the admin password** if you think someone saw it. Use one you don't use anywhere else.
 - **Lockouts:** after 5 wrong passwords, logins from that address wait 30 seconds at first, up to an hour. After 20 failures from anywhere, everyone waits.
 
