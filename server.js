@@ -3880,13 +3880,53 @@ async function checkService(svc) {
       return { ...down('tcp', e, 'Unreachable'), port: mon.port };
     }
   }
+  if (mon?.type === 'dns') return dnsCheck(mon);
   if (!svc.connection?.url) return null;
   const cert = certExpiry(svc).catch(() => null);
+  const opts = mon?.type === 'http' ? mon : {};
+  const body = Boolean(opts.contains || opts.jsonPath); // the page itself is only read when it's needed
   try {
-    const r = await connRequest(svc.connection, '/', { method: 'GET', headOnly: true, timeoutMs: 8000 });
-    return { up: r.status < 500, via: 'http', code: r.status, ms: Date.now() - t0, cert: await cert };
+    const r = await connRequest(svc.connection, opts.path || '/', { method: 'GET', headOnly: !body, full: true, timeoutMs: 8000, maxBytes: 1 << 20 });
+    let up = opts.okStatus === 'success' ? r.status >= 200 && r.status < 400 : r.status < 500;
+    let why = null;
+    if (up && opts.contains && !String(r.text || '').includes(opts.contains)) [up, why] = [false, `The answer doesn't contain "${opts.contains.slice(0, 60)}"`];
+    if (up && opts.jsonPath) {
+      const v = jsonAt(r.json, opts.jsonPath);
+      if (v === undefined) [up, why] = [false, `No ${opts.jsonPath} in the answer`];
+      else if (opts.jsonEquals !== '' && String(v) !== opts.jsonEquals) [up, why] = [false, `${opts.jsonPath} is ${String(typeof v === 'object' ? JSON.stringify(v) : v).slice(0, 60)}, expected ${opts.jsonEquals.slice(0, 60)}`];
+    }
+    return { up, via: 'http', code: r.status, ms: Date.now() - t0, cert: await cert, ...(why ? { error: why } : {}) };
   } catch (e) {
     return { ...down('http', e, 'Unreachable'), cert: await cert };
+  }
+}
+
+// A value in a JSON answer: "status", "data.health", "items[0].state"
+function jsonAt(obj, p) {
+  let v = obj;
+  for (const part of p.replace(/\[(\d+)\]/g, '.$1').split('.')) {
+    if (v === null || typeof v !== 'object' || !Object.prototype.hasOwnProperty.call(v, part)) return undefined;
+    v = v[part];
+  }
+  return v;
+}
+
+// DNS: ask that server (a Pi-hole, AdGuard, the router) for a name; up when it answers, and with an
+// expected address, when the answer has it
+const DNS_ERRORS = { ENOTFOUND: 'No such name', ETIMEOUT: 'The DNS server did not answer', ECONNREFUSED: 'The DNS server refused', ESERVFAIL: 'The DNS server failed (SERVFAIL)', EREFUSED: 'The DNS server refused the question', ENODATA: 'No address for that name' };
+async function dnsCheck(mon) {
+  const r = new dns.promises.Resolver({ timeout: 3000, tries: 2 });
+  r.setServers([mon.server]);
+  const t0 = Date.now();
+  try {
+    const addrs = await r.resolve4(mon.name).catch((e) => (e.code === 'ENODATA' ? r.resolve6(mon.name) : Promise.reject(e)));
+    const ms = Date.now() - t0;
+    if (mon.expect && !addrs.includes(mon.expect)) return { up: false, via: 'dns', ms: null, error: `${mon.name} is ${addrs.slice(0, 3).join(', ')}, expected ${mon.expect}` };
+    return { up: true, via: 'dns', ms, answer: addrs.slice(0, 4) };
+  } catch (e) {
+    return { up: false, via: 'dns', ms: null, error: DNS_ERRORS[e.code] || 'DNS lookup failed' };
+  } finally {
+    r.cancel();
   }
 }
 
@@ -3915,8 +3955,34 @@ async function certExpiry(svc) {
   return validTo;
 }
 
-// A status check of the service's own: { type: 'ping', host } or { type: 'tcp', host, port }
+// A status check of the service's own: { type: 'ping', host }, { type: 'tcp', host, port },
+// { type: 'dns', server, name, expect } or { type: 'http', path, contains, jsonPath, jsonEquals,
+// okStatus } (the connection URL, with more to check than "it answers"; none of that = null)
+const JSON_PATH = /^[A-Za-z0-9_$-]+(\.[A-Za-z0-9_$-]+|\[\d{1,4}\])*$/;
+const DNS_NAME = /^(?=.{1,253}$)([A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?$/;
 function validateMonitor(m) {
+  if (m?.type === 'http') {
+    const path = str(m.path, 200, 'Path');
+    if (path && !/^\/[\x21-\x7e]*$/.test(path)) throw new UserError('Path: starts with / and has no spaces');
+    const contains = str(m.contains, 200, 'Must contain');
+    const jsonPath = str(m.jsonPath, 100, 'JSON value');
+    if (jsonPath && !JSON_PATH.test(jsonPath)) throw new UserError('JSON value: a path like status or data.health or items[0].state');
+    const jsonEquals = jsonPath ? str(m.jsonEquals, 200, 'Equals') : '';
+    const okStatus = m.okStatus === 'success' ? 'success' : 'any';
+    if (!path && !contains && !jsonPath && okStatus === 'any') return null; // the plain check
+    return { type: 'http', path, contains, jsonPath, jsonEquals, okStatus };
+  }
+  if (m?.type === 'dns') {
+    const server = str(m.server, 52, 'DNS server', { required: true });
+    // an IP address, with a port if it isn't 53: 10.0.0.53, 10.0.0.53:5353, [fd00::53]:53
+    const sm = /^(?:\[([0-9A-Fa-f:.]+)\]|([0-9.]+))(?::(\d{1,5}))?$/.exec(server) || (net.isIPv6(server) ? [server, server] : null);
+    if (!sm || !net.isIP(sm[1] || sm[2]) || (sm[3] && !(Number(sm[3]) >= 1 && Number(sm[3]) <= 65535))) throw new UserError('DNS server: an IP address, e.g. your Pi-hole');
+    const name = str(m.name, 253, 'Name to look up', { required: true });
+    if (!DNS_NAME.test(name)) throw new UserError('Name to look up: a host name, e.g. google.com');
+    const expect = str(m.expect, 45, 'Expected address');
+    if (expect && !net.isIP(expect)) throw new UserError('Expected address: an IP address, or empty');
+    return { type: 'dns', server, name, expect };
+  }
   if (m?.type !== 'ping' && m?.type !== 'tcp') return null;
   const host = normalizeAddress(m.host, 'ping');
   return m.type === 'ping' ? { type: 'ping', host } : { type: 'tcp', host, port: num(m.port, 1, 65535, 'Port', { int: true }) };
@@ -4055,6 +4121,7 @@ function validateServiceInput(b) {
     const tlsMode = u.https && b.connection?.tlsMode === 'pin' ? 'pin' : 'verify';
     out.connection = { url: u.href, tlsMode, fingerprint: tlsMode === 'pin' ? normalizeFingerprint(b.connection.fingerprint) : '' };
   }
+  if (out.monitor?.type === 'http' && !out.connection) throw new UserError('A web page check needs the connection URL');
   const type = b.integration?.type;
   if (type) {
     const def = INTEGRATIONS[type];

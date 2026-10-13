@@ -294,7 +294,7 @@ Then add a **Docker** connection to the device for that host (address `192.168.1
 | **Icon** | Search the icon library, upload your own (JPEG/PNG/WebP), or use a letter. |
 | **Connection URL** | For the status check and numbers. Can differ from the link, e.g. an internal address. |
 | **Integration: Proxmox VE** | Pick your Proxmox device under **Numbers from**. The card shows VMs running, CPU and memory, and the **Link** is filled in with the Proxmox web address, so it's one click from Services. |
-| **Status check** | **Web page**: the connection URL answers (any status below 500). **Ping**: the host answers ping. **TCP port**: something listens on the port, e.g. SSH on 22 or a database on 5432; for services that have no web page. The response time is kept as history. |
+| **Status check** | **Web page**: the connection URL answers (any status below 500). Optionally a **Path** (e.g. `/health`), a word it **must contain**, a **JSON value** that must be there or equal something (`status` = `ok`, `data.health`, `items[0].state`), and **Only success (2xx or 3xx)** so a login page or an error doesn't count as up. **Ping**: the host answers ping. **TCP port**: something listens on the port, e.g. SSH on 22 or a database on 5432. **DNS lookup**: a DNS server (your Pi-hole or AdGuard, as an IP) resolves a name, optionally to an **expected address**, so a DNS server that is up but broken is caught. The response time is kept as history. |
 | **Integration** and its key | Over plain `http://` the key travels unencrypted on your network; the form warns you. |
 
 Press **Test**, then choose the **Numbers on the card** (up to four), then **Save service**.

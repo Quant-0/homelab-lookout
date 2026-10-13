@@ -427,7 +427,7 @@ const HD = (() => {
 
   // A service's status check in words: "Up · HTTP 200 · 12 ms", "Down · No reply to ping"
   function checkText(c) {
-    const how = c.via === 'ping' ? 'Ping' : c.via === 'tcp' ? `TCP port ${c.port}` : c.code ? `HTTP ${c.code}` : null;
+    const how = c.via === 'ping' ? 'Ping' : c.via === 'tcp' ? `TCP port ${c.port}` : c.via === 'dns' ? `DNS${c.answer?.length ? ` → ${c.answer[0]}` : ''}` : c.code ? `HTTP ${c.code}` : null;
     const ms = c.ms != null ? `${fmt.n(c.ms, c.ms < 10 ? 1 : 0)} ms` : null;
     const parts = c.up ? ['Up', how, ms, c.loss ? `${c.loss} % lost` : null] : ['Down', c.error || how];
     const days = c.cert ? Math.floor((c.cert - Date.now()) / 86400e3) : null;

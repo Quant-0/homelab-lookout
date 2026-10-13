@@ -173,8 +173,17 @@
                 <option value="http">Web page (the URL)</option>
                 <option value="ping">Ping</option>
                 <option value="tcp">TCP port</option>
+                <option value="dns">DNS lookup</option>
               </select>
             </label>
+            <label class="mon-http"><span>Path (optional)</span><input name="monPath" placeholder="/health" spellcheck="false"></label>
+            <label class="mon-http"><span>Must contain (optional)</span><input name="monContains" placeholder="e.g. Jellyfin" spellcheck="false"></label>
+            <label class="mon-http"><span>JSON value (optional)</span><input name="monJsonPath" placeholder="e.g. status or data.health" spellcheck="false"></label>
+            <label class="mon-http"><span>…equals (empty = just has to be there)</span><input name="monJsonEquals" placeholder="e.g. ok" spellcheck="false"></label>
+            <label class="mon-http"><span>Counts as up</span><select name="monOkStatus"><option value="any">Any answer below 500</option><option value="success">Only success (2xx or 3xx)</option></select></label>
+            <label class="mon-dns hidden"><span>DNS server</span><input name="dnsServer" placeholder="192.168.1.53 (your Pi-hole)" spellcheck="false"></label>
+            <label class="mon-dns hidden"><span>Name to look up</span><input name="dnsName" placeholder="google.com" spellcheck="false"></label>
+            <label class="mon-dns hidden"><span>Expected address (optional)</span><input name="dnsExpect" placeholder="e.g. 192.168.1.30 for a local name" spellcheck="false"></label>
             <label class="mon-host hidden"><span>Host or IP</span><input name="monHost" placeholder="192.168.1.30" spellcheck="false"></label>
             <label class="mon-port hidden"><span>Port</span><input name="monPort" type="number" min="1" max="65535" inputmode="numeric" placeholder="22"></label>
             <label class="https-only"><span>TLS certificate check</span>

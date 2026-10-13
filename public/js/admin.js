@@ -1143,9 +1143,18 @@ function openService(svc) {
   f.url.value = svcDraft.connection?.url || '';
   f.tlsMode.value = svcDraft.connection?.tlsMode || 'verify';
   f.fingerprint.value = svcDraft.connection?.fingerprint || '';
-  f.monitor.value = svcDraft.monitor?.type || 'http';
-  f.monHost.value = svcDraft.monitor?.host?.replace(/^\[|\]$/g, '') || '';
-  f.monPort.value = svcDraft.monitor?.port || '';
+  const mon = svcDraft.monitor || {};
+  f.monitor.value = mon.type || 'http';
+  f.monHost.value = mon.host?.replace(/^\[|\]$/g, '') || '';
+  f.monPort.value = mon.port || '';
+  f.monPath.value = mon.path || '';
+  f.monContains.value = mon.contains || '';
+  f.monJsonPath.value = mon.jsonPath || '';
+  f.monJsonEquals.value = mon.jsonEquals || '';
+  f.monOkStatus.value = mon.okStatus || 'any';
+  f.dnsServer.value = mon.server || '';
+  f.dnsName.value = mon.name || '';
+  f.dnsExpect.value = mon.expect || '';
   const defs = svcState.integrations;
   const byGroup = {};
   for (const [k, d] of Object.entries(defs)) (byGroup[d.group] ||= []).push([k, d]);
@@ -1278,10 +1287,12 @@ function syncService() {
   for (const n of document.querySelectorAll('#svc-form .https-only')) n.classList.toggle('hidden', !https);
   for (const n of document.querySelectorAll('#svc-form .pin-only')) n.classList.toggle('hidden', !https || f.tlsMode.value !== 'pin');
   const mon = f.monitor.value;
-  for (const n of document.querySelectorAll('#svc-form .mon-host')) n.classList.toggle('hidden', mon === 'http');
+  for (const n of document.querySelectorAll('#svc-form .mon-host')) n.classList.toggle('hidden', mon === 'http' || mon === 'dns');
+  for (const n of document.querySelectorAll('#svc-form .mon-http')) n.classList.toggle('hidden', mon !== 'http');
+  for (const n of document.querySelectorAll('#svc-form .mon-dns')) n.classList.toggle('hidden', mon !== 'dns');
   for (const n of document.querySelectorAll('#svc-form .mon-port')) n.classList.toggle('hidden', mon !== 'tcp');
   // the host of the connection URL is the likely one to ping
-  if (mon !== 'http' && !f.monHost.value.trim() && url) {
+  if ((mon === 'ping' || mon === 'tcp') && !f.monHost.value.trim() && url) {
     try {
       f.monHost.value = new URL(url).hostname.replace(/^\[|\]$/g, '');
     } catch {}
@@ -1310,7 +1321,11 @@ function serviceBody() {
     onHome: f.onHome.checked,
     icon: svcDraft.icon,
     connection: f.url.value.trim() ? { url: f.url.value.trim(), tlsMode: f.tlsMode.value, fingerprint: f.fingerprint.value } : null,
-    monitor: f.monitor.value === 'http' ? null : { type: f.monitor.value, host: f.monHost.value.trim(), port: f.monPort.value },
+    monitor: f.monitor.value === 'http'
+      ? { type: 'http', path: f.monPath.value.trim(), contains: f.monContains.value, jsonPath: f.monJsonPath.value.trim(), jsonEquals: f.monJsonEquals.value, okStatus: f.monOkStatus.value }
+      : f.monitor.value === 'dns'
+        ? { type: 'dns', server: f.dnsServer.value.trim(), name: f.dnsName.value.trim(), expect: f.dnsExpect.value.trim() }
+        : { type: f.monitor.value, host: f.monHost.value.trim(), port: f.monPort.value },
     integration: type ? { type, username: svcDraft.integration?.username || '', options: svcDraft.integration?.options || {}, fields: svcDraft.integration?.type === type ? svcDraft.integration.fields || [] : [] } : null,
     secret: svcDraft.secret,
     clearSecret: svcDraft.clearSecret,

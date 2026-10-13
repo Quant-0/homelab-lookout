@@ -145,6 +145,7 @@ async function main() {
     { file: 'test/cables.test.js', fresh: true },
     { file: 'test/monitor.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0' } },
     { file: 'test/guide.test.js', fresh: true },
+    { file: 'test/checks.test.js', fresh: true },
     { file: 'test/dependencies.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', CHECKIN_MINUTE_MS: '1000' } },
     { file: 'test/docker.test.js', fresh: true },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
