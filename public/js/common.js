@@ -192,12 +192,13 @@ const HD = (() => {
     { key: 'overview', label: 'Home', href: '/', icon: 'house' },
     { key: 'rack', label: 'Rack', href: '/#rack', icon: 'server', rack: true },
     { key: 'services', label: 'Services', href: '/services', icon: 'layout-grid' },
+    { key: 'vms', label: 'VMs', href: '/vms', icon: 'monitor', vms: true },
     { key: 'energy', label: 'Energy', href: '/energy', icon: 'zap' },
     { key: 'docs', label: 'Docs', href: '/docs', icon: 'book-open', signed: true },
     { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
     { key: 'log', label: 'Log', href: '/log', icon: 'list', admin: true },
   ];
-  let shellState = { active: null, title: 'Homelab Lookout', admin: false, viewer: false, updates: 0, rack: true };
+  let shellState = { active: null, title: 'Homelab Lookout', admin: false, viewer: false, updates: 0, rack: true, vms: true };
   let userName = null;
 
   // opts: { active, title, admin (logged in), viewer (remembered device), updates (count), rack (shown) }
@@ -210,7 +211,7 @@ const HD = (() => {
     const navLink = (n, cls) => el('a', { class: `${cls}${n.key === st.active ? ' active' : ''}`, href: n.href, 'aria-current': n.key === st.active ? 'page' : null, title: n.label },
       icon(n.icon), el('span', { class: 'label', text: n.label }),
       n.key === 'updates' && st.updates ? el('span', { class: 'nav-badge num', text: String(st.updates), title: `${st.updates} available` }) : null);
-    const items = NAV.filter((n) => (!n.signed || signed) && (!n.admin || st.admin) && (!n.rack || st.rack));
+    const items = NAV.filter((n) => (!n.signed || signed) && (!n.admin || st.admin) && (!n.rack || st.rack) && (!n.vms || st.vms));
     const admin = { key: 'admin', label: 'Admin', href: st.admin ? '/admin' : '/login?next=admin', icon: 'settings' };
     const next = st.active && st.active !== 'overview' && st.active !== 'admin' ? `?next=${st.active}` : '';
     if (side) {
@@ -233,7 +234,7 @@ const HD = (() => {
     }
     if (bar) {
       const tabs = items.filter((n) => ['overview', 'rack', 'services', 'energy'].includes(n.key));
-      const more = el('button', { type: 'button', class: `tab${['docs', 'updates', 'log', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
+      const more = el('button', { type: 'button', class: `tab${['vms', 'docs', 'updates', 'log', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
         icon('ellipsis'), el('span', { class: 'label', text: 'More' }), st.updates && signed ? el('span', { class: 'nav-badge num', text: String(st.updates) }) : null);
       bar.replaceChildren(...tabs.map((n) => navLink(n, 'tab')), more);
     }
@@ -255,6 +256,7 @@ const HD = (() => {
     const row = (ic, label, attrs) => el(attrs.href ? 'a' : 'button', { class: 'sheet-item', ...(attrs.href ? {} : { type: 'button' }), ...attrs }, icon(ic), el('span', { text: label }));
     dlg.append(el('div', { class: 'sheet-body' },
       el('div', { class: 'sheet-handle', 'aria-hidden': 'true' }),
+      st.vms ? row('monitor', 'VMs and containers', { href: '/vms' }) : null,
       signed ? row('book-open', 'Docs', { href: '/docs' }) : null,
       signed ? row('circle-arrow-up', st.updates ? `Updates · ${st.updates} available` : 'Updates', { href: '/updates' }) : null,
       st.admin ? row('list', 'Log', { href: '/log' }) : null,
@@ -656,12 +658,13 @@ const HD = (() => {
         return null;
       }
     };
-    const [svc, dash, docs] = await Promise.all([get('/api/services'), get('/api/dashboard'), get('/api/docs')]);
+    const [svc, dash, docs, vms] = await Promise.all([get('/api/services'), get('/api/dashboard'), get('/api/docs'), get('/api/vms')]);
     const items = [];
     for (const g of svc?.groups || []) {
       for (const x of g.services || []) items.push({ kind: 'Service', title: x.name, sub: [g.name, x.description].filter(Boolean).join(' · '), href: x.href || '/services', external: Boolean(x.href), words: [g.name, x.description, x.integration].join(' ') });
-      for (const v of g.vms?.items || []) items.push({ kind: v.type === 'lxc' ? 'Container' : 'VM', title: v.name, sub: `${v.vmid} on ${v.node} · ${v.status}`, href: '/services#vms', words: `${v.vmid} ${v.node}` });
     }
+    for (const v of vms?.items || []) items.push({ kind: v.type === 'lxc' ? 'Container' : 'VM', title: v.name, sub: `${v.vmid} on ${v.node} · ${v.status}`, href: `/vms#${encodeURIComponent(v.key)}`, words: [v.vmid, v.node, v.agent?.os, ...(v.agent?.ips || [])].join(' ') });
+    if (vms?.proxmox) items.push({ kind: 'Page', title: 'VMs and containers', sub: 'Every VM with its disks, network and last backup', href: '/vms', words: 'virtual machines lxc proxmox guests backups' });
     for (const d of dash?.devices || []) items.push({ kind: 'Device', title: d.name, sub: 'Device', href: `/#device-${d.id}`, words: d.kind });
     if (dash) items.push({ kind: 'Page', title: 'Energy report', sub: 'Power & cost per month and year', href: '/energy', words: 'kwh cost csv excel export power' });
     if (dash?.rack?.enabled) items.push({ kind: 'Page', title: 'Rack', sub: 'The rack, drawn to scale', href: '/#rack', words: 'front schematic units' });

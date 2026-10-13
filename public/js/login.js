@@ -16,7 +16,7 @@ document.getElementById('login-form').addEventListener('submit', async (ev) => {
     });
     if (r.ok) {
       // Only fixed, same-site destinations: no open redirects.
-      const pages = { admin: '/admin', services: '/services', docs: '/docs', updates: '/updates', log: '/log', energy: '/energy', wall: '/wall', guide: '/guide.pdf' };
+      const pages = { admin: '/admin', services: '/services', docs: '/docs', updates: '/updates', log: '/log', energy: '/energy', wall: '/wall', guide: '/guide.pdf', vms: '/vms' };
       const next = new URLSearchParams(location.search).get('next');
       location.href = Object.hasOwn(pages, next) ? pages[next] : '/';
       return;

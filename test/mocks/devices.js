@@ -258,6 +258,19 @@ const server = https.createServer(opts, (req, res) => {
       { name: 'rpool', health: 'ONLINE', size: 1e12, alloc: 5e11, free: 5e11, frag: 12, dedup: 1 },
       { name: 'tank', health: 'DEGRADED', size: 8e12, alloc: 2e12, free: 6e12, frag: 3, dedup: 1 },
     ] }));
+    // backups: a PBS datastore shared by the nodes, and local dumps on pve1
+    if (u === '/api2/json/nodes/pve1/storage?content=backup&enabled=1') return res.end(R({ data: [
+      { storage: 'pbs', type: 'pbs', shared: 1, active: 1, enabled: 1 },
+      { storage: 'local', type: 'dir', shared: 0, active: 1, enabled: 1 },
+    ] }));
+    if (u === '/api2/json/nodes/pve1/storage/pbs/content?content=backup') return res.end(R({ data: [
+      { volid: 'pbs:backup/vm/100/a', vmid: 100, ctime: Math.round(sec) - 86400, size: 12e9, format: 'pbs-vm', verification: { state: 'ok' } },
+      { volid: 'pbs:backup/vm/100/b', vmid: 100, ctime: Math.round(sec) - 2 * 86400, size: 11e9, format: 'pbs-vm' },
+      { volid: 'pbs:backup/ct/101/a', vmid: 101, ctime: Math.round(sec) - 10 * 86400, size: 2e9, format: 'pbs-ct' },
+    ] }));
+    if (u === '/api2/json/nodes/pve1/storage/local/content?content=backup') return res.end(R({ data: [
+      { volid: 'local:backup/vzdump-qemu-100.vma.zst', vmid: '100', ctime: Math.round(sec) - 30 * 86400, size: 10e9, format: 'vma.zst' },
+    ] }));
     if (u === '/api2/json/cluster/tasks') return res.end(R({ data: [
       { upid: 'UPID:pve1:1', node: 'pve1', type: 'vzdump', status: 'job errors', starttime: Math.round(sec) - 7200, endtime: Math.round(sec) - 3600, user: 'root@pam' },
       { upid: 'UPID:pve1:2', node: 'pve1', type: 'vzdump', status: 'OK', starttime: Math.round(sec) - 93600, endtime: Math.round(sec) - 90000, user: 'root@pam' },

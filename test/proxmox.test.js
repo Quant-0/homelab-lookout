@@ -72,8 +72,16 @@ async function until(fn, ms = 20000) {
   ok(has(/^orion: Proxmox backup failed$/, 'critical'), 'a failed backup job');
 
   const svc = (await req('GET', '/api/services')).json;
-  const card = svc.groups.find((g) => g.key === '@vms')?.vms.items.find((g) => g.vmid === 100);
-  ok(card?.disk?.mount === '/srv/data' && card.agent.ips[0] === '192.168.1.50', 'the VM card shows its fullest disk and address');
+  const card = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 100);
+  ok(card?.disk?.mount === '/srv/data' && card.agent.ips[0] === '192.168.1.50' && /^https:\/\/127\.0\.0\.1:18443\/#v1:0:=qemu%2F100$/.test(card.proxmoxUrl), 'the VMs page has its fullest disk, address and a link into Proxmox');
+  ok(!svc.groups.some((g) => g.key === '@vms') && svc.vmCount === 3, 'the Services page has no VM group any more');
+  // the newest backup of each VM, from the backup storages (a PBS one shared by every node)
+  const b100 = card.backup;
+  const b101 = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 101).backup;
+  const b102 = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 102).backup;
+  ok(b100?.count === 3 && b100.storage === 'pbs' && b100.verified === 'ok' && Date.now() - b100.last < 2 * 86400e3 && b102?.last === null && b102.count === 0, `backups per VM (${JSON.stringify(b100)})`);
+  const att2 = (await req('GET', '/api/dashboard')).json.attention;
+  ok(att2.some((a) => /^docker last backed up 10 days ago$/.test(a.text) && a.severity === 'warning') && !att2.some((a) => /truenas last backed up|win11 last backed up/.test(a.text)), 'a VM whose backups stopped is a warning; one never backed up is not');
 
   const docs = (await req('GET', '/api/docs')).json;
   const sheet = docs.auto.devices.find((x) => x.id === orion.id);
@@ -98,8 +106,8 @@ async function until(fn, ms = 20000) {
   const pub = (await req('GET', '/api/dashboard')).json.proxmox[0].data;
   const pvm = pub.guests.find((g) => g.vmid === 100);
   ok(pvm.agent.fs.length === 2 && pvm.agent.ips.length === 0 && pvm.agent.os === null && pub.nodes[0].disks.every((x) => !('serial' in x)), 'visitors see no VM addresses, OS or disk serials');
-  const pcard = (await req('GET', '/api/services')).json.groups.find((g) => g.key === '@vms')?.vms.items.find((g) => g.vmid === 100);
-  ok(pcard && pcard.agent.ips.length === 0 && pcard.agent.os === null, '…nor on the Services page');
+  const pcard = (await req('GET', '/api/vms')).json.items.find((g) => g.vmid === 100);
+  ok(pcard && pcard.agent.ips.length === 0 && pcard.agent.os === null && pcard.proxmoxUrl === null, '…nor on the VMs page, and no links into Proxmox');
   cookie = saved;
 
   console.log(failures ? `\n${failures} FAILED` : '\nALL PROXMOX TESTS PASSED');

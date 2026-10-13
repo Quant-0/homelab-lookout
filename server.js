@@ -2038,6 +2038,27 @@ async function pveDetails(get, data) {
     if (backups.some((b) => b.node === t.node)) continue;
     backups.push({ node: t.node, at: t.endtime * 1000, status: String(t.status || ''), ok: t.status === 'OK', warnings: /^WARNINGS/i.test(t.status || ''), vmid: t.id || null });
   }
+  // the newest backup of each VM, from the storages that hold backups (also Proxmox Backup Server)
+  let vmBackups = null;
+  const seenStorage = new Set();
+  for (const n of data.nodes.filter((x) => x.status === 'online')) {
+    const list = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/storage?content=backup&enabled=1`).catch(() => null);
+    if (!Array.isArray(list)) continue;
+    vmBackups ||= {};
+    for (const st of list.filter((x) => x.active !== 0)) {
+      if (st.shared && seenStorage.has(st.storage)) continue; // NFS or PBS: the same backups on every node
+      seenStorage.add(st.storage);
+      const items = await get(`/api2/json/nodes/${encodeURIComponent(n.name)}/storage/${encodeURIComponent(st.storage)}/content?content=backup`)
+        .catch((e) => (denied(e) && notes.add('Backups per VM need Datastore.Audit on /storage (the PVEAuditor role has it).'), null));
+      for (const b of Array.isArray(items) ? items : []) {
+        const id = Number(b.vmid);
+        if (!Number.isInteger(id) || !Number.isFinite(b.ctime)) continue;
+        const cur = (vmBackups[id] ||= { last: null, count: 0, size: null, storage: null, verified: null });
+        cur.count++;
+        if (!cur.last || b.ctime * 1000 > cur.last) Object.assign(cur, { last: b.ctime * 1000, size: b.size ?? null, storage: st.storage, verified: b.verification?.state || null });
+      }
+    }
+  }
   // inside the VMs, through the QEMU guest agent (where it's installed and switched on)
   const agents = {};
   const vms = data.guests.filter((g) => g.type === 'qemu' && g.status === 'running');
@@ -2068,7 +2089,7 @@ async function pveDetails(get, data) {
       };
     }));
   }
-  return { nodes, backups, agents, notes: [...notes] };
+  return { nodes, backups, agents, vmBackups, notes: [...notes] };
 }
 
 // The last background details on top of a poll's numbers
@@ -2077,7 +2098,12 @@ function withPveExtra(data, ex) {
   return {
     ...data,
     nodes: data.nodes.map((n) => ({ ...n, disks: ex.nodes[n.name]?.disks ?? null, zfs: ex.nodes[n.name]?.zfs ?? null })),
-    guests: data.guests.map((g) => ({ ...g, agent: g.type === 'qemu' && g.status === 'running' ? ex.agents?.[`${g.node}/${g.vmid}`] ?? null : null })),
+    guests: data.guests.map((g) => ({
+      ...g,
+      agent: g.type === 'qemu' && g.status === 'running' ? ex.agents?.[`${g.node}/${g.vmid}`] ?? null : null,
+      // undefined: not read yet; null: Proxmox didn't list its backup storages; { last: null }: none found
+      backup: ex.vmBackups ? ex.vmBackups[g.vmid] || { last: null, count: 0 } : null,
+    })),
     backups: ex.backups || [],
     notes: ex.notes || [],
   };
@@ -3684,8 +3710,9 @@ function iconUrl(icon) {
   return icon?.kind === 'file' ? `/media/icon/${icon.id}` : null;
 }
 
-// Services page: groups in the order chosen with Customize ('@vms' = Proxmox VMs and containers),
-// with an optional column count each. Hidden services are only listed for the admin.
+// Services page: groups in the order chosen with Customize, with an optional column count each.
+// Hidden services are only listed for the admin. VMs have their own page now; '@vms', the group
+// they had here, may still be in a saved layout and is left out.
 const VMS_GROUP = '@vms';
 
 function servicesPayload(admin = false, visitor = false) {
@@ -3717,15 +3744,12 @@ function servicesPayload(admin = false, visitor = false) {
     if (!byGroup.has(svc.group)) byGroup.set(svc.group, []);
     byGroup.get(svc.group).push(card);
   }
-  const vms = config.settings.dashboard.vms.services ? vmsPayload(visitor) : null;
-  const keys = layout.groups.filter((k) => byGroup.has(k) || (k === VMS_GROUP && vms));
+  const keys = layout.groups.filter((k) => byGroup.has(k));
   for (const k of byGroup.keys()) if (!keys.includes(k)) keys.push(k);
-  if (vms && !keys.includes(VMS_GROUP)) keys.push(VMS_GROUP);
   const cols = (key) => (Number.isInteger(layout.columns?.[key]) && layout.columns[key] >= 1 && layout.columns[key] <= 6 ? layout.columns[key] : 0);
   return {
-    groups: keys.map((key) => (key === VMS_GROUP
-      ? { key, name: 'Virtual machines & containers', columns: cols(key), vms }
-      : { key, name: key, columns: cols(key), services: byGroup.get(key) })),
+    groups: keys.map((key) => ({ key, name: key, columns: cols(key), services: byGroup.get(key) })),
+    vmCount: vmsPayload(visitor)?.items.length ?? null, // a link to the VMs page
     ...(admin ? { hidden } : {}),
     refreshSeconds: config.settings.dashboard.refreshSeconds,
   };
@@ -3741,7 +3765,8 @@ function saveServicesLayout(b) {
     if (plan.some((x) => x.key === key)) throw new UserError(`The group ${key} appears twice`);
     const columns = num(g.columns ?? 0, 0, 6, 'Columns', { int: true });
     const from = key !== VMS_GROUP && typeof g.from === 'string' && g.from !== key ? g.from : null;
-    plan.push({ key, columns, from, ids: key === VMS_GROUP || !Array.isArray(g.services) ? [] : g.services });
+    if (key === VMS_GROUP) continue; // from before VMs had their own page
+    plan.push({ key, columns, from, ids: !Array.isArray(g.services) ? [] : g.services });
   }
   const placed = new Set();
   let n = 0;
@@ -3765,8 +3790,9 @@ function saveServicesLayout(b) {
   config.servicesLayout = { groups: plan.map((g) => g.key), columns: Object.fromEntries(plan.filter((g) => g.columns).map((g) => [g.key, g.columns])) };
 }
 
-// Proxmox VMs and containers, shown on the Services page (the Overview keeps the node health)
-function vmsPayload(visitor = false) {
+// Proxmox VMs and containers, for the VMs page (the device drawer keeps the node health).
+// Visitors to a public dashboard get the numbers without addresses, OS or links into Proxmox.
+function vmsPayload(visitor = false, admin = false) {
   const pve = config.hosts.filter((h) => h.type === 'proxmox');
   if (!pve.length) return null;
   const items = [];
@@ -3781,11 +3807,19 @@ function vmsPayload(visitor = false) {
       // the fullest disk: a container's root disk, or the fullest filesystem the guest agent reports
       const fs = g.agent?.fs?.length ? g.agent.fs.reduce((a, f) => (f.used / f.size > a.used / a.size ? f : a)) : null;
       const disk = g.disk != null && g.maxdisk ? { used: g.disk, size: g.maxdisk, mount: '/' } : fs ? { used: fs.used, size: fs.size, mount: fs.mount } : null;
-      items.push({ key: `${h.id}:${g.vmid}`, host: h.id, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status, cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, uptime: g.uptime, disk, rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, agent: g.agent?.running ? { ips: visitor ? [] : g.agent.ips, os: visitor ? null : g.agent.os, fs: g.agent.fs } : null });
+      items.push({
+        key: `${h.id}:${g.vmid}`, host: h.id, hostName: name, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status,
+        cpu: g.cpu, maxcpu: g.maxcpu, mem: g.mem, maxmem: g.maxmem, maxdisk: g.maxdisk ?? null, uptime: g.uptime, disk,
+        rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, readBps: g.readBps ?? null, writeBps: g.writeBps ?? null,
+        agent: g.agent ? (g.agent.running ? { running: true, ips: visitor ? [] : g.agent.ips, os: visitor ? null : g.agent.os, fs: g.agent.fs } : { running: false }) : null,
+        backup: g.backup, // undefined: not read yet; null: couldn't be read; { last: null }: none found
+        proxmoxUrl: admin ? `https://${h.address}/#v1:0:=${g.type}%2F${g.vmid}` : null,
+      });
     }
+    for (const n of r?.data?.notes || []) if (!notes.includes(n)) notes.push(n);
   }
   const v = config.settings.dashboard.vms;
-  return { items, notes, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
+  return { items, notes, backupDays: config.alerts.rules.backup.vmDays, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
@@ -4077,7 +4111,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write)|upsvc:[0-9a-f-]{36})$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36})$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4299,6 +4333,8 @@ function recordHistory(h, data, t) {
       if (g.txBps != null) histRecord(`${k}:tx`, (g.txBps * 8) / 1e6, t);
       if (g.readBps != null) histRecord(`${k}:read`, g.readBps / 1e6, t);
       if (g.writeBps != null) histRecord(`${k}:write`, g.writeBps / 1e6, t);
+      if (typeof g.cpu === 'number') histRecord(`${k}:cpu`, g.cpu * 100, t);
+      if (g.maxmem) histRecord(`${k}:mem`, (100 * g.mem) / g.maxmem, t);
     }
   } else if (h.type === 'synology') {
     histRecord(`syno:${h.id}:temp`, data.system.temp, t);
@@ -5050,7 +5086,7 @@ function securityHeaders(req, res) {
 
 // Larger data responses are gzipped. Only these read-only GETs: they hold no secrets or tokens
 // (so compression can't leak one, as in BREACH), and they are the ones fetched every refresh.
-const GZIP_JSON = new Set(['/api/dashboard', '/api/services', '/api/history', '/api/updates', '/api/docs', '/api/energy/report']);
+const GZIP_JSON = new Set(['/api/dashboard', '/api/services', '/api/vms', '/api/history', '/api/updates', '/api/docs', '/api/energy/report']);
 function sendJson(res, status, obj) {
   const body = Buffer.from(JSON.stringify(obj));
   const req = res.req;
@@ -5144,7 +5180,7 @@ const STATIC = {};
 const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/js/look.js', '/static/favicon.svg', '/static/js/offline.js',
   '/static/js/icons.js', '/static/fonts/inter-5.3.0.woff2', '/static/licenses/Inter-OFL.txt', '/static/licenses/Lucide-LICENSE.txt',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
-const DASHBOARD_ASSETS = new Set(['/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/models.js', '/static/js/services.js', '/static/js/energy.js']);
+const DASHBOARD_ASSETS = new Set(['/static/js/vms.js', '/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/models.js', '/static/js/services.js', '/static/js/energy.js']);
 function loadStatic() {
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
   const files = {
@@ -5158,6 +5194,8 @@ function loadStatic() {
     'energy.html': 'energy.html',
     'wall.html': 'wall.html',
     'status.html': 'status.html',
+    'vms.html': 'vms.html',
+    '/static/js/vms.js': 'js/vms.js',
     'offline.html': 'offline.html',
     '/static/js/status.js': 'js/status.js',
     '/sw.js': 'sw.js',
@@ -5978,6 +6016,12 @@ async function handleApi(req, res, url, session, viewer = null) {
     const points = Math.min(Math.max(parseInt(url.searchParams.get('points') || '120', 10) || 120, 10), 500);
     const keys = String(url.searchParams.get('keys') || '').split(',').filter((k) => HIST_KEY.test(k)).slice(0, 80);
     return sendJson(res, 200, { series: Object.fromEntries(keys.map((k) => [k, histQuery(k, rangeMs, points)])) });
+  }
+
+  if (p === '/api/vms' && m === 'GET') {
+    if (!sees) return sendError(res, 401, 'Login required');
+    const v = vmsPayload(!session && !viewer, Boolean(session));
+    return sendJson(res, 200, { ...(v || { items: [], notes: [] }), proxmox: Boolean(v), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title, refreshSeconds: config.settings.dashboard.refreshSeconds });
   }
 
   if (p === '/api/services' && m === 'GET') {
@@ -7124,6 +7168,10 @@ async function handle(req, res) {
     if (p === '/docs') return seer ? sendPage(res, 'docs.html', seer) : redirect(res, '/login?next=docs');
     if (p === '/updates') return seer ? sendPage(res, 'updates.html', seer) : redirect(res, '/login?next=updates');
     if (p === '/log') return session ? sendPage(res, 'log.html', session) : redirect(res, '/login?next=log');
+    if (p === '/vms') {
+      if (!sees) return redirect(res, '/login?next=vms');
+      return sendPage(res, 'vms.html', seer);
+    }
     if (p === '/status') {
       if (!config.settings.dashboard.statusPage.enabled && !session) return sendError(res, 404, 'Not found');
       return sendPage(res, 'status.html', seer);
@@ -7222,7 +7270,12 @@ const ALERT_TYPES = {
   nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
   power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
-  backup: { label: 'Backup failed', hint: 'An automatic backup of the dashboard or one of its destinations failed, or a Proxmox backup job did.', delay: null },
+  backup: {
+    label: 'Backup failed',
+    hint: 'An automatic backup of the dashboard or one of its destinations failed, a Proxmox backup job did, or a VM that has backups has none newer than the limit.',
+    delay: null,
+    params: { vmDays: { label: 'VM backups older than', unit: 'days', min: 1, max: 90, def: 3 } },
+  },
 };
 const SEVERITY_RANK = { warning: 1, critical: 2 };
 const REPEAT_HOURS = [0, 1, 4, 12, 24];
@@ -7835,6 +7888,12 @@ function alertConditions(all = false) {
       for (const g of d.guests.filter((x) => x.status === 'running' && ours(x.node))) {
         if (g.disk != null) full(`ct:${g.vmid}`, `${g.name}'s disk`, g.disk, g.maxdisk);
         for (const f of g.agent?.fs || []) full(`vm:${g.vmid}:${f.mount}`, `${g.name} ${f.mount}`, f.used, f.size);
+      }
+      // a VM that is backed up, but not lately (VMs without any backup are shown on the VMs page, not alerted)
+      const vmDays = rules.backup.vmDays;
+      for (const g of d.guests.filter((x) => ours(x.node) && x.backup?.last)) {
+        const age = Math.floor((Date.now() - g.backup.last) / 86400e3);
+        if (age >= vmDays) add('backup', `${h.id}:vmbackup:${g.vmid}`, 'warning', `${name}: ${g.name} last backed up ${age} days ago`, `Newest backup on ${g.backup.storage}, ${osloText(g.backup.last)}; limit ${vmDays} days`, own);
       }
       for (const b of (d.backups || []).filter((x) => ours(x.node) && !x.ok)) {
         add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${osloText(b.at)}`, own);

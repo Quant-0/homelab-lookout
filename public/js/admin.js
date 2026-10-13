@@ -318,7 +318,7 @@ async function saveSettings(msgId) {
       public: d.public.checked,
       homeServices: d.homeServices.value,
       serviceAlerts: d.serviceAlerts.checked,
-      vms: Object.fromEntries(Object.keys(state.settings.dashboard.vms).map((k) => [k, d[`vms.${k}`].checked])),
+      vms: Object.fromEntries(Object.entries(state.settings.dashboard.vms).map(([k, v]) => [k, d[`vms.${k}`] ? d[`vms.${k}`].checked : v])),
     },
     power: powerBody(),
   };

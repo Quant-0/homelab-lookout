@@ -59,7 +59,7 @@ const patterned = {
   destinations: [['PUT', `/api/admin/backup/destinations/${U}`], ['DELETE', `/api/admin/backup/destinations/${U}`], ['POST', `/api/admin/backup/destinations/${U}/test`], ['POST', `/api/admin/backup/destinations/${U}/sshkey`]],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
-const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/energy/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
+const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
 const bodyFor = (m) => (m === 'GET' ? undefined : {});
 
 async function run() {

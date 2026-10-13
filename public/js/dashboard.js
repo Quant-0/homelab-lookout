@@ -513,7 +513,7 @@ function renderProxmox(hosts, nodeFor = () => null, vs = VM_DEFAULTS) {
         ])),
         pveStorage(d),
         vs.host ? [el('h4', { text: `VMs and containers · ${up} of ${d.guests.length} running` }), guestTable(d.guests, vs, h0.id)] : null,
-        vs.host && vs.services ? el('p', { class: 'small muted' }, el('a', { href: '/services#vms', text: 'All VMs on the Services tab' })) : null,
+        vs.host ? el('p', { class: 'small muted' }, el('a', { href: '/vms', text: 'All VMs, with their disks and backups' })) : null,
       ];
     });
     return [h.id, { ...card, title: `Proxmox · ${node ? `node ${node}` : h.name}` }];
@@ -1415,7 +1415,7 @@ function renderFoot(d) {
   const item = (href, ok, text) => el('a', { href }, el('span', { class: `dot ${ok ? 'good' : 'critical'}` }), text);
   const items = [
     d.homeServices === 'line' && all.length ? item('/services', !down, checked.length ? `${checked.length - down} of ${checked.length} services up` : `${all.length} services`) : null,
-    vs.home && !vs.homeNumbers && guests.length ? item(vs.services ? '/services#vms' : '/services', running === guests.length || !vs.stopped, `${running} of ${guests.length} VMs running`) : null,
+    vs.home && !vs.homeNumbers && guests.length ? item('/vms', running === guests.length || !vs.stopped, `${running} of ${guests.length} VMs running`) : null,
     d.updates?.available && (d.loggedIn || d.viewer) ? el('a', { href: '/updates' }, HD.icon('circle-arrow-up'), `${d.updates.available} ${d.updates.available === 1 ? 'update' : 'updates'} available`) : null,
   ].filter(Boolean);
   $('home-foot').hidden = !items.length;
@@ -1437,14 +1437,14 @@ function renderVms(d) {
   if (!groups.length) return;
   const all = groups.flatMap((g) => g.guests);
   $('vms-count').textContent = `${all.filter((g) => g.status === 'running').length} of ${all.length} running`;
-  $('vms-more').hidden = !vs.services;
+  $('vms-more').hidden = false;
   const chip = (x) => {
     const on = x.status === 'running';
     const nums = vs.homeNumbers ? guestNumbers(x, vs) : [];
     return el('span', { class: `chip${on ? '' : ' off'}${nums.length ? ' with-nums' : ''}`, title: [x.name, x.status, ...guestNumbers(x, vs)].filter(Boolean).join(' · ') },
       el('span', { class: `dot ${on ? 'good' : 'off'}` }), x.name || String(x.vmid), nums.length ? el('span', { class: 'chip-nums num', text: nums.join(' · ') }) : null);
   };
-  $('vms').replaceChildren(...groups.map((g) => el(vs.services ? 'a' : 'div', { class: 'dtile wide', href: vs.services ? '/services#vms' : null },
+  $('vms').replaceChildren(...groups.map((g) => el('a', { class: 'dtile wide', href: '/vms' },
     el('span', { class: 'tile-top' }, el('span', { class: 'tile-icon' }, HD.icon('monitor')), el('span', { class: 'small muted', text: `${g.guests.filter((x) => x.status === 'running').length} of ${g.guests.length} running` })),
     el('span', { class: 'tile-name', text: `On ${g.node}` }),
     el('span', { class: 'chips' }, g.guests.slice(0, 40).map(chip)))));

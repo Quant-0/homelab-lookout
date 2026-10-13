@@ -104,7 +104,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(await page.locator('dialog.drawer .guest-table').count() === 0 && !/VMs running/.test(await page.textContent('dialog.drawer')), 'VMs off in the host details');
   await page.keyboard.press('Escape');
   const svc = (await call('GET', '/api/services')).json;
-  check(!svc.groups.some((g) => g.key === '@vms') && svc.groups.flatMap((g) => g.services || []).find((s) => s.name === 'Quiet')?.onHome === false, 'VMs off on the Services tab; the services list still has every service');
+  check(!svc.groups.some((g) => g.key === '@vms') && svc.groups.flatMap((g) => g.services || []).find((s) => s.name === 'Quiet')?.onHome === false, 'no VM group on the Services tab; the services list still has every service');
   await page.goto(B + '/#rack');
   await page.waitForSelector('.rack-label');
   check(!/VMs running/.test(await page.textContent('.rack-label:has-text("titan")')), 'VMs off in the rack');
@@ -122,7 +122,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.click('#dash-form button[type=submit]');
   await page.waitForFunction(() => document.getElementById('dash-msg').textContent === 'Saved');
   const after = (await call('GET', '/api/dashboard')).json;
-  check(after.homeServices === 'compact' && after.vms.home === true && after.vms.services === false, 'Admin saves the choices');
+  check(after.homeServices === 'compact' && after.vms.home === true && after.vms.homeNumbers === true, 'Admin saves the choices');
   await page.screenshot({ path: `${S}/home-options-admin.png`, fullPage: true });
   await page.click('#tabbtn-services');
   await page.locator('.svc-row', { hasText: 'Quiet' }).locator('button:has-text("Edit")').click();

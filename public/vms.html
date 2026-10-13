@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>VMs · Homelab Lookout</title>
+  <link rel="icon" href="/logo">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body class="app">
+  <div class="app-bg" aria-hidden="true"></div>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">VMs and containers</h1>
+      <span class="page-meta" id="updated"></span>
+      <span class="spacer"></span>
+      <div class="page-actions" id="nav"></div>
+    </header>
+    <main class="vms-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <div class="vm-summary" id="vm-summary"></div>
+      <div class="vm-tools" role="search">
+        <label class="vm-search"><span class="sr-only">Search VMs</span><input type="search" id="vm-q" placeholder="Search by name, ID, address or OS" autocomplete="off"></label>
+        <div class="seg" id="vm-filter" role="group" aria-label="Show"></div>
+        <select id="vm-node" aria-label="Node" hidden></select>
+      </div>
+      <section class="card vm-card-list" aria-live="polite"><div id="vm-list"></div></section>
+      <div id="vm-notes"></div>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/vms.js"></script>
+</body>
+</html>

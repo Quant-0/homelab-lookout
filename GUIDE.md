@@ -111,7 +111,17 @@ The **palette** button (top right, or **More** on a phone) changes the look **on
 
 - Cards grouped as you like. Click a card to open the app. The dot shows up/down, and hovering shows the response time.
 - Up to four numbers per card, e.g. what's queued, wanted, streaming or failed.
-- **Virtual machines & containers** from Proxmox are listed here too, with CPU, memory, disk and uptime. The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem; the VM's address is shown under its name.
+- Virtual machines and containers have their own page, **VMs** (below).
+
+### VMs
+
+Every VM and container on your Proxmox hosts, one row each: status, CPU, memory, disk, network traffic and **last backup**. On a phone it is under **More**.
+
+- **Search** by name, ID, address or OS, and filter **Running**, **Stopped** or **Backup** (no backup, or one older than the limit).
+- The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem. The address under the name comes from the guest agent too.
+- **Last backup** is the newest backup Proxmox has of the VM on any backup storage, including Proxmox Backup Server. *None* means none was found.
+- Click a row for the details: OS, addresses, size, graphs of CPU, memory, network and disk activity, every filesystem, the backups (newest, where, how many, verified), and **Open in Proxmox** (signed in only).
+- A VM that has backups, but none newer than the limit (3 days unless you change it under *Admin → Alerts → Backup failed*), raises a *Backup failed* warning. A VM that has never been backed up is shown, not alerted.
 
 ### Energy report
 
@@ -303,7 +313,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 - **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
-- **VMs and containers:** choose where they show (**On Home**, **On the Services tab**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). On Home they are one line with the count at the bottom, unless you tick **On Home as a section with names and numbers**.
+- **VMs and containers:** choose where they show besides the **VMs** page (**On Home**, **In the Proxmox server's details** as a table, **As a count on the server in the rack**) and what with (**Stopped ones too**, **CPU**, **Memory**, **Uptime**). On Home they are one line with the count at the bottom, unless you tick **On Home as a section with names and numbers**.
 - **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
 - **Logo:** **Default**, a **Built-in icon** in one of eight colours, or an **Image** (upload PNG, JPEG, WebP or SVG up to 1 MB, or search the icon library). It is shown in the top bar, on the sign-in page and as the browser tab icon. SVG files with scripts or links to other files are refused.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.

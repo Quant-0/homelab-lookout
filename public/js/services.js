@@ -66,12 +66,11 @@ function setCols(grid, n) {
 }
 
 function groupSection(g) {
-  const isVms = g.key === VMS;
-  const grid = isVms ? vmsGrid(g.vms) : el('div', { class: 'svc-grid', role: editing ? 'list' : null }, (g.services || []).map(card));
+  const grid = el('div', { class: 'svc-grid', role: editing ? 'list' : null }, (g.services || []).map(card));
   setCols(grid, g.columns);
   let title;
   if (!editing) {
-    title = el('h2', null, g.name, isVms ? el('span', { class: 'count', text: ` ${g.vms.items.filter((x) => x.status === 'running').length} of ${g.vms.items.length} running` }) : null);
+    title = el('h2', null, g.name);
   } else {
     const cols = el('select', { class: 'cols-select', 'aria-label': `Columns for ${g.name}` },
       el('option', { value: '0', text: 'Columns: auto' }), [1, 2, 3, 4, 5, 6].map((n) => el('option', { value: String(n), text: `${n} column${n === 1 ? '' : 's'}` })));
@@ -81,13 +80,10 @@ function groupSection(g) {
     grip.addEventListener('pointerdown', (e) => startDrag(e, grip.closest('section'), 'group'));
     grip.addEventListener('keydown', (e) => keyMoveGroup(e, grip));
     title = el('div', { class: 'svc-group-edit' }, grip,
-      isVms ? el('h2', { text: g.name }) : el('input', { class: 'group-name', value: g.name, maxlength: '32', 'aria-label': 'Group name' }),
+      el('input', { class: 'group-name', value: g.name, maxlength: '32', 'aria-label': 'Group name' }),
       cols);
   }
-  return el('section', { class: `svc-group${editing ? ' editing' : ''}`, id: isVms ? 'vms' : null, 'data-key': g.key },
-    title,
-    isVms ? g.vms.notes.map((n) => el('p', { class: 'banner', text: n })) : null,
-    grid);
+  return el('section', { class: `svc-group${editing ? ' editing' : ''}`, 'data-key': g.key }, title, grid);
 }
 
 function render(d) {
@@ -129,40 +125,6 @@ addEventListener('resize', () => {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(fitLabels, 150);
 });
-
-// --- Proxmox VMs and containers ---
-
-function vmCard(g, show = { cpu: true, ram: true, uptime: true }) {
-  const running = g.status === 'running';
-  const memF = g.maxmem ? g.mem / g.maxmem : null;
-  return el('div', { class: `svc-card card vm-card${running ? '' : ' stopped'}` },
-    el('div', { class: 'svc-head' },
-      el('span', { class: `vm-type ${g.type}`, text: g.type === 'lxc' ? 'CT' : 'VM', title: g.type === 'lxc' ? 'Container' : 'Virtual machine' }),
-      el('div', { class: 'svc-title' },
-        el('strong', { text: g.name }),
-        el('span', { class: 'small muted num', text: [g.vmid, g.node, g.agent?.ips?.[0]].filter(Boolean).join(' · '), title: g.agent?.os || '' })),
-      el('span', { class: 'svc-status', title: g.status }, el('span', { class: `led ${running ? 'good' : 'off'}` }), running ? null : el('span', { class: 'small muted', text: g.status }))),
-    running && (show.cpu || show.ram || show.uptime) ? el('div', { class: 'vm-stats small muted num' },
-      // CPU and memory as bars that warm up when nearly full
-      show.cpu ? vmBar('CPU', g.cpu, `${fmt.pct(g.cpu, 1)}${g.maxcpu ? ` of ${g.maxcpu}` : ''}`) : null,
-      show.ram ? vmBar('RAM', memF, `${fmt.bytes(g.mem)}${memF != null ? ` (${fmt.pct(memF)})` : ''}`) : null,
-      // a container's root disk, or the fullest disk inside a VM with the guest agent
-      g.disk ? vmBar('Disk', g.disk.used / g.disk.size, `${fmt.pct(g.disk.used / g.disk.size)}${g.disk.mount !== '/' ? ` ${g.disk.mount}` : ''} of ${fmt.bytes(g.disk.size)}`) : null,
-      show.uptime ? el('span', { class: 'vm-up', text: `Up ${fmt.uptime(g.uptime)}` }) : null) : null);
-}
-
-function vmBar(label, f, text) {
-  const bar = el('i', { class: f >= 0.9 ? 'hot' : null });
-  bar.style.setProperty('--w', `${Math.max(2, Math.min(1, f || 0) * 100).toFixed(1)}%`);
-  return el('span', { class: 'vm-bar', title: `${label} ${text}` }, el('span', { text: label }), bar, el('span', { class: 'v', text }));
-}
-
-function vmsGrid(vms) {
-  const shown = vms.items.filter((g) => vms.showStopped || g.status === 'running');
-  return shown.length
-    ? el('div', { class: 'svc-grid vm-grid' }, shown.map((g) => vmCard(g, vms.show)))
-    : el('div', { class: 'svc-grid vm-grid' }, el('p', { class: 'empty', text: vms.items.length ? 'No running guests' : 'No VMs or containers' }));
-}
 
 // ---------------------------------------------------------------------------
 // Customize: drag cards between groups and groups up and down, hide cards, columns per group.
