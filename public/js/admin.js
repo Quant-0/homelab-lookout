@@ -806,7 +806,7 @@ function connCard(c) {
     el('div', { class: 'form-actions' },
       noTls ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
       el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
-      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : plugHttp ? 'Only reads the power; never switches the plug. Plain HTTP, so a password would travel unencrypted.' : c.type === 'hass' ? 'Reads that one sensor; the token is stored encrypted.' : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : plugHttp ? 'Only reads the power; never switches the plug. Plain HTTP, so a password would travel unencrypted.' : c.type === 'hass' ? (hassHttp && c.address ? 'This URL is plain http://, so the token travels unencrypted on your network. Use https:// if your Home Assistant has it.' : 'Reads that one sensor; the token is stored encrypted.') : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
     result,
     warn);
   updateWarning();

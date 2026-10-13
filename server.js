@@ -7366,6 +7366,8 @@ async function handle(req, res) {
   }
   const p = url.pathname;
   // check-ins: called by scripts on other machines, so no login and no same-origin rule
+  // what answers without a sign-in is limited per address
+  if ((p.startsWith('/ping/') || p === '/status' || p === '/api/status' || p === '/guide.pdf') && !openLimitOk(req, res)) return;
   const pm = p.match(/^\/ping\/([A-Za-z0-9_-]{32})(?:\/(start|fail))?\/?$/);
   if (pm) return handlePing(req, res, pm[1], pm[2]);
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
@@ -7909,6 +7911,22 @@ function checkinStatus(c, now = Date.now()) {
   if (!st.last) return { ...base, state: 'new' };
   const due = st.last + c.everyMin * CHECKIN_MINUTE;
   return { ...base, state: now <= due ? 'up' : now <= due + c.graceMin * CHECKIN_MINUTE ? 'late' : 'down', due };
+}
+
+// Requests per address and minute to what needs no sign-in (check-ins, the status page, the guide):
+// plenty for scripts and people, not for guessing tokens or hammering the server
+const OPEN_LIMIT = Number(process.env.OPEN_LIMIT_PER_MIN) || 120;
+const openHits = new Map(); // address -> { start, n }
+function openLimitOk(req, res) {
+  const ip = req.socket.remoteAddress || '?';
+  const now = Date.now();
+  let h = openHits.get(ip);
+  if (!h || now - h.start >= 60e3) openHits.set(ip, (h = { start: now, n: 0 }));
+  if (++h.n <= OPEN_LIMIT) return true;
+  if (openHits.size > 10000) for (const [k, v] of openHits) if (now - v.start >= 60e3) openHits.delete(k);
+  res.setHeader('Retry-After', String(Math.ceil((h.start + 60e3 - now) / 1000)));
+  sendError(res, 429, 'Too many requests; try again in a minute');
+  return false;
 }
 
 // GET, HEAD or POST /ping/<token>[/start|/fail]: no login, the token is the secret
@@ -8711,10 +8729,19 @@ async function decryptBackup(buf, passphrase) {
 async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   const c = bundle.config;
   const arr = (v) => (Array.isArray(v) ? v : []);
-  const hosts = arr(c.hosts).filter((h) => UUID.test(h?.id) && HOST_TYPES[h.type]).map(({ secretPlain, ...h }) => {
-    const out = { ...h, secret: null };
-    if (secretPlain) out.secret = encryptSecret(out, secretPlain);
-    return out;
+  // connections are checked like in Admin (a backup file is input too); one that doesn't pass is left out
+  const hosts = arr(c.hosts).filter((h) => UUID.test(h?.id) && HOST_TYPES[h.type]).flatMap(({ secretPlain, ...h }) => {
+    try {
+      const fields = validateHostInput({ ...h, name: String(h.name || 'Connection').slice(0, 64) }, h.type);
+      const options = { ...fields.options };
+      if (h.type === 'proxmox' && PVE_NODE.test(String(h.options?.node || ''))) options.node = h.options.node;
+      if (h.type === 'omada' && /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(String(h.options?.mac || ''))) options.mac = h.options.mac;
+      const out = { id: h.id, type: h.type, deviceId: UUID.test(h.deviceId || '') ? h.deviceId : null, ...fields, options, secret: null };
+      if (secretPlain && !NO_SECRET.has(h.type)) out.secret = encryptSecret(out, secretPlain);
+      return [out];
+    } catch {
+      return [];
+    }
   });
   const services = arr(c.services).filter((x) => UUID.test(x?.id)).map(({ secretPlain, ...x }) => {
     const out = { ...x, href: safeLink(x.href), monitor: safeMonitor(x.monitor), secret: null };
@@ -8722,10 +8749,15 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     return out;
   });
   const b = c.backup || {};
-  const destinations = arr(b.destinations).filter((d) => UUID.test(d?.id)).map(({ secretPlain, ...d }) => {
-    const out = { ...d, secret: null };
-    if (secretPlain) out.secret = encryptSecret(destHost(out), secretPlain);
-    return out;
+  // backup destinations too: a folder, host, user or path from a file is checked before rsync or ssh sees it
+  const destinations = arr(b.destinations).filter((d) => UUID.test(d?.id)).flatMap(({ secretPlain, ...d }) => {
+    try {
+      const out = { id: d.id, ...validateDestination(d), secret: null };
+      if (secretPlain) out.secret = encryptSecret(destHost(out), secretPlain);
+      return [out];
+    } catch {
+      return [];
+    }
   });
   const channels = arr(c.alerts?.channels).filter((x) => UUID.test(x?.id)).flatMap(({ secretPlain, ...x }) => {
     try {
@@ -9184,11 +9216,20 @@ function redirectToHttps(req, res) {
   res.end();
 }
 
+// Decided on the path as the app will see it, so /ping/../admin can't reach the app over plain HTTP
+function isPingPath(raw) {
+  try {
+    return /^\/ping\/[A-Za-z0-9_-]{32}(\/(start|fail))?\/?$/.test(new URL(String(raw), 'http://x').pathname);
+  } catch {
+    return false;
+  }
+}
+
 // The HTTP listener decides per request, so switching between redirect and serve needs no re-bind.
 function httpHandler(req, res) {
   const mode = effectiveServer(config.settings.server).http?.mode;
   // a check-in also works over plain HTTP, so `curl http://…/ping/…` needs no trusted certificate
-  if (mode === 'redirect' && listeners.https && !String(req.url).startsWith('/ping/')) return redirectToHttps(req, res);
+  if (mode === 'redirect' && listeners.https && !isPingPath(req.url)) return redirectToHttps(req, res);
   return handle(req, res);
 }
 

@@ -53,6 +53,11 @@ const portOpen = (port) => new Promise((res) => { const s = net.connect({ host: 
   ok(r.status === 308 && r.headers.location === `https://127.0.0.1:${httpsPort}/admin?x=1`, `HTTP redirects to HTTPS (${r.headers.location})`);
   r = await P('GET', '/', undefined, { Host: 'evil.example' });
   ok(r.status === 421, 'redirect refuses unknown Host headers (no open redirect)');
+  // check-ins answer over plain HTTP, but only check-ins: the rest of the app still redirects
+  r = await P('GET', '/ping/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+  ok(r.status === 404, 'a check-in address is answered over HTTP (an unknown one: 404)');
+  r = await P('GET', '/ping/../admin');
+  ok(r.status === 308, `/ping/../admin over HTTP is redirected, not served (${r.status})`);
   r = await H('GET', '/ca.crt');
   ok(r.status === 200 && r.text.includes('BEGIN CERTIFICATE') && /attachment/.test(r.headers['content-disposition']), 'CA certificate downloadable');
 
