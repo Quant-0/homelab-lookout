@@ -228,6 +228,8 @@ The device form: name, type, **brand and model**, and where it sits:
 | Shelly | Shelly smart plugs, Gen 1 and Gen 2 and newer (Plus Plug S, Plug S Gen3…) | Nothing, if the plug has no login. Gen 1 can have a password; on Gen 2 and newer, keep the login off | Host or IP. Only reads the power (plain HTTP on your network); never switches the plug. |
 | Tasmota | Plugs flashed with Tasmota | Nothing, or its web password | Host or IP, and the web password if it has one. |
 | Home Assistant power sensor | Any plug or meter Home Assistant already reads (Tapo, Kasa, Zigbee, a P1 meter…) | A long-lived access token (your profile in Home Assistant → Security) | Home Assistant's URL, the sensor's **Entity ID** (in watts or kilowatts, e.g. `sensor.nas_plug_power`) and the token. |
+| Docker | The containers on a Docker host | A **socket proxy** on that host that only allows reading containers (below) | The host's address and the proxy's port (2375). |
+| Portainer | The containers of one Portainer environment | A Portainer **access token** (your user → Access tokens) | Portainer's URL (https://…:9443), the **Environment ID** (empty = the first) and the token. In Portainer Community a token can also change things, so keep it only here. |
 | Ping | Anything without an API: a printer, a Raspberry Pi, an access point of another brand | Nothing; it only has to answer ping | Host or IP (no port). The device is *Online* while it answers, with its response time; when it stops, *Device offline* alerts as for any other connection. |
 
 The SNMP connection reads standard values only: the ports (up, speed, traffic), CPU, memory and storage, and for a UPS its battery, runtime, load and output. A UPS running on battery, with a low battery or one that needs replacing shows up under *Needs you*.
@@ -245,6 +247,34 @@ More on devices:
   - Double-click an empty U, or use **Add panel…**, for blank panels, patch panels, shelves and cable management. These have no name and don't appear in Docs.
   - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
   - **Drive bays** on *Automatic* follow the drives the management controller reports. Change it if your server has a different backplane than the drives suggest.
+
+#### Docker: the socket proxy
+
+The Docker API can do everything on a host, and a container's settings include its environment, which often holds passwords. So the dashboard never gets the Docker socket itself: a small proxy on each Docker host answers only "list containers", "inspect" and "stats", and only to lookout.
+
+On the Docker host, add to a compose file (and use the host's own address, not 0.0.0.0):
+
+```yaml
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1   # read containers, inspect and stats
+      POST: 0         # nothing can be changed
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "192.168.1.132:2375:2375"   # this host's address
+```
+
+Ports published by Docker bypass `ufw`, so let only lookout in with Docker's own firewall chain (and save it with `iptables-persistent`):
+
+```sh
+sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 2375 --ctdir ORIGINAL ! -s 192.168.1.140 -j DROP
+```
+
+Then add a **Docker** connection to the device for that host (address `192.168.1.132:2375`). The dashboard reads each container's state, health, restarts, CPU and memory, never its environment. Problems become **Container problem** alerts: a container that **keeps restarting**, one that **stopped** although its restart policy says it should run (a stop by hand, exit code 137 or 143, doesn't count), or one whose own **health check** fails. Add the label `lookout.ignore=true` to a container to leave it out of alerts. The containers are on the **VMs** page under **Containers**, and a VM whose address matches a Docker host lists its containers.
 
 ### Services
 

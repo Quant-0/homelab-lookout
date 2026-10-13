@@ -34,7 +34,7 @@ const Rack = (() => {
     for (const link of item.links || []) {
       if (link.startsWith('host:')) {
         const id = link.slice(5);
-        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass']) {
+        for (const type of ['idrac', 'proxmox', 'truenas', 'synology', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass', 'docker', 'portainer']) {
           const host = (data?.[type] || []).find((x) => x.id === id);
           if (host) out.push({ type, host, widget: `${type}:${id}` });
         }
@@ -87,6 +87,9 @@ const Rack = (() => {
       case 'tasmota':
       case 'hass':
         return l.host.ok === false ? 'critical' : 'good';
+      case 'docker':
+      case 'portainer':
+        return l.host.ok === false ? 'critical' : d.containers.some((c) => !c.ignore && (c.state === 'restarting' || c.health === 'unhealthy')) ? 'warning' : 'good';
       default:
         return '';
     }

@@ -2239,3 +2239,14 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .confirm-form { display: flex; flex-direction: column; gap: 10px; padding: 20px; }
 .confirm-form h3 { font-size: 17px; }
 .confirm-form .form-actions { margin-top: 4px; }
+
+/* Containers on the VMs page */
+.vm-view { margin: 0; align-self: flex-start; }
+.vm-view button { flex: none; padding: 0 14px; white-space: nowrap; }
+.ct-head, .ct-row { grid-template-columns: minmax(200px, 2fr) 130px repeat(2, minmax(90px, 1fr)) 110px minmax(90px, 0.8fr) minmax(130px, 1fr); }
+.vm-type.ct { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.ct-bad { color: var(--critical); font-weight: 600; }
+.ct-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ct-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 13px; }
+.ct-chip.bad { border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
+@media (max-width: 1000px) { .ct-head, .ct-row { grid-template-columns: 1fr 1fr; } }

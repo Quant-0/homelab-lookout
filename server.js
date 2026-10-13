@@ -70,12 +70,15 @@ const HOST_TYPES = {
   shelly: { label: 'Shelly smart plug', short: 'Shelly', port: 80 },
   tasmota: { label: 'Tasmota smart plug', short: 'Tasmota', port: 80 },
   hass: { label: 'Home Assistant power sensor', short: 'Home Assistant', port: null }, // a URL, an entity and a token
+  // containers: a Docker host through a read-only socket proxy, or one Portainer environment
+  docker: { label: 'Docker (socket proxy)', short: 'Docker', port: 2375 },
+  portainer: { label: 'Portainer environment', short: 'Portainer', port: null }, // a URL, an environment ID and a token
 };
 const PLUG_TYPES = new Set(['shelly', 'tasmota', 'hass']);
 const OPTIONAL_SECRET = new Set(['shelly', 'tasmota']); // a plug's web password, if it has one
 const POWER_SOURCES = ['auto', 'idrac', 'plug', 'estimate', 'none'];
 const SNMP_TYPES = new Set(['synology', 'snmp']); // engine ID instead of a certificate, two passwords
-const NO_SECRET = new Set(['nut', 'ping']); // nothing secret is sent: no password, nothing to pin
+const NO_SECRET = new Set(['nut', 'ping', 'docker']); // nothing secret is sent: no password, nothing to pin
 const shortLabel = (type) => HOST_TYPES[type].short || HOST_TYPES[type].label;
 // What a Redfish connection is called on the device itself, from the model it reported
 function controllerName(h, data) {
@@ -636,7 +639,16 @@ function validateHostInput(body, type) {
     const tlsMode = u.https && body.tlsMode === 'pin' ? 'pin' : u.https ? 'verify' : 'none';
     return { name, address: u.href, username: entity, tlsMode, fingerprint: tlsMode === 'pin' ? normalizeFingerprint(body.fingerprint) : '', options: {} };
   }
+  if (type === 'portainer') {
+    // Portainer: its URL, the environment ID (in the user name field; empty = the first) and an access token
+    const u = parseServiceUrl(String(body.address || '').trim());
+    const env = String(body.username ?? '').trim();
+    if (env && !/^\d{1,6}$/.test(env)) throw new UserError('Environment ID: a number (empty = the first environment)');
+    const tlsMode = u.https && body.tlsMode === 'pin' ? 'pin' : u.https ? 'verify' : 'none';
+    return { name, address: u.href, username: env, tlsMode, fingerprint: tlsMode === 'pin' ? normalizeFingerprint(body.fingerprint) : '', options: {} };
+  }
   const address = normalizeAddress(body.address, type);
+  if (type === 'docker') return { name, address, username: '', tlsMode: 'none', fingerprint: '', options: {} };
   if (type === 'shelly' || type === 'tasmota') {
     // plain HTTP on the local network; a password only if the plug has one
     const username = String(body.username ?? '').trim();
@@ -2968,7 +2980,101 @@ async function collectHass(h, secret) {
   return { watts: Math.round((unit === 'kW' ? v * 1000 : v) * 10) / 10, on: null, model: r.json.attributes?.friendly_name || h.username };
 }
 
-const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada, ping: collectPing, shelly: collectShelly, tasmota: collectTasmota, hass: collectHass };
+// --- Docker: containers through a read-only socket proxy or Portainer ---
+//
+// Only the container list, each container's inspect (for its restart count, health, exit code and
+// restart policy) and a one-shot stats reading are asked for. Inspect also carries the container's
+// environment (often passwords): it is read for those few fields and never kept or passed on.
+const dockerPrev = new Map(); // `${host id}|${container id}` -> { cpu, sys } for the CPU share between polls
+const dockerRestarts = new Map(); // `${host id}|${name}` -> [[t, restartCount], …] for the last 30 minutes
+
+async function dockerContainers(h, get) {
+  const list = await get('/containers/json?all=1');
+  if (!Array.isArray(list)) throw new UserError('Not a Docker API answer');
+  const now = Date.now();
+  const out = [];
+  const one = async (c) => {
+    const id = String(c.Id || '').slice(0, 12);
+    const name = String(c.Names?.[0] || id).replace(/^\//, '').slice(0, 128);
+    const labels = c.Labels && typeof c.Labels === 'object' ? c.Labels : {};
+    const ins = await get(`/containers/${encodeURIComponent(c.Id)}/json`).catch(() => null);
+    const st = ins?.State || {};
+    const health = st.Health?.Status || (/\(unhealthy\)/.test(c.Status) ? 'unhealthy' : /\(healthy\)/.test(c.Status) ? 'healthy' : /health: starting/.test(c.Status) ? 'starting' : null);
+    const rec = {
+      id, name, image: String(c.Image || '').slice(0, 200), state: String(c.State || st.Status || 'unknown'), status: String(c.Status || '').slice(0, 120), health,
+      restarts: Number.isFinite(ins?.RestartCount) ? ins.RestartCount : null,
+      exitCode: Number.isFinite(st.ExitCode) ? st.ExitCode : Number(/Exited \((\d+)\)/.exec(c.Status || '')?.[1] ?? NaN) || null,
+      oom: st.OOMKilled === true, policy: ins?.HostConfig?.RestartPolicy?.Name || null,
+      startedAt: Date.parse(st.StartedAt || '') || (c.Created ? c.Created * 1000 : null),
+      project: labels['com.docker.compose.project'] || null, service: labels['com.docker.compose.service'] || null,
+      ignore: labels['lookout.ignore'] === 'true', cpu: null, cpus: null, memUsed: null, memLimit: null,
+    };
+    if (rec.state === 'running') {
+      const s = await get(`/containers/${encodeURIComponent(c.Id)}/stats?stream=false&one-shot=true`).catch(() => null);
+      const cpu = s?.cpu_stats?.cpu_usage?.total_usage;
+      const sys = s?.cpu_stats?.system_cpu_usage;
+      const cpus = s?.cpu_stats?.online_cpus || s?.cpu_stats?.cpu_usage?.percpu_usage?.length || 1;
+      const prev = dockerPrev.get(`${h.id}|${id}`);
+      if (Number.isFinite(cpu) && Number.isFinite(sys)) {
+        // like `docker stats`: 1 = one full core (so up to the number of cores)
+        if (prev && sys > prev.sys && cpu >= prev.cpu) rec.cpu = Math.round(((cpu - prev.cpu) / (sys - prev.sys)) * cpus * 1000) / 1000;
+        rec.cpus = cpus;
+        dockerPrev.set(`${h.id}|${id}`, { cpu, sys });
+      }
+      const m = s?.memory_stats;
+      if (Number.isFinite(m?.usage)) {
+        rec.memUsed = Math.max(0, m.usage - (m.stats?.inactive_file ?? m.stats?.total_inactive_file ?? m.stats?.cache ?? 0));
+        rec.memLimit = Number.isFinite(m.limit) ? m.limit : null;
+      }
+    }
+    // restarts in the last 15 minutes: a restart loop shows here before Docker gives up
+    if (rec.restarts !== null) {
+      const key = `${h.id}|${name}`;
+      const log = (dockerRestarts.get(key) || []).filter(([t]) => now - t < 30 * 60e3);
+      log.push([now, rec.restarts]);
+      dockerRestarts.set(key, log);
+      const window = log.filter(([t]) => now - t <= 15 * 60e3);
+      rec.recentRestarts = Math.max(0, rec.restarts - Math.min(...window.map(([, n]) => n)));
+    }
+    out.push(rec);
+  };
+  const todo = list.slice(0, 200);
+  for (let i = 0; i < todo.length; i += 6) await Promise.all(todo.slice(i, i + 6).map(one));
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function collectDocker(h) {
+  const get = async (p) => {
+    const r = await connRequest({ url: `http://${h.address}` }, p, { full: true, timeoutMs: 10000 });
+    if (r.status === 403) throw new UserError('The socket proxy refused: set CONTAINERS=1 on it (and keep POST=0)');
+    if (r.status < 200 || r.status >= 300) throw new UserError(`HTTP ${r.status}`);
+    return r.json;
+  };
+  const version = await get('/version').catch(() => null);
+  return { engine: version ? { version: version.Version || null, os: version.Os || null } : null, containers: await dockerContainers(h, get) };
+}
+
+async function collectPortainer(h, secret) {
+  const conn = { url: h.address, tlsMode: h.tlsMode, fingerprint: h.fingerprint };
+  const api = async (p) => {
+    const r = await connRequest(conn, p, { headers: { 'X-API-Key': secret }, full: true, timeoutMs: 10000 });
+    if (r.status === 401 || r.status === 403) throw new UserError('Portainer refused the access token');
+    if (r.status === 404) throw new UserError('Not found: check the environment ID');
+    if (r.status < 200 || r.status >= 300) throw new UserError(`HTTP ${r.status}`);
+    return r.json;
+  };
+  let env = h.username;
+  let envName = null;
+  if (!env) {
+    const envs = await api('/api/endpoints');
+    if (!Array.isArray(envs) || !envs.length) throw new UserError('Portainer has no environments');
+    env = String(envs[0].Id);
+    envName = envs[0].Name || null;
+  }
+  return { engine: { version: null, os: null, environment: envName || `#${env}` }, containers: await dockerContainers(h, (p) => api(`/api/endpoints/${env}/docker${p}`)) };
+}
+
+const COLLECTORS = { idrac: collectIdrac, proxmox: collectProxmox, truenas: collectTruenas, synology: collectSynology, unifi: collectUnifi, snmp: collectSnmp, nut: collectNut, omada: collectOmada, ping: collectPing, shelly: collectShelly, tasmota: collectTasmota, hass: collectHass, docker: collectDocker, portainer: collectPortainer };
 
 function safeErrorMessage(e, secret) {
   let msg = e instanceof UserError ? e.message : 'Unexpected error while collecting data';
@@ -3998,7 +4104,7 @@ function saveServicesLayout(b) {
 // Visitors to a public dashboard get the numbers without addresses, OS or links into Proxmox.
 function vmsPayload(visitor = false, admin = false) {
   const pve = config.hosts.filter((h) => h.type === 'proxmox');
-  if (!pve.length) return null;
+  if (!pve.length && !config.hosts.some((h) => h.type === 'docker' || h.type === 'portainer')) return null;
   const items = [];
   const notes = [];
   const backupStorages = []; // where backups were looked for, and what was found
@@ -4025,7 +4131,17 @@ function vmsPayload(visitor = false, admin = false) {
     for (const st of r?.data?.backupStorages || []) if (!backupStorages.some((x) => x.name === st.name && x.node === st.node)) backupStorages.push(st);
   }
   const v = config.settings.dashboard.vms;
-  return { items, notes, backupStorages, backupDays: config.alerts.rules.backup.vmDays, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
+  // containers from every Docker host and Portainer environment, with the host they run on
+  const containers = [];
+  const containerHosts = [];
+  for (const h of config.hosts.filter((x) => x.type === 'docker' || x.type === 'portainer')) {
+    const r = results.get(h.id);
+    const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+    const ip = /^https?:\/\//.test(h.address) ? new URL(h.address).hostname : splitAddress(h.address).host;
+    containerHosts.push({ id: h.id, name, type: h.type, ok: r ? r.ok : null, error: r && !r.ok ? r.error : null, ip: visitor ? null : ip });
+    for (const c of r?.data?.containers || []) containers.push({ key: `${h.id}:${c.name}`, host: h.id, hostName: name, hostIp: visitor ? null : ip, ...c });
+  }
+  return { items, notes, backupStorages, containers, containerHosts, hasProxmox: pve.length > 0, backupDays: config.alerts.rules.backup.vmDays, showStopped: v.stopped, show: { cpu: v.cpu, ram: v.ram, uptime: v.uptime } };
 }
 
 // Icons: stored like backgrounds (sanitized PNG/JPEG/WebP, 0600, random id)
@@ -4317,7 +4433,7 @@ const HIST_TIERS = [
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts)$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4563,6 +4679,12 @@ function recordHistory(h, data, t) {
     histRecord(`ping:${h.id}:ms`, data.ms, t);
   } else if (PLUG_TYPES.has(h.type)) {
     histRecord(`plug:${h.id}:watts`, data.watts, t);
+  } else if (h.type === 'docker' || h.type === 'portainer') {
+    // per running container: CPU in % (100 = one core), memory in MB
+    for (const c of data.containers.filter((x) => x.state === 'running' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(x.name)).slice(0, 80)) {
+      if (c.cpu != null) histRecord(`ctr:${h.id}:${c.name}:cpu`, c.cpu * 100, t);
+      if (c.memUsed != null) histRecord(`ctr:${h.id}:${c.name}:mem`, c.memUsed / 1e6, t);
+    }
   } else if (h.type === 'omada') {
     for (const d of data.devices.filter((x) => x.online)) {
       histRecord(`omada:${h.id}:${d.mac}:clients`, d.clients, t);
@@ -6202,6 +6324,8 @@ function dashboardPayload() {
     shelly: group('shelly'),
     tasmota: group('tasmota'),
     hass: group('hass'),
+    docker: group('docker'),
+    portainer: group('portainer'),
     devices,
     rack: { ...config.rack }, // its items are `devices` (the page puts them back; not sent twice)
     power: powerSummary(),
@@ -6258,6 +6382,7 @@ function findHost(id) {
 
 function forgetHost(id) {
   results.delete(id);
+  for (const m of [dockerPrev, dockerRestarts]) for (const k of m.keys()) if (k.startsWith(`${id}|`)) m.delete(k);
   for (const k of lastSample.keys()) if (k === `idrac:${id}` || k.startsWith(`poe:${id}:`)) lastSample.delete(k);
   for (const k of unifiSessions.keys()) if (k.startsWith(id + '|')) unifiSessions.delete(k);
   for (const k of redfishPathCache.keys()) if (k.startsWith(id + '|')) redfishPathCache.delete(k);
@@ -6324,7 +6449,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/vms' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
     const v = vmsPayload(!session && !viewer, Boolean(session));
-    return sendJson(res, 200, { ...(v || { items: [], notes: [] }), proxmox: Boolean(v), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title, refreshSeconds: config.settings.dashboard.refreshSeconds });
+    return sendJson(res, 200, { ...(v || { items: [], notes: [], containers: [], containerHosts: [] }), proxmox: Boolean(v?.hasProxmox), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title, refreshSeconds: config.settings.dashboard.refreshSeconds });
   }
 
   if (p === '/api/services' && m === 'GET') {
@@ -6684,6 +6809,8 @@ async function handleApi(req, res, url, session, viewer = null) {
       shelly: () => `${d.model} · ${d.watts} W`,
       tasmota: () => `${d.model} · ${d.watts} W`,
       hass: () => `${d.model} · ${d.watts} W`,
+      docker: () => `${d.containers.filter((c) => c.state === 'running').length} of ${d.containers.length} containers running${d.engine?.version ? ` · Docker ${d.engine.version}` : ''}`,
+      portainer: () => `${d.engine.environment}: ${d.containers.filter((c) => c.state === 'running').length} of ${d.containers.length} containers running`,
     }[type]();
     return sendJson(res, 200, {
       ok: true,
@@ -7384,8 +7511,8 @@ async function handleApi(req, res, url, session, viewer = null) {
     // Connects and reads the certificate only; no application data is sent.
     const body = await readBody(req);
     if (!HOST_TYPES[body.type]) throw new UserError('Invalid host type');
-    const hassUrl = body.type === 'hass' ? parseServiceUrl(String(body.address || '')) : null;
-    if (hassUrl && !hassUrl.https) throw new UserError('This Home Assistant URL is http://, so there is no certificate');
+    const hassUrl = body.type === 'hass' || body.type === 'portainer' ? parseServiceUrl(String(body.address || '')) : null;
+    if (hassUrl && !hassUrl.https) throw new UserError('This URL is http://, so there is no certificate');
     const address = hassUrl ? (net.isIPv6(hassUrl.host) ? `[${hassUrl.host}]:${hassUrl.port}` : `${hassUrl.host}:${hassUrl.port}`) : normalizeAddress(body.address, body.type);
     if (NO_SECRET.has(body.type) || OPTIONAL_SECRET.has(body.type)) throw new UserError(`${shortLabel(body.type)} has no certificate or identity to fetch`);
     if (SNMP_TYPES.has(body.type)) {
@@ -7639,6 +7766,7 @@ const ALERT_TYPES = {
   space: { label: 'Storage almost full', hint: 'A pool, volume or Proxmox storage is fuller than the limit, or a disk inside a container or VM (with the guest agent).', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
   nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
   power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
+  container: { label: 'Container problem', hint: 'A Docker container keeps restarting, stopped although its restart policy says it should run, or fails its health check. Label a container lookout.ignore=true to leave it out.', delay: 2 },
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
   backup: {
     label: 'Backup failed',
@@ -8284,6 +8412,17 @@ function alertConditions(all = false) {
       }
       for (const b of (d.backups || []).filter((x) => ours(x.node) && !x.ok)) {
         add('backup', `${h.id}:vzdump:${b.node}`, b.warnings ? 'warning' : 'critical', `${name}: Proxmox backup ${b.warnings ? 'finished with warnings' : 'failed'}`, `${b.status} · node ${b.node} · ${osloText(b.at)}`, own);
+      }
+    } else if (h.type === 'docker' || h.type === 'portainer') {
+      for (const c of d.containers.filter((x) => !x.ignore)) {
+        const id = `${h.id}:${c.name}`;
+        if (c.state === 'restarting' || c.recentRestarts >= 3) {
+          add('container', `${id}:loop`, 'critical', `${name}: ${c.name} keeps restarting`, `${c.recentRestarts || 0} restarts in 15 minutes${c.exitCode ? `; last exit code ${c.exitCode}` : ''}`, own);
+        } else if (c.state === 'exited' && c.policy && c.policy !== 'no' && (c.oom || (c.exitCode && ![137, 143].includes(c.exitCode)))) {
+          // its restart policy says it should run; 137/143 are a stop by hand (killed or terminated)
+          add('container', `${id}:stopped`, 'critical', `${name}: ${c.name} stopped`, c.oom ? 'It ran out of memory' : `Exit code ${c.exitCode}; its restart policy is ${c.policy}`, own);
+        }
+        if (c.health === 'unhealthy') add('container', `${id}:health`, 'warning', `${name}: ${c.name} is unhealthy`, 'Its own health check fails', own);
       }
     } else if (h.type === 'truenas') {
       for (const p of d.pools) {

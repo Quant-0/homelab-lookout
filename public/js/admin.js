@@ -58,6 +58,17 @@ const TYPE_TEXT = {
     secret: 'Web password (optional)',
     address: 'The plug\'s host or IP (plain HTTP, port 80)',
   },
+  docker: {
+    username: null,
+    secret: null,
+    address: 'The Docker host and the socket proxy\'s port (default 2375). Only read access: see "Docker" in the guide for the proxy and its firewall line.',
+  },
+  portainer: {
+    username: 'Environment ID',
+    usernameHint: 'The number in the environment\'s address in Portainer (…/#!/2/docker/…). Empty = the first environment.',
+    secret: 'Access token',
+    address: 'Portainer URL, e.g. https://192.168.1.132:9443',
+  },
   hass: {
     username: 'Entity ID',
     usernameHint: 'The power sensor in watts or kilowatts, e.g. sensor.server_plug_power (Settings → Entities in Home Assistant).',
@@ -382,7 +393,7 @@ $('pw-form').addEventListener('submit', async (ev) => {
 let rackData = null; // dashboard data, for live faceplates and status LEDs
 let draft = null; // device in the editor; typed secrets live here only until saved
 
-const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway', ping: 'other', shelly: 'server', tasmota: 'server', hass: 'server' };
+const KIND_FOR_TYPE = { idrac: 'server', proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', snmp: 'switch', nut: 'ups', omada: 'gateway', ping: 'other', shelly: 'server', tasmota: 'server', hass: 'server', docker: 'server', portainer: 'server' };
 const SNMP_TYPES = ['synology', 'snmp'];
 const deviceForm = () => $('device-form').elements;
 const hostsOf = (dev) => state.hosts.filter((h) => h.deviceId === dev.id);
@@ -596,7 +607,7 @@ function connFromHost(h) {
 
 function newConn(type) {
   return {
-    id: null, type, address: '', username: '', tlsMode: type === 'hass' ? 'verify' : 'pin', fingerprint: '',
+    id: null, type, address: '', username: '', tlsMode: type === 'hass' || type === 'portainer' ? 'verify' : 'pin', fingerprint: '',
     options: SNMP_TYPES.includes(type) ? { snmpAuth: 'sha' } : type === 'proxmox' ? { node: '' } : type === 'omada' ? { mac: '' } : {},
     secret: '', secret2: '', clearSecret: false, hasSecret: false, status: null, nodes: [], found: [], orig: null,
   };
@@ -702,8 +713,9 @@ function connCard(c) {
   const nut = c.type === 'nut';
   const ping = c.type === 'ping';
   const plugHttp = c.type === 'shelly' || c.type === 'tasmota'; // plain HTTP, an optional password
-  const hassHttp = c.type === 'hass' && !/^https:/i.test(c.address || '');
-  const plain = nut || ping; // nothing secret is sent: no password and no certificate
+  const urlType = c.type === 'hass' || c.type === 'portainer'; // a URL: TLS only for https://
+  const hassHttp = urlType && !/^https:/i.test(c.address || '');
+  const plain = nut || ping || c.type === 'docker'; // nothing secret is sent: no password and no certificate
   const noTls = plain || plugHttp || hassHttp;
   const stored = c.hasSecret ? 'Stored (leave blank to keep)' : 'Not set';
   const result = el('div', { class: 'conn-result', role: 'status' });
@@ -744,12 +756,12 @@ function connCard(c) {
     : c.id ? status('Pending', '') : status('Not saved yet', '');
   const fields = [
     field('Address', (() => {
-      const a = input('address', { placeholder: ping ? 'host or IP' : c.type === 'hass' ? 'http://homeassistant.local:8123' : 'host or IP[:port]' });
-      // Home Assistant over https:// gets the certificate fields
-      if (c.type === 'hass') a.addEventListener('change', () => hassHttp !== !/^https:/i.test(a.value) && renderConnections());
+      const a = input('address', { placeholder: ping ? 'host or IP' : c.type === 'hass' ? 'http://homeassistant.local:8123' : c.type === 'portainer' ? 'https://192.168.1.132:9443' : 'host or IP[:port]' });
+      // Home Assistant and Portainer over https:// get the certificate fields
+      if (urlType) a.addEventListener('change', () => hassHttp !== !/^https:/i.test(a.value) && renderConnections());
       return a;
     })(), t.address),
-    ping ? null : field(t.username, input('username'), t.usernameHint),
+    t.username ? field(t.username, input('username'), t.usernameHint) : null,
     plain ? null : field(t.secret, input('secret', { type: 'password', autocomplete: 'new-password', placeholder: stored }), c.hasSecret ? 'Write-only: the stored value is never shown.' : null),
   ].filter(Boolean);
   if (noTls) {
@@ -806,7 +818,7 @@ function connCard(c) {
     el('div', { class: 'form-actions' },
       noTls ? null : el('button', { type: 'button', text: snmp ? 'Fetch engine ID' : 'Fetch certificate', onclick: () => fetchIdentity(c, fpInput, result) }),
       el('button', { type: 'button', text: 'Test', onclick: () => testConnection(c, result) }),
-      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : plugHttp ? 'Only reads the power; never switches the plug. Plain HTTP, so a password would travel unencrypted.' : c.type === 'hass' ? (hassHttp && c.address ? 'This URL is plain http://, so the token travels unencrypted on your network. Use https:// if your Home Assistant has it.' : 'Reads that one sensor; the token is stored encrypted.') : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
+      el('span', { class: 'hint', text: ping ? 'Sends three pings; no password.' : c.type === 'docker' ? 'Reads the containers: state, health, restarts, CPU and memory. Never their settings or environment.' : c.type === 'portainer' ? (hassHttp && c.address ? 'This URL is plain http://, so the token travels unencrypted. Use https:// (port 9443).' : 'Reads the containers of that environment. In Portainer Community a token can also change things: keep it only here.') : plugHttp ? 'Only reads the power; never switches the plug. Plain HTTP, so a password would travel unencrypted.' : c.type === 'hass' ? (hassHttp && c.address ? 'This URL is plain http://, so the token travels unencrypted on your network. Use https:// if your Home Assistant has it.' : 'Reads that one sensor; the token is stored encrypted.') : nut ? 'Sends one read-only command (LIST VAR); no password.' : snmp ? 'Fetching only does an unauthenticated SNMP discovery.' : 'Fetching only does a TLS handshake; nothing else is sent.' })),
     result,
     warn);
   updateWarning();
@@ -876,7 +888,7 @@ $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
 $('device-new').addEventListener('click', openCatalog);
 
 // --- Add device: start from the catalog ---
-const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
+const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', docker: 'Docker', portainer: 'Portainer', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
 function presetFrom(x) {
   const desktopNas = x.front === 'synology-ds' || x.unifi?.rackFront === 'synology-ds';

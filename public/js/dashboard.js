@@ -128,6 +128,7 @@ function deviceContext(dev, d) {
   const omadaH = host('omada');
   const pingH = host('ping');
   const plugH = host('shelly') || host('tasmota') || host('hass');
+  const dockerH = host('docker') || host('portainer');
   const omadaMac = conn('omada')?.mac || null;
   const linkHost = dev.unifi && (d.unifi || []).find((h) => h.id === dev.unifi.hostId);
   const ud = linkHost?.data?.devices?.find((x) => x.mac === dev.unifi.mac) || null;
@@ -139,7 +140,8 @@ function deviceContext(dev, d) {
     omadaH, om, omd: omadaMac && om ? om.devices.find((x) => x.mac === omadaMac) || null : null, omadaMac,
     pingH, ping: pingH?.ok === false ? null : pingH?.data || null,
     plugH, plug: plugH?.data || null,
-    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH, pingH, plugH].filter(Boolean),
+    dockerH, docker: dockerH?.data || null,
+    hosts: [idracH, pveH, tnH, synoH, uniH, snmpH, nutH, omadaH, pingH, plugH, dockerH].filter(Boolean),
     showVms: d.vms?.host !== false,
   };
 }
@@ -250,6 +252,12 @@ function keyMetrics(dev, ctx, max = 4) {
     const temps = ud.temps.map((x) => x.value);
     add(temps.length ? fmt.n(Math.max(...temps)) : null, '°C', 'Temperature');
     add(ud.cpu != null ? pctOf(ud.cpu) : null, '%', 'CPU', ud.cpu, load(ud.cpu || 0));
+  }
+  if (ctx.docker) {
+    const all = ctx.docker.containers.filter((c) => !c.ignore);
+    const run = all.filter((c) => c.state === 'running').length;
+    const bad = all.some((c) => c.health === 'unhealthy' || c.state === 'restarting');
+    add(`${run}/${all.length}`, '', 'Containers running', all.length ? run / all.length : null, bad ? 'warning' : '');
   }
   if (ctx.ping) {
     if (!out.length) add('Online', '', 'Status');
@@ -781,6 +789,28 @@ function renderNut(hosts) {
   });
 }
 
+// Docker hosts and Portainer environments: one row per container
+const CT_STATE = { running: 'good', restarting: 'critical', exited: '', created: '', paused: 'warning', dead: 'critical' };
+function renderContainers(d) {
+  return ['docker', 'portainer'].flatMap((type) => (d[type] || []).map((h) => {
+    const x = h.data;
+    const sub = x ? `${x.containers.filter((c) => c.state === 'running').length} of ${x.containers.length} running${x.engine?.version ? ` · Docker ${x.engine.version}` : x.engine?.environment ? ` · ${x.engine.environment}` : ''}` : '';
+    const card = hostCard(type === 'docker' ? 'Docker' : 'Portainer', h, sub, null, (data) => [
+      data.containers.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'guest-table' },
+        el('thead', null, el('tr', null, ['Container', 'State'].map((t) => el('th', { text: t })), ['CPU', 'Memory', 'Restarts'].map((t) => el('th', { class: 'r', text: t })))),
+        el('tbody', null, data.containers.map((c) => el('tr', { class: c.state === 'running' ? null : 'muted' },
+          el('td', null, el('strong', { text: c.name }), el('div', { class: 'small muted', text: c.image })),
+          el('td', null, el('span', { class: `dot ${c.health === 'unhealthy' ? 'critical' : CT_STATE[c.state] || 'off'}` }), ` ${c.state}${c.health ? ` · ${c.health}` : ''}`),
+          el('td', { class: 'r num', text: c.cpu != null ? `${fmt.n(c.cpu * 100, 1)} %` : '–' }),
+          el('td', { class: 'r num', text: c.memUsed != null ? fmt.bytes(c.memUsed) : '–' }),
+          el('td', { class: `r num${c.recentRestarts >= 3 ? ' critical' : ''}`, text: c.restarts ?? '–' }))))))
+        : el('p', { class: 'small muted', text: 'No containers.' }),
+      el('p', { class: 'small muted' }, el('a', { href: '/vms#containers', text: 'All containers, with graphs' })),
+    ]);
+    return [h.id, { ...card, title: `Containers · ${type === 'docker' ? 'Docker' : 'Portainer'}` }];
+  }));
+}
+
 // Smart plugs and Home Assistant power sensors
 const PLUG_NAMES = { shelly: 'Shelly', tasmota: 'Tasmota', hass: 'Home Assistant' };
 function renderPlugs(d) {
@@ -936,6 +966,7 @@ function deviceSections(d) {
     ...renderOmada(d.omada || [], (id) => macFor.get(id)),
     ...renderPing(d.ping || []),
     ...renderPlugs(d),
+    ...renderContainers(d),
   ]);
 }
 
@@ -943,7 +974,7 @@ function deviceSections(d) {
 function deviceInfos(d) {
   const sections = deviceSections(d);
   const consoles = new Map((d.unifi || []).map((h) => [h.id, h]));
-  const order = { idrac: 0, shelly: 1, tasmota: 1, hass: 1, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5, ping: 6 };
+  const order = { idrac: 0, shelly: 1, tasmota: 1, hass: 1, nut: 1, snmp: 1, synology: 1, truenas: 2, proxmox: 3, omada: 4, unifi: 5, docker: 6, portainer: 6, ping: 7 };
   return d.devices
     .filter((dev) => dev.connections.length || dev.unifi)
     .map((dev) => {
@@ -1711,7 +1742,7 @@ function render(d) {
   refreshDrawer();
   HD.fillSparks();
   pruneFans();
-  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass'].every((k) => !(d[k] || []).length);
+  const noHosts = ['idrac', 'proxmox', 'truenas', 'synology', 'unifi', 'snmp', 'nut', 'omada', 'ping', 'shelly', 'tasmota', 'hass', 'docker', 'portainer'].every((k) => !(d[k] || []).length);
   $('empty-hint').classList.toggle('hidden', !noHosts);
   $('empty-hint').replaceChildren('Nothing is monitored yet. ', d.loggedIn ? el('a', { href: '/admin#devices', text: 'Add your first device in Admin' }) : '');
 }
