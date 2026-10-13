@@ -248,6 +248,12 @@ More on devices:
   - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
   - **Drive bays** on *Automatic* follow the drives the management controller reports. Change it if your server has a different backplane than the drives suggest.
 
+#### Reached through (dependencies)
+
+Each device has **Reached through**: the switch, gateway or host it depends on. **Automatic** uses what UniFi reports (an access point hangs off the switch it is plugged into, a switch off the gateway); for servers and anything else choose it yourself, for example the core switch, or the Proxmox host for a device that is a VM. **Nothing** means it is reached directly.
+
+When a device is down, everything behind it (devices, the services that run on them, their check-ins) is grouped under it on Home: one row for the cause with "N more behind it", and the rest muted below it with *Behind core-switch*. Their tiles say **Unreachable** instead of Offline. Only the cause sends an alert, and it names what is behind it ("also unreachable: atlas, Jellyfin…"). Something that broke before the cause was known has already been sent, as before.
+
 #### Docker: the socket proxy
 
 The Docker API can do everything on a host, and a container's settings include its environment, which often holds passwords. So the dashboard never gets the Docker socket itself: a small proxy on each Docker host answers only "list containers", "inspect" and "stats", and only to lookout.

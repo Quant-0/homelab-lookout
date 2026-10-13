@@ -126,6 +126,7 @@
               <p class="hint">How this device is monitored. A server can have both its management controller (hardware, power) and Proxmox (VMs). Use Test to check a connection before saving.</p>
               <div class="conn-list" id="conn-list"></div>
               <label class="add-conn"><span>Add connection</span><select id="conn-add"></select></label>
+              <label><span>Reached through</span><select name="parent" id="device-parent"></select><span class="hint">The switch, gateway or host it depends on. When that is down, this device's problems are grouped under it: one alert instead of many.</span></label>
               <label><span>Power reading from</span><select name="powerSource" id="device-power"></select><span class="hint" id="device-power-hint"></span></label>
               <label><span>Estimated power (W)</span><input name="estimateW" type="number" min="0" max="5000" step="1" placeholder="Leave empty if measured"><span class="hint" id="device-est-hint"></span></label>
               <div class="form-actions">

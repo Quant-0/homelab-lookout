@@ -915,7 +915,17 @@ function validateDeviceFields(b, selfId) {
   if (!RACK_KINDS.includes(b.kind)) throw new UserError('Invalid device type');
   const estimateW = b.estimateW === null || b.estimateW === undefined || b.estimateW === '' ? null : num(b.estimateW, 0, 5000, 'Estimated power');
   if (b.powerSource !== undefined && !POWER_SOURCES.includes(b.powerSource)) throw new UserError('Invalid power source');
-  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.powerSource !== undefined ? { powerSource: b.powerSource } : {}), ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
+  let parent;
+  if (b.parent !== undefined) {
+    parent = b.parent === null || b.parent === '' ? null : b.parent === 'none' ? 'none' : String(b.parent);
+    if (parent && parent !== 'none') {
+      const p = config.devices.find((x) => x.id === parent);
+      if (!p || parent === selfId) throw new UserError('Reached through: choose another device');
+      // no loops: the chosen device may not itself be reached through this one
+      if (selfId && (p.id === selfId || ancestorsOf(p).some((x) => x.id === selfId))) throw new UserError(`Reached through: ${p.name} is itself reached through this device`);
+    }
+  }
+  return { name, kind: b.kind, ...validatePlacement(b, selfId, name), estimateW, ...(b.powerSource !== undefined ? { powerSource: b.powerSource } : {}), ...(b.parent !== undefined ? { parent } : {}), ...(b.front !== undefined ? { front: validateFront(b.front) } : {}), ...(b.model !== undefined ? { model: validateModel(b.model) } : {}) };
 }
 
 // Creates or updates a connection from request data. A changed address, user name or pinned
@@ -963,6 +973,82 @@ function findDevice(id) {
 function deviceHosts(d) {
   return config.hosts.filter((h) => h.deviceId === d.id);
 }
+
+// --- Dependencies: what a device is reached through (a switch, the gateway, a Proxmox host) ---
+//
+// d.parent: a device id, 'none', or empty for automatic: the switch or gateway UniFi says the device
+// is plugged into (its uplink). When a device is down, the problems of everything behind it are
+// grouped under it and send no alerts of their own: one outage, one alert.
+function parentOf(d) {
+  if (d.parent === 'none') return null;
+  if (d.parent) return config.devices.find((x) => x.id === d.parent && x.id !== d.id) || null;
+  if (!d.unifi) return null;
+  const ud = results.get(d.unifi.hostId)?.data?.devices?.find((x) => x.mac === d.unifi.mac);
+  if (!ud?.uplinkMac) return null;
+  return config.devices.find((x) => x.id !== d.id && x.unifi?.hostId === d.unifi.hostId && x.unifi.mac === ud.uplinkMac) || null;
+}
+
+function ancestorsOf(d) {
+  const out = [];
+  for (let p = parentOf(d); p && out.length < 12 && p !== d && !out.includes(p); p = parentOf(p)) out.push(p);
+  return out;
+}
+
+// Down: every part we can see of it is down (all its connections failing past the grace time, and
+// its UniFi device, if it has one, offline). A device with nothing to see is never "down".
+function deviceDown(d) {
+  const parts = [];
+  for (const h of deviceHosts(d)) {
+    const r = results.get(h.id);
+    if (!r || r.ok === null) continue;
+    parts.push(r.ok === false && Date.now() - (r.failingSince ?? 0) >= offlineGraceMs());
+  }
+  if (d.unifi) {
+    const host = results.get(d.unifi.hostId);
+    const ud = host?.ok ? host.data?.devices?.find((x) => x.mac === d.unifi.mac) : null;
+    if (ud) parts.push(!ud.online);
+  }
+  return parts.length > 0 && parts.every(Boolean);
+}
+
+// The device a problem is about (as for maintenance), and what is down "above" it: the topmost
+// down device among its ancestors (and, for a service or check-in, the device it runs on).
+function rootCause(c, downIds) {
+  const host = config.hosts.find((h) => h.id === c.owner);
+  const svc = config.services.find((x) => x.id === c.owner);
+  const chk = config.checkins.find((x) => x.id === c.owner);
+  const devId = c.device || host?.deviceId || svc?.deviceId || chk?.deviceId || null;
+  const dev = devId && config.devices.find((x) => x.id === devId);
+  if (!dev) return null;
+  const chain = [...(c.type === 'offline' ? [] : [dev]), ...ancestorsOf(dev)];
+  if (!['offline', 'service', 'checkin'].includes(c.type)) return null;
+  const down = chain.filter((x) => downIds.has(x.id));
+  return down.length ? down[down.length - 1] : null;
+}
+
+// For a set of problems: which ones are behind another device's outage (key -> root device), and
+// for each root, the names of what is behind it
+function dependencyCauses(cond) {
+  const downIds = new Set(config.devices.filter((d) => !d.hidden && deviceDown(d)).map((d) => d.id));
+  const behind = new Map();
+  const byRoot = new Map();
+  if (!downIds.size) return { behind, byRoot };
+  for (const [key, c] of cond) {
+    const root = rootCause(c, downIds);
+    if (!root) continue;
+    behind.set(key, root);
+    const host = config.hosts.find((h) => h.id === c.owner);
+    // a service or check-in by its own name, a device by its name
+    const who = config.services.find((x) => x.id === c.owner)?.name || config.checkins.find((x) => x.id === c.owner)?.name || config.devices.find((x) => x.id === (c.device || host?.deviceId))?.name || c.title;
+    const names = byRoot.get(root.id) || [];
+    if (!names.includes(who)) names.push(who);
+    byRoot.set(root.id, names);
+  }
+  return { behind, byRoot };
+}
+
+// "also unreachable: a, b, c and 4 more"
+const alsoText = (names) => (names?.length ? `; also unreachable: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` and ${names.length - 6} more` : ''}` : '');
 
 // The Proxmox node a device represents: chosen, the only node, or the one named like the device.
 function effectiveNode(h, d) {
@@ -6188,7 +6274,9 @@ function forVisitors(payload) {
 function attentionList() {
   const rank = { critical: 0, warning: 1 };
   const wins = activeMaintenance();
-  return [...alertConditions(true)].map(([key, c]) => {
+  const all = alertConditions(true);
+  const deps = dependencyCauses(all);
+  return [...all].map(([key, c]) => {
     const host = config.hosts.find((h) => h.id === c.owner);
     const chk = c.type === 'checkin' ? config.checkins.find((x) => x.id === c.owner) : null;
     const win = maintenanceFor(c, wins);
@@ -6200,7 +6288,9 @@ function attentionList() {
     const text = subject && c.title.startsWith(`${subject}: `) ? c.title.slice(subject.length + 2) : c.title;
     // a TrueNAS alert's own text says more than "TrueNAS critical"
     const own = c.type === 'nas' && c.detail;
-    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity), maintenance: win ? { name: win.name, until: win.until } : null };
+    return { key, type: c.type, severity: c.severity, subject, text: own ? c.detail : text, detail: own ? text : c.detail, deviceId: dev ? deviceId : null, serviceId: svc?.id || null, since: alertState.active[key]?.since || null, snoozedUntil: snoozedUntil(key, c.severity), maintenance: win ? { name: win.name, until: win.until } : null,
+      behind: deps.behind.has(key) ? { deviceId: deps.behind.get(key).id, name: deps.behind.get(key).name } : null,
+      behindCount: c.type === 'offline' && deviceId && deps.byRoot.has(deviceId) ? deps.byRoot.get(deviceId).length : 0 };
   }).filter((a) => !a.deviceId || !config.devices.find((d) => d.id === a.deviceId)?.hidden)
     .sort((a, b) => rank[a.severity] - rank[b.severity] || (a.subject || '').localeCompare(b.subject || ''));
 }
@@ -6294,6 +6384,8 @@ function dashboardPayload() {
       estimateW: d.estimateW,
       powerSource: d.powerSource || 'auto',
       powerFrom: powerSourceOf(d).kind, // what it is read from now
+      parent: d.parent || null, // a device id, 'none', or null = automatic (UniFi uplink)
+      reachedThrough: parentOf(d)?.id || null,
       front: d.front || null,
       model: d.model || null,
       unifi: d.unifi,
@@ -6767,6 +6859,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       const removed = deviceHosts(dev);
       config.hosts = config.hosts.filter((h) => !removed.includes(h));
       config.devices = config.devices.filter((d) => d !== dev);
+      for (const x of config.devices) if (x.parent === dev.id) x.parent = null; // back to automatic
       forgetInSchedules({ deviceId: dev.id });
       saveConfig();
       removed.forEach((h) => forgetHost(h.id));
@@ -8516,6 +8609,14 @@ async function evaluateAlertsNow(now) {
     // in a maintenance window: nothing is sent, and nothing starts counting towards its wait
     const wins = activeMaintenance(now);
     const quiet = new Set([...cond].filter(([, c]) => maintenanceFor(c, wins)).map(([k]) => k));
+    // behind a device that is down: no alert of their own; the device's alert names them
+    const deps = dependencyCauses(cond);
+    for (const k of deps.behind.keys()) quiet.add(k);
+    for (const c of cond.values()) {
+      const host = config.hosts.find((h) => h.id === c.owner);
+      const devId = c.device || host?.deviceId;
+      if (c.type === 'offline' && devId && deps.byRoot.has(devId)) c.detail = `${c.detail || ''}${alsoText(deps.byRoot.get(devId))}`.replace(/^; /, '').slice(0, 300);
+    }
     const events = [];
     for (const [key, a] of Object.entries(alertState.active)) {
       if (cond.has(key)) continue;

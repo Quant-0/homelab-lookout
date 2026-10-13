@@ -990,7 +990,10 @@ function deviceInfos(d) {
         || (ctx.tn ? ctx.tn.system.version || 'TrueNAS' : '') || (ctx.node ? `Proxmox node ${ctx.node.name}` : '') || ctx.snmp?.system?.name || '';
       const update = Boolean(ctx.ud?.upgradable || ctx.syno?.system?.upgradeAvailable || ctx.omd?.upgradable || d.updates?.devices?.includes(dev.id));
       const maint = maintOf(d, dev);
-      return { id: dev.id, dev, ctx, secs, issues, state: maint ? ['Maintenance', 'info'] : deviceState(dev, ctx, issues), maint, model, update, metrics: keyMetrics(dev, ctx), spark: mainSpark(ctx) };
+      // offline only because what it's reached through is down
+      const behind = issues.length && issues.every((a) => a.behind) ? issues[0].behind : null;
+      const own = deviceState(dev, ctx, issues);
+      return { id: dev.id, dev, ctx, secs, issues, state: maint ? ['Maintenance', 'info'] : behind && ['Offline', 'Fault'].includes(own[0]) ? ['Unreachable', ''] : own, maint, behind, model, update, metrics: keyMetrics(dev, ctx), spark: mainSpark(ctx) };
     });
 }
 
@@ -1007,7 +1010,7 @@ function tileNode(info) {
   const [stateText, stateCls] = state;
   const worst = info.issues[0];
   const m = info.metrics[0];
-  const line = worst ? worst.text : stateText === 'Offline' ? 'Not answering' : info.model || Rack.KIND_LABELS[dev.kind] || dev.kind;
+  const line = info.behind && stateText === 'Unreachable' ? `Behind ${info.behind.name}` : worst ? worst.text : stateText === 'Offline' ? 'Not answering' : info.model || Rack.KIND_LABELS[dev.kind] || dev.kind;
   const art = Rack.deviceArt(dev, lastData);
   const t = el('button', { type: 'button', class: `dtile${stateCls ? ` ${stateCls}` : ''}${tileHidden.has(dev.id) ? ' is-hidden' : ''}`, 'data-id': dev.id, 'aria-label': `${dev.name}: ${stateText}${worst ? `, ${worst.text}` : ''}` },
     el('span', { class: `tile-art${art ? '' : ' no-art'}` }, art || el('span', { class: 'tile-icon', title: Rack.KIND_LABELS[dev.kind] || dev.kind }, HD.icon(KIND_ICONS[dev.kind] || 'box')), status(stateText, stateCls)),
@@ -1233,8 +1236,10 @@ function pill(cls, children, attrs) {
 }
 
 // Snoozed warnings stay off the top of Home (the device still shows them)
-const awake = (d) => (d.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance);
-const snoozedOnes = (d) => (d.attention || []).filter((a) => a.snoozedUntil && !a.maintenance);
+const awake = (d) => (d.attention || []).filter((a) => !a.snoozedUntil && !a.maintenance && !a.behind);
+const snoozedOnes = (d) => (d.attention || []).filter((a) => a.snoozedUntil && !a.maintenance && !a.behind);
+// Problems that are only there because a device they're reached through is down: listed under it
+const behindOnes = (d) => (d.attention || []).filter((a) => a.behind && !a.maintenance);
 // Problems on something in a maintenance window: listed, muted, and not counted as faults
 const inMaintenance = (d) => (d.attention || []).filter((a) => a.maintenance);
 const maintOf = (d, dev) => (d.maintenance || []).find((w) => w.all || w.devices.includes(dev.id)) || null;
@@ -1270,7 +1275,7 @@ function renderNeeds(d) {
   const snoozeLine = zz.length ? el('div', { class: 'snoozed-line' },
     HD.icon('clock'), `${zz.length} snoozed`,
     el('button', { type: 'button', class: 'link-button', 'aria-expanded': String(showSnoozed), text: showSnoozed ? 'Hide' : 'Show', onclick: () => { showSnoozed = !showSnoozed; renderNeeds(d); } })) : null;
-  const rows = [...(d.notices || []).map((n) => noticeRow(n, d)), ...(d.maintenance || []).map((w) => maintRow(w, d)), ...list.map((a) => needRow(a, d)), ...inMaintenance(d).map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
+  const rows = [...(d.notices || []).map((n) => noticeRow(n, d)), ...(d.maintenance || []).map((w) => maintRow(w, d)), ...list.map((a) => needRow(a, d)), ...behindOnes(d).map((a) => needRow(a, d)), ...inMaintenance(d).map((a) => needRow(a, d)), ...(showSnoozed ? zz.map((a) => needRow(a, d)) : [])];
   if (!list.length) {
     box.className = rows.length ? 'needs' : '';
     const head = infos.length || d.services?.total
@@ -1320,18 +1325,19 @@ function maintRow(w, d) {
 const untilText = (t) => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 function needRow(a, d) {
-  const attrs = { class: `need ${a.severity}${a.snoozedUntil || a.maintenance ? ' snoozed' : ''}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
+  const attrs = { class: `need ${a.severity}${a.snoozedUntil || a.maintenance || a.behind ? ' snoozed' : ''}`, title: [a.subject, a.text, a.detail].filter(Boolean).join(' · ') };
   const inner = [
     el('span', { class: 'need-icon' }, HD.icon(ISSUE_ICONS[a.severity] || 'info')),
     el('span', { class: 'need-text' }, el('span', { class: 'sr-only', text: a.severity === 'critical' ? 'Problem:' : 'Warning:' }),
-      el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null),
-    a.maintenance ? el('time', { text: 'Maintenance' }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
+      el('b', null, a.subject ? el('span', { class: 'who', text: `${a.subject}: ` }) : null, a.text), a.detail ? el('span', { class: 'why', text: a.detail }) : null,
+      a.behindCount ? el('span', { class: 'why', text: `${a.behindCount} more behind it, listed below` }) : null),
+    a.maintenance ? el('time', { text: 'Maintenance' }) : a.behind ? el('time', { text: `Behind ${a.behind.name}` }) : a.snoozedUntil ? el('time', { text: `Snoozed until ${untilText(a.snoozedUntil)}` }) : a.since ? el('time', { text: sinceText(a.since) === 'just now' ? 'just now' : sinceText(a.since) }) : null,
   ];
   let row;
   if (a.deviceId && infos.some((x) => x.id === a.deviceId)) row = el('button', { type: 'button', ...attrs, onclick: () => openDevice(a.deviceId) }, inner);
   else if (a.serviceId) row = el('a', { href: '/services', ...attrs }, inner);
   else row = el('div', attrs, inner);
-  if (!d.loggedIn || !a.key || a.maintenance) return row;
+  if (!d.loggedIn || !a.key || a.maintenance || a.behind) return row;
   return el('div', { class: 'need-wrap' }, row, snoozeControl(a, d));
 }
 

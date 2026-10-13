@@ -636,6 +636,14 @@ function openDevice(dev, preset = {}) {
   f.u.value = draft.u ?? '';
   f.estimateW.value = draft.estimateW ?? '';
   draft.powerSource ||= 'auto';
+  // what it is reached through: automatic (UniFi's uplink), nothing, or a chosen device
+  const auto = rackData?.devices?.find((x) => x.id === draft.id)?.reachedThrough;
+  const autoName = draft.parent ? null : state.devices.find((x) => x.id === auto)?.name;
+  $('device-parent').replaceChildren(
+    el('option', { value: '', text: `Automatic${autoName ? ` (now: ${autoName}, from UniFi)` : draft.unifi ? ' (from UniFi)' : ' (nothing found)'}` }),
+    el('option', { value: 'none', text: 'Nothing (directly reachable)' }),
+    el('optgroup', { label: 'Devices' }, state.devices.filter((x) => x.id !== draft.id && !x.hidden).sort((a, b) => a.name.localeCompare(b.name)).map((x) => el('option', { value: x.id, text: x.name }))));
+  f.parent.value = draft.parent || '';
   $('device-editor-title').textContent = dev ? `Edit ${dev.name}` : 'Add device';
   $('device-catalog-hint').textContent = draft.catalogNote || '';
   $('device-origin').textContent = dev?.discovered
@@ -669,6 +677,7 @@ function syncDraft() {
   draft.u = f.u.value === '' ? null : Number(f.u.value);
   draft.estimateW = f.estimateW.value === '' ? null : Number(f.estimateW.value);
   if (f.powerSource.value) draft.powerSource = f.powerSource.value;
+  draft.parent = f.parent.value || null;
   draft.model = f.brand.value.trim() || f.modelName.value.trim() ? { brand: f.brand.value.trim(), name: f.modelName.value.trim() } : null;
   draft.front = { model: f.frontModel.value || 'auto', drives: f.frontDrives.value || 'auto' };
   for (const n of document.querySelectorAll('#device-form .rack-only')) n.classList.toggle('hidden', draft.location !== 'rack');
@@ -1017,7 +1026,7 @@ $('device-form').addEventListener('submit', async (ev) => {
   syncDraft();
   const d = draft;
   const body = {
-    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, powerSource: d.powerSource || 'auto', hidden: false, front: d.front, model: d.model,
+    name: d.name, kind: d.kind, location: d.location, u: d.location === 'rack' ? d.u : null, height: d.height, estimateW: d.estimateW, powerSource: d.powerSource || 'auto', parent: d.parent || null, hidden: false, front: d.front, model: d.model,
     connections: d.connections.map((c) => ({
       id: c.id || undefined, type: c.type, address: c.address, username: c.username, tlsMode: c.tlsMode, fingerprint: c.fingerprint,
       options: c.options, secret: c.secret, secret2: c.secret2, clearSecret: c.clearSecret,
