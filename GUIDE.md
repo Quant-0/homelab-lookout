@@ -221,6 +221,8 @@ The whole **UniFi** range is there (about 90 models): every gateway, switch, acc
 
 The other brands are drawn the same way, model by model: Synology and QNAP (desktop and rack), TrueNAS, Cisco (Catalyst and CBS), HPE Aruba, MikroTik, TP-Link Omada, Netgear, APC, Eaton and CyberPower UPSes, mini PCs, Raspberry Pi and tower servers, each in its own colours and with its real ports, bays and displays.
 
+**Find devices** (next to Add device) scans your own networks for what you haven't added yet. It suggests this server's network; add others, like the management network of your iDRACs (private ranges only, up to 1024 addresses in all). It knocks on the ports homelab gear uses, then looks once at what answers, without trying any password. It recognises Proxmox, TrueNAS, UniFi and Omada consoles, iDRAC/iLO/XClarity (Redfish), Synology, NUT servers (with the UPS name), Docker socket proxies, Shelly and Tasmota plugs, and web apps like Jellyfin, Plex, Sonarr, Radarr, Prowlarr, Seerr, qBittorrent, Portainer, Home Assistant, Pi-hole, AdGuard, Grafana and Nginx Proxy Manager. Each one gets **Add device** or **Add service**, which opens the normal form filled in (you still enter the login). What is already added is marked. Anything else that answers can be added as a device that answers ping. A scan runs only when you press **Scan**, and is noted in the Log.
+
 The device form: name, type, **brand and model**, and where it sits:
 - **In the rack**, with height and lowest U
 - **Outside the rack**, e.g. a ceiling access point

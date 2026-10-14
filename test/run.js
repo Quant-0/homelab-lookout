@@ -154,6 +154,7 @@ async function main() {
     { file: 'test/passkeys.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/proxy.test.js', fresh: true },
     { file: 'test/report.test.js', fresh: true },
+    { file: 'test/discover.test.js', fresh: true, env: { DISCOVER_LOOPBACK: '1', DISCOVER_PORTS: '18481,18482,18483,18484,18485,18486,18487,18488,18489', DISCOVER_ROLES: '18483:3493,18484:2375,18485:80,18486:8096,18487:443' } },
     { file: 'test/incidents.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', REMIND_HOUR_MS: '2000' } },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/sessions-restart.test.js', fresh: false },

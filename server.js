@@ -7482,6 +7482,22 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/admin/server' && m === 'GET') return sendJson(res, 200, { ...serverStatus(), current: secureRequest(req) ? 'https' : 'http' });
   if (p === '/api/admin/access' && m === 'GET') return sendJson(res, 200, accessCheck(req));
+  // Find devices: start a scan, and its progress and results
+  if (p === '/api/admin/discover' && m === 'GET') return sendJson(res, 200, { ...discovery, defaults: defaultScanRanges(), found: discovery.found.map((f) => ({ ...f, known: knownAt(f.ip) })) });
+  if (p === '/api/admin/discover' && m === 'POST') {
+    if (discovery.running) throw new UserError('A scan is already running');
+    const b = await readBody(req);
+    const list = (Array.isArray(b.networks) ? b.networks : String(b.networks || '').split(/[\s,]+/)).map((x) => String(x).trim()).filter(Boolean);
+    if (!list.length) throw new UserError('Enter a network to scan, like 192.168.1.0/24');
+    const ranges = list.slice(0, 8).map(parseScanRange);
+    const count = new Set(ranges.flatMap((r) => r.ips)).size;
+    if (count > DISCOVER_MAX) throw new UserError(`That is ${count} addresses; at most ${DISCOVER_MAX} at a time`);
+    runDiscovery(ranges).catch((e) => {
+      discovery.running = false;
+      discovery.error = e.message;
+    });
+    return sendJson(res, 202, { started: true, total: count });
+  }
   if (p === '/api/admin/server' && m === 'PUT') {
     const next = validateServerSettings(await readBody(req));
     const old = await applyServer(next); // throws (and changes nothing) if a port can't be used
@@ -10899,6 +10915,320 @@ function serverStatus() {
     httpMode: effectiveServer(config.settings.server).http?.mode || null,
     tls: tlsInfo ? { subject: tlsInfo.subject, names: tlsInfo.names, validTo: tlsInfo.validTo, fingerprint: tlsInfo.fingerprint, caFingerprint: tlsInfo.caFingerprint, caValidTo: tlsInfo.caValidTo } : null,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Find devices (Admin → Devices): a scan of private networks you choose, started by hand only.
+// Each address gets a quick TCP knock on the ports homelab gear uses; what answers gets one plain
+// web request (no login is ever tried) to recognise it. The result suggests a device connection or
+// a service card; nothing is added by itself. One scan at a time, at most 1024 addresses.
+
+const https = require('node:https');
+// tests: other ports (DISCOVER_PORTS), each standing in for a real one (DISCOVER_ROLES=18484:2375,…), and 127.0.0.1
+const DISCOVER_ROLES = Object.fromEntries(String(process.env.DISCOVER_ROLES || '').split(',').filter(Boolean).map((x) => x.split(':').map(Number)));
+const DISCOVER_PORTS = process.env.DISCOVER_PORTS ? process.env.DISCOVER_PORTS.split(',').map(Number) : [22, 80, 81, 443, 2283, 2375, 3000, 3001, 3493, 5000, 5001, 5055, 6767, 7878, 8000, 8006, 8007, 8080, 8096, 8123, 8686, 8989, 9000, 9090, 9443, 9696, 32400];
+const DISCOVER_MAX = 1024;
+let discovery = { running: false, startedAt: null, finishedAt: null, networks: [], total: 0, done: 0, found: [], error: null };
+
+// a private IPv4 range, at most /22
+function parseScanRange(s) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/.exec(String(s).trim());
+  if (!m || m.slice(1, 5).some((x) => Number(x) > 255)) throw new UserError(`${String(s).slice(0, 40)}: an address range like 192.168.1.0/24`);
+  const bits = m[5] === undefined ? 32 : Number(m[5]);
+  if (bits < 22 || bits > 32) throw new UserError(`${s}: at most /22 (1024 addresses)`);
+  const ip = m.slice(1, 5).map(Number);
+  const n = ((ip[0] << 24) | (ip[1] << 16) | (ip[2] << 8) | ip[3]) >>> 0;
+  const isPrivate = (process.env.DISCOVER_LOOPBACK === '1' && ip[0] === 127) || ip[0] === 10 || (ip[0] === 172 && ip[1] >= 16 && ip[1] <= 31) || (ip[0] === 192 && ip[1] === 168) || (ip[0] === 100 && ip[1] >= 64 && ip[1] <= 127);
+  if (!isPrivate) throw new UserError(`${s}: only private networks (10.x, 172.16–31.x, 192.168.x, 100.64–127.x)`);
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  const base = (n & mask) >>> 0;
+  const size = 2 ** (32 - bits);
+  const out = [];
+  for (let i = 0; i < size; i++) {
+    if (size > 2 && (i === 0 || i === size - 1)) continue; // network and broadcast
+    const v = (base + i) >>> 0;
+    out.push(`${v >>> 24}.${(v >> 16) & 255}.${(v >> 8) & 255}.${v & 255}`);
+  }
+  return { cidr: `${base >>> 24}.${(base >> 16) & 255}.${(base >> 8) & 255}.${base & 255}/${bits}`, ips: out };
+}
+
+// this server's own private networks, as /24s
+function defaultScanRanges() {
+  const out = new Set();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      try {
+        out.add(parseScanRange(`${a.address.split('.').slice(0, 3).join('.')}.0/24`).cidr);
+      } catch {
+        /* not private */
+      }
+    }
+  }
+  return [...out];
+}
+
+function knock(ip, port, ms = 700) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: ip, port });
+    const done = (ok) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(ms, () => done(false));
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+  });
+}
+
+// One GET, certificate not checked (it only reads a public page), at most 96 kB
+function peek(ip, port, pathname, useTls) {
+  return new Promise((resolve) => {
+    const mod = useTls ? https : http;
+    const rq = mod.request({ host: ip, port, path: pathname, method: 'GET', timeout: 2500, rejectUnauthorized: false, headers: { 'User-Agent': 'homelab-lookout-discovery', Accept: '*/*' } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        body += c;
+        if (body.length > 96 * 1024) res.destroy();
+      });
+      const end = () => resolve({ status: res.statusCode, headers: res.headers, body: body.slice(0, 96 * 1024) });
+      res.on('end', end);
+      res.on('close', end);
+    });
+    rq.on('timeout', () => rq.destroy());
+    rq.on('error', () => resolve(null));
+    rq.end();
+  });
+}
+
+function nutUps(ip, port = 3493) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: ip, port });
+    let data = '';
+    const done = () => {
+      sock.destroy();
+      const names = [...data.matchAll(/^UPS (\S+) /gm)].map((x) => x[1]);
+      resolve(names);
+    };
+    sock.setTimeout(1500, done);
+    sock.once('connect', () => sock.write('LIST UPS\n'));
+    sock.on('data', (c) => {
+      data += c;
+      if (/END LIST UPS/.test(data) || data.length > 4096) done();
+    });
+    sock.once('error', done);
+  });
+}
+
+const titleOf = (b) => (/<title[^>]*>([^<]{0,120})/i.exec(b || '') || [])[1]?.trim() || '';
+// web apps recognised by their page: [pattern, kind, type, label]
+const WEB_SIGNS = [
+  [/(?:\bProxmox Virtual Environment\b)/, 'device', 'proxmox', 'Proxmox VE'],
+  [/(?:\bProxmox Backup Server\b)/, 'other', null, 'Proxmox Backup Server'],
+  [/(?:\bTrueNAS\b)/, 'device', 'truenas', 'TrueNAS'],
+  [/(?:\bUniFi OS\b|\bUniFi Network\b|\bUniFi Console\b)/, 'device', 'unifi', 'UniFi console'],
+  [/(?:\bOmada\b)/, 'device', 'omada', 'Omada controller'],
+  [/(?:\biDRAC\b)/, 'device', 'idrac', 'Dell iDRAC'],
+  [/(?:\biLO\b|\bIntegrated Lights-Out\b)/, 'device', 'idrac', 'HPE iLO'],
+  [/(?:\bXClarity\b)/, 'device', 'idrac', 'Lenovo XClarity'],
+  [/(?:\bSynology\b|\bDiskStation\b|\bDSM\b)/, 'device', 'synology', 'Synology DSM'],
+  [/(?:\bQNAP\b|\bQTS\b)/, 'device', 'snmp', 'QNAP'],
+  [/(?:\bPortainer\b)/, 'service', 'portainer', 'Portainer'],
+  [/(?:\bHome Assistant\b)/, 'service', 'homeassistant', 'Home Assistant'],
+  [/(?:\bPi-hole\b)/, 'service', 'pihole', 'Pi-hole'],
+  [/(?:\bAdGuard Home\b)/, 'service', 'adguard', 'AdGuard Home'],
+  [/(?:\bNginx Proxy Manager\b)/, 'service', 'npm', 'Nginx Proxy Manager'],
+  [/(?:\bNextcloud\b)/, 'service', 'nextcloud', 'Nextcloud'],
+  [/(?:\bImmich\b)/, 'service', 'immich', 'Immich'],
+  [/(?:\bPaperless\b)/, 'service', 'paperless', 'Paperless-ngx'],
+  [/(?:\bUptime Kuma\b)/, 'service', 'uptimekuma', 'Uptime Kuma'],
+  [/(?:\bGrafana\b)/, 'service', 'grafana', 'Grafana'],
+  [/(?:\bPrometheus\b)/, 'service', 'prometheus', 'Prometheus'],
+  [/(?:\bauthentik\b)/, 'service', 'authentik', 'authentik'],
+  [/(?:\bSonarr\b)/, 'service', 'sonarr', 'Sonarr'],
+  [/(?:\bRadarr\b)/, 'service', 'radarr', 'Radarr'],
+  [/(?:\bLidarr\b)/, 'service', 'lidarr', 'Lidarr'],
+  [/(?:\bProwlarr\b)/, 'service', 'prowlarr', 'Prowlarr'],
+  [/(?:\bBazarr\b)/, 'service', 'bazarr', 'Bazarr'],
+  [/(?:\bOverseerr\b|\bJellyseerr\b|\bSeerr\b)/, 'service', 'overseerr', 'Overseerr'],
+  [/(?:\bqBittorrent\b)/, 'service', 'qbittorrent', 'qBittorrent'],
+  [/(?:\bTransmission\b)/, 'service', 'transmission', 'Transmission'],
+  [/(?:\bSABnzbd\b)/, 'service', 'sabnzbd', 'SABnzbd'],
+  [/(?:\bTautulli\b)/, 'service', 'tautulli', 'Tautulli'],
+  [/(?:\bTraefik\b)/, 'service', 'traefik', 'Traefik'],
+  [/(?:\bSpeedtest Tracker\b)/, 'service', 'speedtest', 'Speedtest Tracker'],
+  [/(?:\bJellyfin\b)/, 'service', 'jellyfin', 'Jellyfin'],
+  [/(?:\bEmby\b)/, 'service', 'emby', 'Emby'],
+  [/(?:\bPlex\b)/, 'service', 'plex', 'Plex'],
+];
+
+// What answers on one open port: [{ kind, type, label, url, port, detail }]
+async function identify(ip, realPort) {
+  const port = realPort;
+  const role = DISCOVER_ROLES[realPort] || realPort; // what the port is (the same, outside the tests)
+  const tlsFirst = [443, 5001, 8006, 8007, 8443, 9443].includes(role);
+  const url = (t, pth = '/') => `${t ? 'https' : 'http'}://${ip}${(t && port === 443) || (!t && port === 80) ? '' : `:${port}`}${pth === '/' ? '' : pth}`;
+  const out = [];
+  if (role === 22) return [{ kind: 'other', type: null, label: 'SSH', port }];
+  if (role === 3493) {
+    const ups = await nutUps(ip, port);
+    return [{ kind: 'device', type: 'nut', label: ups.length ? `NUT UPS ${ups.join(', ')}` : 'NUT server', address: `${ip}:${port}`, ups: ups[0] || null, port }];
+  }
+  if (role === 2375) {
+    const r = await peek(ip, port, '/version', false);
+    if (r && /ApiVersion/.test(r.body)) return [{ kind: 'device', type: 'docker', label: `Docker API${/"Version":"([\d.]+)"/.exec(r.body) ? ` ${/"Version":"([\d.]+)"/.exec(r.body)[1]}` : ''}`, address: `${ip}:${port}`, port }];
+    if (r) return [{ kind: 'device', type: 'docker', label: 'Docker socket proxy (containers not allowed yet)', address: `${ip}:${port}`, port }];
+    return [];
+  }
+  // a smart plug answers a small JSON page
+  if (role === 80) {
+    const sh = await peek(ip, port, '/shelly', false);
+    if (sh?.status === 200 && /"(mac|type|model|gen)"/.test(sh.body)) {
+      let j = {};
+      try {
+        j = JSON.parse(sh.body);
+      } catch {}
+      return [{ kind: 'device', type: 'shelly', label: `Shelly ${j.model || j.type || 'plug'}`, address: port === 80 ? ip : `${ip}:${port}`, port }];
+    }
+  }
+  if (role === 8096) {
+    const r = await peek(ip, port, '/System/Info/Public', false);
+    if (r && /"ProductName"\s*:\s*"(Jellyfin|Emby)/.test(r.body)) {
+      const emby = /Emby/.test(r.body);
+      return [{ kind: 'service', type: emby ? 'emby' : 'jellyfin', label: emby ? 'Emby' : 'Jellyfin', url: url(false), port, name: (/"ServerName"\s*:\s*"([^"]{1,60})"/.exec(r.body) || [])[1] || null }];
+    }
+  }
+  if (role === 32400) {
+    const r = await peek(ip, port, '/identity', false);
+    if (r && /MediaContainer/.test(r.body)) return [{ kind: 'service', type: 'plex', label: 'Plex', url: url(false), port }];
+  }
+  let page = await peek(ip, port, '/', tlsFirst);
+  let useTls = tlsFirst;
+  if (!page || (page.status >= 400 && !titleOf(page.body))) {
+    const other = await peek(ip, port, '/', !tlsFirst);
+    if (other) {
+      page = other;
+      useTls = !tlsFirst;
+    }
+  }
+  if (!page) return [];
+  if (/plain HTTP request was sent to HTTPS port/i.test(page.body)) return [{ kind: 'other', type: null, label: 'HTTPS web server (answers by host name only)', port }];
+  // follow its redirects to the app's own page (a login page often carries the name): same address only
+  const pages = [page];
+  for (let hop = 0, cur = page; hop < 3 && cur.status >= 300 && cur.status < 400 && cur.headers.location; hop++) {
+    let next = null;
+    try {
+      const u = new URL(cur.headers.location, `${useTls ? 'https' : 'http'}://${ip}:${port}/`);
+      if (u.hostname !== ip || Number(u.port || (u.protocol === 'https:' ? 443 : 80)) !== port) break;
+      useTls = u.protocol === 'https:';
+      next = await peek(ip, port, `${u.pathname}${u.search}`.slice(0, 300), useTls);
+    } catch {
+      break;
+    }
+    if (!next) break;
+    pages.push(next);
+    cur = next;
+  }
+  const titles = pages.map((x) => titleOf(x.body)).filter(Boolean).join(' ');
+  const servers = pages.map((x) => x.headers.server || '').join(' ');
+  // the readable text only: styles and scripts name fonts and libraries ("IBM Plex Sans")
+  const bodies = pages.map((x) => x.body.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').slice(0, 6000)).join(' ');
+  if (/Tasmota/i.test(`${titles} ${bodies}`)) return [{ kind: 'device', type: 'tasmota', label: 'Tasmota plug', address: port === 80 ? ip : `${ip}:${port}`, port }];
+  const push = ([, kind, type, label]) => {
+    if (kind === 'device') out.push({ kind, type, label, address: port === 443 ? ip : `${ip}:${port}`, url: url(useTls), port });
+    else out.push({ kind, type, label, url: url(useTls), port });
+  };
+  // 1. the title (and server name): a page's text may mention other apps (Seerr's sign-in offers Jellyfin)
+  const byTitle = WEB_SIGNS.find(([re]) => re.test(`${titles} ${servers}`));
+  if (byTitle) push(byTitle);
+  // 2. apps whose page names nothing: their own small API says what they are
+  if (!out.length) {
+    const ver = await peek(ip, port, '/api/versions', useTls);
+    if (ver?.status === 200 && /^\s*\[\s*"v\d/.test(ver.body)) push([null, 'device', 'truenas', 'TrueNAS']);
+  }
+  if (!out.length) {
+    const st = await peek(ip, port, '/api/v1/status', useTls);
+    if (st?.status === 200 && /"commitTag"/.test(st.body)) push([null, 'service', 'overseerr', 'Seerr (Overseerr, Jellyseerr)']);
+  }
+  // 3. the page's readable text
+  if (!out.length) {
+    const byText = WEB_SIGNS.find(([re]) => re.test(bodies));
+    if (byText) push(byText);
+  }
+  // a management controller: Redfish answers on https whatever the page says
+  if (!out.length && useTls) {
+    const rf = await peek(ip, port, '/redfish/v1', true);
+    if (rf && /RedfishVersion/.test(rf.body)) out.push({ kind: 'device', type: 'idrac', label: `Redfish (${(/"Vendor"\s*:\s*"([^"]{1,30})"/.exec(rf.body) || [])[1] || 'BMC'})`, address: port === 443 ? ip : `${ip}:${port}`, url: url(true), port });
+  }
+  if (!out.length) out.push({ kind: 'other', type: null, label: titles ? `Web page "${titles.slice(0, 60)}"` : 'Web page', url: url(useTls), port });
+  return out;
+}
+
+// What the dashboard already has at an address
+function knownAt(ip) {
+  const hostOf = (a) => {
+    try {
+      return /^https?:\/\//.test(a) ? new URL(a).hostname : splitAddress(a).host;
+    } catch {
+      return null;
+    }
+  };
+  const hosts = config.hosts.filter((h) => hostOf(h.address) === ip).map((h) => ({ type: h.type, device: config.devices.find((d) => d.id === h.deviceId)?.name || h.name }));
+  const services = config.services.filter((x) => x.connection?.url && hostOf(x.connection.url) === ip || x.monitor?.host === ip).map((x) => ({ name: x.name, type: x.integration?.type || null, port: x.connection?.url ? Number(new URL(x.connection.url).port) || (x.connection.url.startsWith('https') ? 443 : 80) : null }));
+  return { hosts, services };
+}
+
+// A name for an address: a device the dashboard already knows (UniFi), else reverse DNS
+async function nameOf(ip) {
+  for (const h of config.hosts.filter((x) => x.type === 'unifi')) {
+    const d = results.get(h.id)?.data?.devices?.find((x) => x.ip === ip);
+    if (d?.name) return d.name;
+  }
+  try {
+    const names = await Promise.race([dns.promises.reverse(ip), new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 1500))]);
+    return names[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function runDiscovery(ranges) {
+  const ips = [...new Set(ranges.flatMap((r) => r.ips))];
+  discovery = { running: true, startedAt: Date.now(), finishedAt: null, networks: ranges.map((r) => r.cidr), total: ips.length, done: 0, found: [], error: null };
+  const queue = [...ips];
+  const worker = async () => {
+    for (let ip = queue.shift(); ip; ip = queue.shift()) {
+      try {
+        const open = [];
+        for (let i = 0; i < DISCOVER_PORTS.length; i += 9) {
+          const part = DISCOVER_PORTS.slice(i, i + 9);
+          const res = await Promise.all(part.map((p) => knock(ip, p)));
+          part.forEach((p, k) => res[k] && open.push(p));
+        }
+        if (open.length) {
+          const all = (await Promise.all(open.map((p) => identify(ip, p).catch(() => [])))).flat();
+          // the same app on two ports (TrueNAS on 80 and 443): once, the https one
+          const what = all.filter((w, i) => !w.type || !all.some((o, j) => j !== i && o.type === w.type && o.kind === w.kind && ((o.url || '').startsWith('https') && !(w.url || '').startsWith('https') || (j < i && (o.url || '').startsWith('https') === (w.url || '').startsWith('https')))));
+          discovery.found.push({ ip, name: await nameOf(ip), ports: open, what, known: knownAt(ip) });
+        }
+      } catch {
+        /* one address failing doesn't stop the scan */
+      }
+      discovery.done++;
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: 24 }, worker));
+  } catch (e) {
+    discovery.error = e.message;
+  }
+  const order = (ip) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
+  discovery.found.sort((a, b) => order(a.ip) - order(b.ip));
+  discovery.running = false;
+  discovery.finishedAt = Date.now();
+  event('devices', `Network scan of ${discovery.networks.join(', ')}: ${discovery.found.length} address${discovery.found.length === 1 ? '' : 'es'} answered`);
 }
 
 // ---------------------------------------------------------------------------

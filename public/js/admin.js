@@ -906,6 +906,90 @@ $('device-form').addEventListener('input', (e) => ownField(e) && syncDraft());
 $('device-form').addEventListener('change', (e) => ownField(e) && syncDraft());
 $('device-new').addEventListener('click', openCatalog);
 
+// --- Find devices: scan your networks and add what is found ---
+
+const FOUND_KIND = { proxmox: 'server', truenas: 'storage', synology: 'nas', unifi: 'gateway', omada: 'gateway', idrac: 'server', nut: 'ups', shelly: 'other', tasmota: 'other', docker: 'server', snmp: 'nas' };
+function openFinder() {
+  const box = el('div', { class: 'finder' });
+  const { close } = HD.drawer('Find devices', box);
+  let timer = null;
+  const nets = el('input', { spellcheck: 'false', autocomplete: 'off', placeholder: '192.168.1.0/24, 192.168.2.0/24' });
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const progress = el('div', { class: 'finder-progress', hidden: true }, el('i'));
+  const list = el('div', { class: 'finder-list' });
+  const start = el('button', { type: 'button', class: 'primary', text: 'Scan', onclick: async () => {
+    msg.textContent = '';
+    try {
+      await api('POST', '/api/admin/discover', { networks: nets.value });
+      poll();
+    } catch (e) {
+      msg.textContent = e.message;
+      msg.className = 'msg error';
+    }
+  } });
+  box.append(
+    el('p', { class: 'hint', text: 'Looks for servers, NAS, network gear, UPSes, smart plugs, Docker hosts and web apps on your own networks: a quick knock on the ports they use, then one look at the page that answers. No passwords are tried, and nothing is added until you choose it.' }),
+    el('label', null, el('span', { text: 'Networks' }), nets, el('span', { class: 'hint', text: 'Private ranges, up to /22 (1024 addresses) in all. Add the management network too if your iDRACs live there.' })),
+    el('div', { class: 'form-actions' }, start, msg), progress, list);
+
+  const addDevice = (f, w) => {
+    close();
+    const conn = { ...newConn(w.type), address: w.address || f.ip, username: w.type === 'nut' ? w.ups || '' : '' };
+    openDevice(null, { name: f.name?.split('.')[0] || w.label, kind: FOUND_KIND[w.type] || 'other', location: 'none', connections: [conn] });
+  };
+  const addService = async (f, w) => {
+    close();
+    showTab('services');
+    await loadServices();
+    openService({ id: null, name: w.name || w.label, group: '', description: '', href: w.url, deviceId: null, icon: { kind: 'letter' }, connection: { url: w.url, tlsMode: /^https/.test(w.url) ? 'pin' : 'verify', fingerprint: '' }, integration: svcState.integrations[w.type] ? { type: w.type, username: '', options: {} } : null, secret: '', clearSecret: false, hasSecret: false });
+  };
+  const render = (d) => {
+    if (!nets.value) nets.value = (d.networks?.length ? d.networks : d.defaults).join(', ');
+    start.disabled = d.running;
+    progress.hidden = !d.running;
+    progress.firstChild.style.width = `${d.total ? Math.round((100 * d.done) / d.total) : 0}%`;
+    if (d.running) msg.textContent = `Scanning… ${d.done} of ${d.total} addresses, ${d.found.length} answered`;
+    else if (d.finishedAt) msg.textContent = `${d.found.length} address${d.found.length === 1 ? '' : 'es'} answered (${new Date(d.finishedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })})`;
+    msg.className = 'msg';
+    const useful = d.found.filter((f) => f.what.some((w) => w.kind !== 'other'));
+    const rest = d.found.filter((f) => !useful.includes(f));
+    const row = (f) => {
+      const knownTypes = new Set(f.known.hosts.map((h) => h.type));
+      const knownSvc = new Set(f.known.services.map((x) => x.type));
+      return el('li', { class: 'finder-row' },
+        el('div', { class: 'finder-addr' }, el('strong', { class: 'num', text: f.ip }), f.name ? el('span', { class: 'small muted', text: f.name }) : null),
+        el('div', { class: 'finder-what' },
+          ...f.what.map((w) => {
+            const have = w.kind === 'device' ? knownTypes.has(w.type) : w.kind === 'service' ? knownSvc.has(w.type) : false;
+            return el('div', { class: 'finder-item' },
+              el('span', null, w.label, el('span', { class: 'small muted', text: ` · port ${w.port}` })),
+              have ? el('span', { class: 'pill small', text: 'Added' })
+                : w.kind === 'device' ? el('button', { type: 'button', class: 'small', text: 'Add device', onclick: () => addDevice(f, w) })
+                  : w.kind === 'service' ? el('button', { type: 'button', class: 'small', text: 'Add service', onclick: () => addService(f, w) })
+                    : w.url ? el('a', { class: 'small', href: w.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open' }) : null);
+          }),
+          f.known.hosts.length ? el('div', { class: 'small muted', text: `On ${[...new Set(f.known.hosts.map((h) => h.device))].join(', ')}` }) : null,
+          !f.what.some((w) => w.kind === 'device') && !f.known.hosts.length ? el('button', { type: 'button', class: 'link-button small', text: 'Add as a device that answers ping', onclick: () => addDevice(f, { type: 'ping', label: f.name || f.ip, address: f.ip }) }) : null));
+    };
+    list.replaceChildren(
+      useful.length ? el('h4', { text: 'Recognised' }) : null, useful.length ? el('ul', null, useful.map(row)) : null,
+      rest.length ? el('details', { class: 'finder-rest' }, el('summary', { text: `${rest.length} other address${rest.length === 1 ? '' : 'es'} answered` }), el('ul', null, rest.map(row))) : null);
+  };
+  const poll = async () => {
+    clearTimeout(timer);
+    try {
+      const d = await api('GET', '/api/admin/discover');
+      render(d);
+      if (d.running && box.isConnected) timer = setTimeout(poll, 1000);
+    } catch (e) {
+      msg.textContent = e.message;
+      msg.className = 'msg error';
+    }
+  };
+  poll();
+}
+$('device-find').addEventListener('click', openFinder);
+
 // --- Add device: start from the catalog ---
 const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', docker: 'Docker', portainer: 'Portainer', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 

@@ -2353,3 +2353,18 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .d-growing ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .d-growing li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; font-size: 13px; }
 .d-growing li.soon > span:last-child { color: var(--warning); font-weight: 600; }
+
+/* Admin → Devices → Find devices */
+.finder { display: grid; gap: 12px; }
+.finder label { display: grid; gap: 4px; }
+.finder-progress { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.finder-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.4s; }
+.finder-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.finder-list h4 { margin: 4px 0 0; }
+.finder-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.finder-addr { display: grid; gap: 2px; min-width: 0; }
+.finder-addr span { overflow-wrap: anywhere; }
+.finder-what { display: grid; gap: 6px; min-width: 0; }
+.finder-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.finder-rest summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+@media (max-width: 560px) { .finder-row { grid-template-columns: 1fr; } }
