@@ -101,7 +101,7 @@ h2, h3 { break-after: avoid; }
     <li><span class="n">5</span><span class="t"><b>Services and the status page</b><span>Your apps, their checks, a public status page</span></span></li>
     <li><span class="n">6</span><span class="t"><b>VMs and containers</b><span>Proxmox guests, backups, Docker</span></span></li>
     <li><span class="n">7</span><span class="t"><b>Energy report</b><span>kWh and cost per day, month and device</span></span></li>
-    <li><span class="n">8</span><span class="t"><b>Docs, Updates, Log and Incidents</b><span>Documentation, what's outdated, what happened</span></span></li>
+    <li><span class="n">8</span><span class="t"><b>Docs, Updates, Log and the report</b><span>Documentation, updates, what happened, each month</span></span></li>
     <li><span class="n">9</span><span class="t"><b>Wall display</b><span>A screen for the wall</span></span></li>
     <li><span class="n">10</span><span class="t"><b>Admin: devices</b><span>The catalog, connections, dependencies, alerts</span></span></li>
     <li><span class="n">11</span><span class="t"><b>Admin: services</b><span>Status checks, integrations, numbers</span></span></li>
@@ -313,7 +313,7 @@ h2, h3 { break-after: avoid; }
 <!-- ============ 8 ============ -->
 <section class="chapter">
   <div class="kicker">Chapter 8</div>
-  <h1>Docs, Updates, Log and Incidents</h1>
+  <h1>Docs, Updates, Log and the report</h1>
   <h2>Docs</h2>
   <div class="two-wide">
     <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/docs.png" alt=""></div><figcaption><b>The server sheet for atlas:</b> facts read automatically, then your own notes.</figcaption></figure>
@@ -347,6 +347,9 @@ h2, h3 { break-after: avoid; }
       <p>Filter by category, search, and <span class="ui">Download CSV</span>. Entries are kept for a year and go into backups. Passwords are never written to it.</p>
     </div>
   </div>
+  <h2>Monthly report</h2>
+  <figure class="crop"><div class="frame" style="max-height:110mm"><img src="img/report.png" alt=""></div><figcaption><b>The monthly report:</b> uptime, problems and energy against last month, then services, devices, the longest problems and storage.</figcaption></figure>
+  <p><span class="ui">Report</span> in the top bar sums up a month: the uptime of every service and device, the problems and how long they took to clear, energy and cost, and how each storage grows with when it will be <b>full</b> at that pace. A storage that will be full within 30 days also shows under <i>Needs you</i>. <span class="ui">Print or save as PDF</span> makes a clean copy.</p>
   <h2>Incidents</h2>
   <figure class="crop"><div class="frame" style="max-height:62mm"><img src="img/incidents.png" alt=""></div><figcaption><b>Incidents:</b> each problem from start to end, who acknowledged it, and the totals for the last 30 days.</figcaption></figure>
   <p><span class="ui">Incidents</span> at the top of the Log lists every problem from when it appeared to when it cleared: how long it lasted, who acknowledged it and when, and whether it was behind another outage or during maintenance. <b>Open only</b> shows the ones still going on, each with an <b>Acknowledge</b> button. Incidents are kept for a year.</p>

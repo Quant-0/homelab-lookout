@@ -153,6 +153,7 @@ async function main() {
     { file: 'test/app-icon.test.js', fresh: true },
     { file: 'test/passkeys.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/proxy.test.js', fresh: true },
+    { file: 'test/report.test.js', fresh: true },
     { file: 'test/incidents.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', REMIND_HOUR_MS: '2000' } },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/sessions-restart.test.js', fresh: false },

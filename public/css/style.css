@@ -2321,3 +2321,35 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .user-menu-item:hover, .user-menu-item:focus-visible { background: var(--surface-2); outline: none; }
 .user-menu-item svg { width: 16px; height: 16px; color: var(--muted); }
 .user-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+
+/* Monthly report */
+.report-main { display: grid; gap: 16px; }
+.report-main > .card { margin: 0; }
+.report-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.report-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.report-tiles .tile { display: grid; gap: 4px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.report-tiles .tile-label { font-size: 12.5px; color: var(--muted); }
+.report-tiles .tile-value { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.delta { font-size: 12px; color: var(--muted); }
+.delta.good { color: var(--good); }
+.delta.bad { color: var(--critical); }
+.report-table { width: 100%; border-collapse: collapse; }
+.report-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.report-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.report-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.report-table td.bad { color: var(--critical); font-weight: 600; }
+.report-table .bar-cell { width: 28%; min-width: 90px; }
+.up-bar { display: block; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.up-bar i { display: block; height: 100%; background: var(--muted); }
+.up-bar i.good { background: var(--good); }
+.up-bar i.warning { background: var(--warning); }
+.up-bar i.critical { background: var(--critical); }
+@media print {
+  .sidebar, .tabbar, .app-bg, #rp-print, .report-head .energy-step button { display: none !important; }
+  body.app, .app-main { background: #fff !important; color: #000 !important; }
+  .report-main > .card, .report-tiles .tile { break-inside: avoid; box-shadow: none !important; }
+}
+.d-growing h4 { margin: 12px 0 6px; font-size: 13px; }
+.d-growing ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.d-growing li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; font-size: 13px; }
+.d-growing li.soon > span:last-child { color: var(--warning); font-weight: 600; }

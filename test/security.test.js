@@ -64,7 +64,7 @@ const patterned = {
   portainerConn: [['POST', `/api/admin/services/${U}/portainer-connection`]],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
-const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
+const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
 // open to everyone: signing in (password or passkey) and the status page
 const OPEN = new Set(['/api/login', '/api/status', '/api/passkey', '/api/passkey/options', '/api/passkey/login']);
 const bodyFor = (m) => (m === 'GET' ? undefined : {});

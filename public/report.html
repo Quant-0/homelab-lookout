@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Monthly report · Homelab Lookout</title>
+  <link rel="icon" href="/logo">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body class="app">
+  <div class="app-bg" aria-hidden="true"></div>
+  <nav class="sidebar" id="sidebar" aria-label="Main"></nav>
+  <div class="app-main">
+    <header class="topbar">
+      <h1 class="page-title">Monthly report</h1>
+      <span class="spacer"></span>
+      <div class="page-actions" id="nav"></div>
+    </header>
+    <main class="report-main">
+      <p class="banner hidden" id="global-error" role="alert"></p>
+      <section class="card report-head">
+        <div class="energy-step">
+          <button type="button" id="rp-prev" aria-label="Previous month">‹</button>
+          <select id="rp-period" aria-label="Month"></select>
+          <button type="button" id="rp-next" aria-label="Next month">›</button>
+        </div>
+        <span class="small muted" id="rp-partial"></span>
+        <span class="spacer"></span>
+        <button type="button" id="rp-print">Print or save as PDF</button>
+      </section>
+      <div class="tiles report-tiles" id="rp-tiles"></div>
+      <section class="card"><h3>Services</h3><p class="hint">Uptime from each service's status check. Time in maintenance is not counted.</p><div id="rp-services"></div></section>
+      <section class="card"><h3>Devices</h3><p class="hint">How much of the time each device's connections answered.</p><div id="rp-devices"></div></section>
+      <section class="card"><h3>Longest problems</h3><div id="rp-incidents"></div></section>
+      <section class="card"><h3>Storage</h3><p class="hint">How full each storage was over the month, and when it will be full if it keeps growing like the last 60 days.</p><div id="rp-storage"></div></section>
+    </main>
+  </div>
+  <nav class="tabbar" id="tabbar" aria-label="Main"></nav>
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/common.js"></script>
+  <script src="/static/js/report.js"></script>
+</body>
+</html>

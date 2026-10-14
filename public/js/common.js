@@ -311,6 +311,7 @@ const HD = (() => {
     { key: 'services', label: 'Services', href: '/services', icon: 'layout-grid' },
     { key: 'vms', label: 'VMs', href: '/vms', icon: 'monitor', vms: true },
     { key: 'energy', label: 'Energy', href: '/energy', icon: 'zap' },
+    { key: 'report', label: 'Report', href: '/report', icon: 'chart-column', signed: true },
     { key: 'docs', label: 'Docs', href: '/docs', icon: 'book-open', signed: true },
     { key: 'updates', label: 'Updates', href: '/updates', icon: 'circle-arrow-up', signed: true },
     { key: 'log', label: 'Log', href: '/log', icon: 'list', admin: true },
@@ -347,7 +348,7 @@ const HD = (() => {
     }
     if (bar) {
       const tabs = items.filter((n) => ['overview', 'rack', 'services', 'energy'].includes(n.key));
-      const more = el('button', { type: 'button', class: `tab${['vms', 'docs', 'updates', 'log', 'admin'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
+      const more = el('button', { type: 'button', class: `tab${['vms', 'docs', 'updates', 'log', 'admin', 'report'].includes(st.active) ? ' active' : ''}`, 'aria-haspopup': 'dialog', onclick: openMore },
         icon('ellipsis'), el('span', { class: 'label', text: 'More' }), st.updates && signed ? el('span', { class: 'nav-badge num', text: String(st.updates) }) : null);
       bar.replaceChildren(...tabs.map((n) => navLink(n, 'tab')), more);
     }
@@ -423,6 +424,7 @@ const HD = (() => {
       st.vms ? row('monitor', 'VMs and containers', { href: '/vms' }) : null,
       signed ? row('book-open', 'Docs', { href: '/docs' }) : null,
       signed ? row('circle-arrow-up', st.updates ? `Updates · ${st.updates} available` : 'Updates', { href: '/updates' }) : null,
+      signed ? row('chart-column', 'Monthly report', { href: '/report' }) : null,
       st.admin ? row('list', 'Log', { href: '/log' }) : null,
       row('tv', 'Wall display', { href: '/wall' }),
       row('palette', 'Look on this device', { onclick: () => { close(); openLook(null); } }),
@@ -566,8 +568,8 @@ const HD = (() => {
   // --- History sparklines ---
   // A slot is a placeholder in the page; fillSparks() fetches all slots' series in one request
   // (cached for a minute) and draws them. One series per graph: 2px line, light area, hover value.
-  const RANGES = { '24h': '24 h', '7d': '7 d', '30d': '30 d' };
-  const RANGE_MS = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5 };
+  const RANGES = { '24h': '24 h', '7d': '7 d', '30d': '30 d', '90d': '90 d', '1y': '1 y' };
+  const RANGE_MS = { '24h': 864e5, '7d': 7 * 864e5, '30d': 30 * 864e5, '90d': 90 * 864e5, '1y': 365 * 864e5 };
   let range = '24h';
   try {
     range = RANGES[localStorage.getItem('hd.range')] ? localStorage.getItem('hd.range') : '24h';
@@ -602,9 +604,12 @@ const HD = (() => {
     if (!points || points.length < 2) return slot.replaceChildren();
     const W = 300;
     const H = 40;
-    // The x axis is the whole range, so a series that started recently fills only the right part
+    // The x axis is the whole range, so a series that started recently fills only the right part;
+    // for 90 days and a year, a shorter history starts at its first point instead (the caption says since when)
     const t1 = Date.now();
-    const t0 = Math.min(points[0][0], t1 - RANGE_MS[rng]);
+    const long = RANGE_MS[rng] > 31 * 864e5 && points[0][0] > t1 - RANGE_MS[rng] + 864e5;
+    const t0 = long ? points[0][0] : Math.min(points[0][0], t1 - RANGE_MS[rng]);
+    const since = long ? `since ${new Date(points[0][0]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : RANGES[rng];
     const vs = points.map((p) => p[1]);
     const vs2 = points2?.length > 1 ? points2.map((p) => p[1]) : [];
     let lo = slot.dataset.zero ? 0 : Math.min(...vs, ...vs2);
@@ -660,8 +665,8 @@ const HD = (() => {
     const last = vs[vs.length - 1];
     const [n1, n2] = (slot.dataset.names || '|').split('|');
     const span = vs2.length
-      ? `${RANGES[rng]}: highest ${n1} ${fmtVal(max, unit, dec)} · ${n2} ${fmtVal(Math.max(...vs2), unit, dec)}`
-      : `${RANGES[rng]}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
+      ? `${since}: highest ${n1} ${fmtVal(max, unit, dec)} · ${n2} ${fmtVal(Math.max(...vs2), unit, dec)}`
+      : `${since}: ${fmtVal(min, unit, dec)} – ${fmtVal(max, unit, dec)}`;
     const aria = vs2.length
       ? `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: highest ${n1} ${fmtVal(max, unit, dec)} and ${n2} ${fmtVal(Math.max(...vs2), unit, dec)}, now ${n1} ${fmtVal(last, unit, dec)} and ${n2} ${fmtVal(vs2[vs2.length - 1], unit, dec)}`
       : `${slot.dataset.label || 'History'}, last ${RANGES[rng]}: lowest ${fmtVal(min, unit, dec)}, highest ${fmtVal(max, unit, dec)}, now ${fmtVal(last, unit, dec)}`;

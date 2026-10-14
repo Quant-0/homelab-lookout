@@ -164,6 +164,8 @@ http.createServer((q, res) => {
     const x = (await (await fetch('/api/admin/incidents')).json()).incidents.find((i) => i.open && /PS2/.test(i.title));
     if (x) await fetch(`/api/admin/incidents/${x.id}/ack`, { method: 'POST', headers: { 'X-CSRF-Token': csrf } });
   });
+  await p.goto(B + '/report'); await sleep(2500);
+  await shot('report', () => full('report'));
   await p.goto(B + '/log#incidents'); await sleep(2000);
   await shot('incidents', () => top('incidents', 620));
 

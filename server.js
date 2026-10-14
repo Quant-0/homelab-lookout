@@ -4636,8 +4636,12 @@ const HIST_TIERS = [
   { name: 'm', step: 60e3, keep: 24 * 3600e3 + 3600e3 },
   { name: 'q', step: 15 * 60e3, keep: 8 * 86400e3 },
   { name: 'h', step: 2 * 3600e3, keep: 92 * 86400e3 },
+  // a day's average, lowest and highest (dmin, dmax), kept for two years: the long graphs and the reports
+  { name: 'd', step: 86400e3, keep: 731 * 86400e3, minmax: true },
 ];
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem))$/;
+const HIST_STORED = ['m', 'q', 'h', 'd', 'dmin', 'dmax']; // what is kept per series (dmin/dmax come with d)
+const HIST_KEEP = { dmin: 731 * 86400e3, dmax: 731 * 86400e3 };
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem)|disk:[0-9a-f-]{36}:[\w.:/-]{1,160}|uphost:[0-9a-f-]{36})$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4662,12 +4666,14 @@ function openHistoryDb() {
   histSql = {
     add: db.prepare('INSERT OR REPLACE INTO points (key, tier, t, v) VALUES (?, ?, ?, ?)'),
     range: db.prepare('SELECT t, v FROM points WHERE key = ? AND tier = ? AND t >= ? ORDER BY t'),
+    between: db.prepare('SELECT t, v FROM points WHERE key = ? AND tier = ? AND t >= ? AND t < ? ORDER BY t'),
     all: db.prepare('SELECT tier, t, v FROM points WHERE key = ? ORDER BY tier, t'),
     prune: db.prepare('DELETE FROM points WHERE tier = ? AND t < ?'),
     put: db.prepare('INSERT OR REPLACE INTO series (key, seen, acc) VALUES (?, ?, ?)'),
     drop: db.prepare('DELETE FROM series WHERE key = ?'),
     dropPoints: db.prepare('DELETE FROM points WHERE key = ?'),
     list: db.prepare('SELECT key, seen, acc FROM series'),
+    hasTier: db.prepare('SELECT 1 FROM points WHERE key = ? AND tier = ? LIMIT 1'),
   };
   return db;
 }
@@ -4689,7 +4695,7 @@ function importHistory(h) {
     histDb.exec('DELETE FROM points; DELETE FROM series;');
     for (const [k, v] of Object.entries(h.series)) {
       histSql.put.run(k, v.seen || 0, JSON.stringify(v.acc || {}));
-      for (const tier of HIST_TIERS) for (const [t, val] of v[tier.name]) histSql.add.run(k, tier.name, t, val);
+      for (const tier of HIST_STORED) for (const [t, val] of v[tier] || []) histSql.add.run(k, tier, t, val);
     }
   });
 }
@@ -4703,9 +4709,9 @@ function cleanHistory(h) {
     const acc = {};
     for (const t of HIST_TIERS) {
       const a = v.acc?.[t.name];
-      if (a && [a.t, a.sum, a.n].every(Number.isFinite)) acc[t.name] = { t: a.t, sum: a.sum, n: a.n };
+      if (a && [a.t, a.sum, a.n].every(Number.isFinite)) acc[t.name] = { t: a.t, sum: a.sum, n: a.n, ...(t.minmax && Number.isFinite(a.min) && Number.isFinite(a.max) ? { min: a.min, max: a.max } : {}) };
     }
-    out.series[k] = { m: pts(v.m), q: pts(v.q), h: pts(v.h), acc, seen: Number.isFinite(v.seen) ? v.seen : 0 };
+    out.series[k] = { ...Object.fromEntries(HIST_STORED.map((x) => [x, pts(v[x])])), acc, seen: Number.isFinite(v.seen) ? v.seen : 0 };
   }
   return out;
 }
@@ -4725,6 +4731,7 @@ function loadHistory() {
         const acc = cleanHistory({ series: { [r.key]: { acc: JSON.parse(r.acc || '{}') } } }).series[r.key].acc;
         history.series[r.key] = { acc, seen: r.seen };
       }
+      backfillDaily();
       return;
     } catch (e) {
       log('The history database could not be opened, using history.json:', e.message);
@@ -4732,6 +4739,7 @@ function loadHistory() {
     }
   }
   history = cleanHistory(readJson(HISTORY_FILE, null));
+  backfillDaily();
 }
 
 // What runs the dashboard, for Admin → Server. NODE_END: when each Node.js line stops getting
@@ -4756,12 +4764,59 @@ function readText(file) {
   }
 }
 
+// Days before the daily tier existed: made from the 2-hour points (their average, lowest and highest),
+// once per series, and never over days it already has. Today stays in its open bucket.
+function backfillDaily() {
+  const today = Math.floor(Date.now() / 86400e3) * 86400e3;
+  const days = (pts) => {
+    const by = new Map();
+    for (const [t, v] of pts) {
+      const d = Math.floor(t / 86400e3) * 86400e3;
+      if (d >= today) continue;
+      const x = by.get(d) || { sum: 0, n: 0, min: Infinity, max: -Infinity };
+      x.sum += v;
+      x.n++;
+      x.min = Math.min(x.min, v);
+      x.max = Math.max(x.max, v);
+      by.set(d, x);
+    }
+    return [...by].sort((a, b) => a[0] - b[0]);
+  };
+  let n = 0;
+  if (histDb) {
+    histTransaction(() => {
+      for (const k of Object.keys(history.series)) {
+        if (histSql.hasTier.get(k, 'd')) continue;
+        for (const [d, x] of days(histSql.range.all(k, 'h', 0).map((r) => [r.t, r.v]))) {
+          histSql.add.run(k, 'd', d, round2(x.sum / x.n));
+          histSql.add.run(k, 'dmin', d, round2(x.min));
+          histSql.add.run(k, 'dmax', d, round2(x.max));
+          n++;
+        }
+      }
+    });
+  } else {
+    for (const sr of Object.values(history.series)) {
+      if (sr.d?.length) continue;
+      const list = days(sr.h || []);
+      sr.d = list.map(([d, x]) => [d, round2(x.sum / x.n)]);
+      sr.dmin = list.map(([d, x]) => [d, round2(x.min)]);
+      sr.dmax = list.map(([d, x]) => [d, round2(x.max)]);
+      n += list.length;
+    }
+    if (n) historyDirty = true;
+  }
+  if (n) log(`Daily history: ${n} days filled in from the 2-hour points`);
+}
+
 // A restored backup's history
 function setHistory(h) {
   if (histDb) {
     importHistory(h);
     history = { series: Object.fromEntries(Object.entries(h.series).map(([k, v]) => [k, { acc: v.acc, seen: v.seen }])) };
   } else history = h;
+  forecastCache.clear(); // worked out from the history before
+  backfillDaily();
   historyDirty = true;
   saveHistory();
 }
@@ -4771,7 +4826,7 @@ function historySnapshot() {
   if (!histDb) return history;
   const series = {};
   for (const [k, s] of Object.entries(history.series)) {
-    const out = { m: [], q: [], h: [], acc: s.acc, seen: s.seen };
+    const out = { ...Object.fromEntries(HIST_STORED.map((x) => [x, []])), acc: s.acc, seen: s.seen };
     for (const r of histSql.all.all(k)) out[r.tier]?.push([r.t, r.v]);
     series[k] = out;
   }
@@ -4792,6 +4847,7 @@ function saveHistory() {
       }
       for (const [k, s] of Object.entries(history.series)) histSql.put.run(k, s.seen || 0, JSON.stringify(s.acc));
       for (const tier of HIST_TIERS) histSql.prune.run(tier.name, now - tier.keep);
+      for (const [tier, keep] of Object.entries(HIST_KEEP)) histSql.prune.run(tier, now - keep);
     });
   } else writeJsonAtomic(HISTORY_FILE, history);
   historyDirty = false;
@@ -4801,22 +4857,35 @@ const round2 = (v) => Math.round(v * 100) / 100;
 
 function histRecord(key, value, t = Date.now()) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return;
-  const s = (history.series[key] ||= histDb ? { acc: {} } : { m: [], q: [], h: [], acc: {} });
+  const s = (history.series[key] ||= histDb ? { acc: {} } : { ...Object.fromEntries(HIST_STORED.map((x) => [x, []])), acc: {} });
   s.seen = t;
+  const keep = (tier, tt, v) => {
+    if (histDb) return histSql.add.run(key, tier, tt, v);
+    const arr = (s[tier] ||= []);
+    arr.push([tt, v]);
+    const from = t - (HIST_KEEP[tier] || HIST_TIERS.find((x) => x.name === tier).keep);
+    let i = 0;
+    while (i < arr.length && arr[i][0] < from) i++;
+    if (i) arr.splice(0, i);
+  };
   for (const tier of HIST_TIERS) {
     const bucket = Math.floor(t / tier.step) * tier.step;
     const a = s.acc[tier.name];
-    if (a && a.t !== bucket && a.n && histDb) histSql.add.run(key, tier.name, a.t, round2(a.sum / a.n));
-    else if (a && a.t !== bucket && a.n) {
-      s[tier.name].push([a.t, round2(a.sum / a.n)]);
-      const from = t - tier.keep;
-      let i = 0;
-      while (i < s[tier.name].length && s[tier.name][i][0] < from) i++;
-      if (i) s[tier.name].splice(0, i);
+    if (a && a.t !== bucket && a.n) {
+      keep(tier.name, a.t, round2(a.sum / a.n));
+      if (tier.minmax && Number.isFinite(a.min)) {
+        keep('dmin', a.t, round2(a.min));
+        keep('dmax', a.t, round2(a.max));
+      }
     }
-    if (!a || a.t !== bucket) s.acc[tier.name] = { t: bucket, sum: 0, n: 0 };
-    s.acc[tier.name].sum += value;
-    s.acc[tier.name].n++;
+    if (!a || a.t !== bucket) s.acc[tier.name] = { t: bucket, sum: 0, n: 0, ...(tier.minmax ? { min: Infinity, max: -Infinity } : {}) };
+    const b = s.acc[tier.name];
+    b.sum += value;
+    b.n++;
+    if (tier.minmax) {
+      b.min = Math.min(b.min ?? Infinity, value);
+      b.max = Math.max(b.max ?? -Infinity, value);
+    }
   }
   historyDirty = true;
 }
@@ -4825,7 +4894,7 @@ function histRecord(key, value, t = Date.now()) {
 function histQuery(key, rangeMs, points) {
   const s = history.series[key];
   if (!s) return [];
-  const tier = rangeMs <= 26 * 3600e3 ? 'm' : rangeMs <= 8 * 86400e3 ? 'q' : 'h';
+  const tier = rangeMs <= 26 * 3600e3 ? 'm' : rangeMs <= 8 * 86400e3 ? 'q' : rangeMs <= 92 * 86400e3 ? 'h' : 'd';
   const from = Date.now() - rangeMs;
   let data = histDb ? histSql.range.all(key, tier, from).map((r) => [r.t, r.v]) : s[tier].filter(([t]) => t >= from);
   const a = s.acc[tier];
@@ -4839,8 +4908,165 @@ function histQuery(key, rangeMs, points) {
   return out;
 }
 
+// Every storage a connection reports, with how full it is: what the "full at" alert checks, the
+// history behind the forecast, and the report
+function storagesOf(h, d) {
+  if (!d) return [];
+  const out = [];
+  const add = (key, label, used, size) => {
+    if (typeof used === 'number' && typeof size === 'number' && size > 0 && /^[\w.:/-]{1,160}$/.test(key)) out.push({ key, label, used, size, pct: (100 * used) / size });
+  };
+  if (h.type === 'proxmox') {
+    const dev = config.devices.find((x) => x.id === h.deviceId);
+    const mine = dev ? effectiveNode(h, dev) : null;
+    const ours = (n) => !mine || !n || n === mine;
+    for (const st of d.storage || []) if (ours(st.node)) add(`st:${st.node || ''}:${st.name}`, `storage ${st.name}`, st.used, st.size);
+    for (const n of (d.nodes || []).filter((x) => ours(x.name))) for (const z of n.zfs || []) add(`zfs:${n.name}:${z.name}`, `ZFS pool ${z.name}`, z.alloc, z.size);
+    for (const g of (d.guests || []).filter((x) => x.status === 'running' && ours(x.node))) {
+      if (g.disk != null) add(`ct:${g.vmid}`, `${g.name}'s disk`, g.disk, g.maxdisk);
+      for (const f of g.agent?.fs || []) add(`vm:${g.vmid}:${f.mount}`, `${g.name} ${f.mount}`, f.used, f.size);
+    }
+  } else if (h.type === 'truenas') for (const p of d.pools || []) add(p.name, `pool ${p.name}`, p.allocated, p.size);
+  else if (h.type === 'synology') for (const v of d.volumes || []) add(v.name, v.name.replace('/', ''), v.used, v.size);
+  else if (h.type === 'snmp') for (const v of d.volumes || []) add(v.name, v.name, v.used, v.size);
+  return out;
+}
+
+// When a storage will be full, from how its daily level grew over the last 60 days (a straight line
+// through at least 7 days). Not growing, or less than 0.02 percentage points a day: no forecast.
+const forecastCache = new Map(); // key -> { at, value }
+function storageForecast(hostId, st) {
+  const key = `disk:${hostId}:${st.key}`;
+  const hit = forecastCache.get(key);
+  if (hit && Date.now() - hit.at < 3600e3) return hit.value;
+  const pts = histDays(key, Date.now() - 60 * 86400e3, Date.now() + 86400e3);
+  let value = null;
+  if (pts.length >= 7 && pts.at(-1)[0] - pts[0][0] >= 6 * 86400e3) {
+    const xs = pts.map(([t]) => (t - pts[0][0]) / 86400e3);
+    const ys = pts.map(([, v]) => v);
+    const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+    const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
+    const slope = sxx ? xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0) / sxx : 0; // points per day
+    const days = slope > 0.02 ? (100 - st.pct) / slope : null;
+    value = { perMonth: round2(slope * 30), days: days != null ? Math.max(0, Math.round(days)) : null, since: pts[0][0] };
+  }
+  forecastCache.set(key, { at: Date.now(), value });
+  if (forecastCache.size > 2000) forecastCache.clear();
+  return value;
+}
+
+// A series' daily points in [from, to), with today's open day: for reports
+function histDays(key, from, to, tier = 'd') {
+  const s = history.series[key];
+  if (!s) return [];
+  const data = histDb ? histSql.between.all(key, tier, from, to).map((r) => [r.t, r.v]) : (s[tier] || []).filter(([t]) => t >= from && t < to);
+  const a = s.acc?.d;
+  if (a?.n && a.t >= from && a.t < to && !data.some(([t]) => t === a.t)) data.push([a.t, round2(tier === 'dmin' ? a.min : tier === 'dmax' ? a.max : a.sum / a.n)]);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// The monthly report: uptime of each service and device, incidents, energy and cost, and how storage
+// grows. Days are whole UTC days of the month's dates; uptime counts only time with readings, and
+// time in maintenance isn't counted.
+
+function reportPeriods() {
+  const months = new Set();
+  const daily = histDays('power:total', 0, Date.now() + 86400e3);
+  const first = Math.min(...[...incidents.map((x) => x.start), ...energyPeriods().months.map((p) => Date.parse(`${p}-01`)), daily[0]?.[0]].filter(Number.isFinite), Date.now());
+  for (let t = Date.UTC(new Date(first).getUTCFullYear(), new Date(first).getUTCMonth(), 1); t <= Date.now(); t = Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth() + 1, 1)) months.add(new Date(t).toISOString().slice(0, 7));
+  return [...months].reverse().slice(0, 36);
+}
+
+function reportPayload(period) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new UserError('Choose a month, like 2026-10');
+  const [y, m] = period.split('-').map(Number);
+  const from = Date.UTC(y, m - 1, 1);
+  const to = Date.UTC(y, m, 1);
+  const prevPeriod = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
+  const now = Date.now();
+  const avg = (pts) => (pts.length ? pts.reduce((a, [, v]) => a + v, 0) / pts.length : null);
+  const minutes = (pts) => pts.length * 1440;
+  const inMonth = (x) => x.start < to && (x.end || now) >= from;
+  const overlap = (x) => Math.max(0, Math.min(x.end || now, to, now) - Math.max(x.start, from));
+  const counted = (x) => !x.behind && !x.maintenance;
+
+  // services with a status check
+  // every service that is checked (a status check, or the default check of its connection URL)
+  const services = config.services.filter((x) => x.monitor || x.connection || history.series[`upsvc:${x.id}`]).map((svc) => {
+    const pts = histDays(`upsvc:${svc.id}`, from, to);
+    const up = avg(pts);
+    const inc = incidents.filter((x) => x.serviceId === svc.id && inMonth(x) && counted(x));
+    return { id: svc.id, name: svc.name, group: svc.group, uptime: up == null ? null : round2(up * 100), downMin: up == null ? null : Math.round((1 - up) * minutes(pts)), days: pts.length, incidents: inc.length };
+  }).sort((a, b) => (a.uptime ?? 101) - (b.uptime ?? 101) || a.name.localeCompare(b.name));
+
+  // devices: the average of their connections answering
+  const devices = config.devices.filter((d) => !d.hidden).map((d) => {
+    const hs = config.hosts.filter((h) => h.deviceId === d.id);
+    const per = hs.map((h) => histDays(`uphost:${h.id}`, from, to)).filter((p) => p.length);
+    if (!per.length) return null;
+    const up = per.reduce((a, p) => a + avg(p), 0) / per.length;
+    const days = Math.max(...per.map((p) => p.length));
+    const inc = incidents.filter((x) => x.deviceId === d.id && inMonth(x) && counted(x));
+    return { id: d.id, name: d.name, uptime: round2(up * 100), downMin: Math.round((1 - up) * days * 1440), days, incidents: inc.length };
+  }).filter(Boolean).sort((a, b) => a.uptime - b.uptime || a.name.localeCompare(b.name));
+
+  // incidents
+  const sumInc = (list) => {
+    const real = list.filter(counted);
+    const closed = real.filter((x) => x.end);
+    return {
+      total: real.length,
+      critical: real.filter((x) => x.severity === 'critical').length,
+      acknowledged: real.filter((x) => x.ack).length,
+      minutes: Math.round(real.reduce((a, x) => a + overlap(x), 0) / 60e3),
+      meanClearMin: closed.length ? Math.round(closed.reduce((a, x) => a + (x.end - x.start), 0) / closed.length / 60e3) : null,
+      muted: list.length - real.length,
+    };
+  };
+  const monthInc = incidents.filter(inMonth);
+  const [py, pm] = prevPeriod.split('-').map(Number);
+  const pFrom = Date.UTC(py, pm - 1, 1);
+  const prevInc = incidents.filter((x) => x.start < from && (x.end || now) >= pFrom);
+  const longest = monthInc.filter(counted).sort((a, b) => overlap(b) - overlap(a)).slice(0, 8).map((x) => ({ ...publicIncident(x), inMonthMin: Math.round(overlap(x) / 60e3) }));
+
+  // storage: level at the start and end of the month, and the forecast
+  const storage = [];
+  for (const h of config.hosts) {
+    const data = results.get(h.id)?.data;
+    const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+    for (const st of storagesOf(h, data)) {
+      const pts = histDays(`disk:${h.id}:${st.key}`, from, to);
+      const f = storageForecast(h.id, st);
+      storage.push({ device: name, label: st.label, pct: round2(st.pct), size: st.size, first: pts[0]?.[1] ?? null, last: pts.at(-1)?.[1] ?? null, change: pts.length >= 2 ? round2(pts.at(-1)[1] - pts[0][1]) : null, forecast: f });
+    }
+  }
+  storage.sort((a, b) => (a.forecast?.days ?? 1e9) - (b.forecast?.days ?? 1e9) || b.pct - a.pct);
+
+  let energy = null;
+  try {
+    energy = { ...energyReport(period).totals, previous: energyReport(prevPeriod).totals };
+  } catch {
+    /* no prices or no data */
+  }
+  const svcUp = services.filter((x) => x.uptime != null);
+  const prevSvc = config.services.filter((x) => x.monitor || x.connection || history.series[`upsvc:${x.id}`]).map((svc) => avg(histDays(`upsvc:${svc.id}`, pFrom, from))).filter((v) => v != null);
+  return {
+    period, previous: prevPeriod, periods: reportPeriods(), partial: to > now, title: config.settings.dashboard.title,
+    summary: {
+      uptime: svcUp.length ? round2(svcUp.reduce((a, x) => a + x.uptime, 0) / svcUp.length) : null,
+      prevUptime: prevSvc.length ? round2((100 * prevSvc.reduce((a, v) => a + v, 0)) / prevSvc.length) : null,
+      incidents: sumInc(monthInc),
+      prevIncidents: sumInc(prevInc),
+    },
+    services, devices, longest, storage, energy,
+  };
+}
+
 // What a poll result contributes to the history
 function recordHistory(h, data, t) {
+  for (const st of storagesOf(h, data)) histRecord(`disk:${h.id}:${st.key}`, round2(st.pct), t);
   const pct = (a, b) => (typeof a === 'number' && b ? (100 * a) / b : null);
   if (h.type === 'idrac') {
     histRecord(`idrac:${h.id}:watts`, data.watts, t);
@@ -4988,6 +5214,9 @@ async function pollHostNow(h) {
   } else {
     results.set(h.id, { ok: false, error: r.error, data: prev?.data ?? null, updatedAt: now, lastOkAt: prev?.lastOkAt ?? null, failingSince: prev?.ok === false ? prev.failingSince ?? now : now });
   }
+  // answering or not, for the report's uptime (a short failure inside the grace time counts as up,
+  // and time in maintenance doesn't count at all)
+  if (!inMaintenance({ deviceId: h.deviceId })) histRecord(`uphost:${h.id}`, r.ok || inGrace(results.get(h.id)) ? 1 : 0, now);
   alertsSoon();
 }
 
@@ -6046,6 +6275,8 @@ function loadStatic() {
     'status.html': 'status.html',
     'vms.html': 'vms.html',
     '/static/js/vms.js': 'js/vms.js',
+    'report.html': 'report.html',
+    '/static/js/report.js': 'js/report.js',
     'offline.html': 'offline.html',
     '/static/js/status.js': 'js/status.js',
     '/sw.js': 'sw.js',
@@ -6743,6 +6974,9 @@ function dashboardPayload() {
       parent: d.parent || null, // a device id, 'none', or null = automatic (UniFi uplink)
       reachedThrough: parentOf(d)?.id || null,
       alerts: d.alerts || null, // muted, own limits (signed in only)
+      // storage that is filling up, and when it will be full at that pace
+      growing: deviceHosts(d).flatMap((h) => storagesOf(h, results.get(h.id)?.data).map((st) => ({ label: st.label, pct: round2(st.pct), forecast: storageForecast(h.id, st) })))
+        .filter((x) => x.forecast?.perMonth > 0).sort((a, b) => (a.forecast.days ?? 1e9) - (b.forecast.days ?? 1e9)).slice(0, 12),
       front: d.front || null,
       model: d.model || null,
       unifi: d.unifi,
@@ -6917,6 +7151,11 @@ async function handleApi(req, res, url, session, viewer = null) {
       : String(Number(period) - 1);
     return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
   }
+  if (p === '/api/report' && m === 'GET') {
+    if (!session && !viewer) return sendError(res, 401, 'Login required');
+    const period = url.searchParams.get('period') || zoned(Date.now()).month;
+    return sendJson(res, 200, { ...reportPayload(period), loggedIn: Boolean(session), viewer: Boolean(viewer) });
+  }
   if (p === '/api/energy/export' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
     const period = url.searchParams.get('period') || '';
@@ -6932,7 +7171,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
   if (p === '/api/history' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
-    const ranges = { '24h': 24 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3 };
+    const ranges = { '24h': 24 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, '90d': 90 * 86400e3, '1y': 365 * 86400e3, '2y': 731 * 86400e3 };
     const rangeMs = ranges[url.searchParams.get('range')] || ranges['24h'];
     const points = Math.min(Math.max(parseInt(url.searchParams.get('points') || '120', 10) || 120, 10), 500);
     const keys = String(url.searchParams.get('keys') || '').split(',').filter((k) => HIST_KEY.test(k)).slice(0, 80);
@@ -8348,6 +8587,7 @@ async function handle(req, res) {
       if (!sees) return redirect(res, '/login?next=vms');
       return sendPage(res, 'vms.html', seer);
     }
+    if (p === '/report') return seer ? sendPage(res, 'report.html', seer) : redirect(res, '/login?next=report');
     if (p === '/status') {
       if (!config.settings.dashboard.statusPage.enabled && !session) return sendError(res, 404, 'Not found');
       return sendPage(res, 'status.html', seer);
@@ -9350,6 +9590,18 @@ function alertConditions(all = false) {
         const limU = limitsFor(dev?.id || h.deviceId);
         if (over('temperature', `${h.id}:${x.mac}`, t, limU.otherC, 3)) add('temperature', `${h.id}:${x.mac}`, 'warning', `${dn} at ${t} °C`, `Limit ${limU.otherC} °C`, own, true, dev?.id);
       }
+    }
+  }
+  // storage that will be full within 30 days at its current growth: an early "storage almost full"
+  for (const h of config.hosts) {
+    const r = results.get(h.id);
+    if (!r?.data) continue;
+    const name = config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+    const lim = limitsFor(h.deviceId);
+    for (const st of storagesOf(h, r.data)) {
+      if (st.pct >= lim.pct) continue; // already over the limit: that alert says enough
+      const f = storageForecast(h.id, st);
+      if (f?.days != null && f.days <= 30) add('space', `${h.id}:${st.key}:soon`, 'warning', `${name}: ${st.label} will be full in about ${f.days} day${f.days === 1 ? '' : 's'}`, `${Math.round(st.pct)} % now, growing ${f.perMonth} percentage points a month`, h.id);
     }
   }
   for (const svc of config.services) {

@@ -73,7 +73,7 @@ The pages are in the **bar at the top**: **Home · Rack · Services · VMs · En
 - **Needs you:** one row per problem, worst first, with how long it has been going on. Click a row to open that device. A connection that stops answering is listed after it has failed for 2 minutes (a single slow or missed reading doesn't count). The same findings drive the alerts. When nothing is wrong it says **All systems normal**.
   - **Snooze** (signed in as admin): the clock button at the end of a row hides it from the top of Home and from the wall display for **1 day** or **1 week**, for everyone. The device itself keeps showing the problem, alerts are still sent, and the snooze ends early if a warning turns into a fault. **N snoozed · Show** under the list shows them again; the bell button on a snoozed row ends the snooze.
 - **Power** and **Internet**, two big cards with a large number and a glowing graph of the last hours (amber for power, teal for the network):
-  - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d**) is remembered per browser; the cards on Home always show the last 24 hours.
+  - **Power** opens the details: today, this month, the month forecast, cost per day, the last 30 days, the yearly figures, and a button to the full **Energy report**. The graph range in the details (**24 h / 7 d / 30 d / 90 d / 1 y**) is remembered per browser; the cards on Home always show the last 24 hours.
   - **Internet** comes from the UniFi console (up or down, latency, clients on Wi-Fi and wired) and opens the gateway. The bars show the traffic going through the connection right now against your last speed test (*142 of 684 Mbps*), and the graph shows the last 24 hours of traffic: download as the filled area, upload as the thin line (point at it for both values at that time). Next to the heading is your **internet provider** with its logo: what the console reports, or the name you set in *Admin → Dashboard*. The card also shows your **public IP** (only to people who are signed in; never on a public dashboard).
   - When the public IP changes, a teal **Public IP changed** row (old → new) appears at the top of Home and on the wall display. An admin closes it with **×**, for everyone; it stays in the **Log**.
 - **Devices:** a tile per device, drawn as it looks (its rack front, or its shape for access points, cameras and desktop NAS), grouped *In the rack* and *Elsewhere*. Each tile has one status (**OK**, **Warning**, **Fault** or **Offline**), its worst problem or its model, and one key number. Click a tile to open its **details** (from the right, or from the bottom on a phone):
@@ -133,6 +133,17 @@ Every VM and container on your Proxmox hosts, one row each: status, CPU, memory,
 - The details also show the VM's **backup job** from Proxmox (its schedule, e.g. *monthly*, and its storage) and when it runs next, or *In no backup job*.
 - A VM is **overdue** when it has no backup newer than its job's interval plus a day: a monthly job allows 32 days, a weekly one 8. A VM in no job (backed up by hand) uses the limit under *Admin → Alerts → Backup failed* (35 days unless you change it). Overdue raises a *Backup failed* warning. A VM that has never been backed up is shown, not alerted.
 - Under the list, **Backups looked for on** names every backup storage and how many backups it held (or why it couldn't be read), so a *None* can be checked against Proxmox.
+
+### Monthly report
+
+**Report** in the top bar (signed in, or a remembered device) sums up a month, compared with the month before:
+- **Service uptime** (the average of all checked services), the number of **problems** (how many were critical and acknowledged), the **time with problems** and how long they took to clear on average, and the month's **energy** and cost.
+- **Services** and **Devices**: each one's uptime, how long it was down and how many problems it had, worst first. Uptime comes from the status checks and from whether the device's connections answered; time in maintenance doesn't count. Problems behind another outage or during maintenance aren't counted.
+- **Longest problems** of the month.
+- **Storage**: how full each storage is, how much it grew during the month, how fast it grows (percentage points a month) and when it will be **full** at that pace. A forecast needs a week of readings.
+- **‹ ›** and the menu choose the month. **Print or save as PDF** makes a clean printout.
+
+**Storage filling up:** when a storage will be full within 30 days at the pace of the last 60 days, it shows under **Needs you** as a *Storage almost full* warning ("vault: pool tank will be full in about 21 days") before it reaches the limit. A device's details list what is filling up under **Filling up**.
 
 ### Energy report
 
