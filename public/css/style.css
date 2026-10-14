@@ -440,7 +440,7 @@ main { width: 100%; max-width: var(--page-w); margin: 0 auto; padding: 14px 24px
 /* Phones: logo, search and look at the top; a tab bar at the bottom like an app */
 @media (max-width: 720px) {
   .sidebar { min-height: 52px; padding-left: 16px; padding-right: 10px; gap: 2px; }
-  .sidebar .nav-list, .sidebar .nav-foot > .nav-item, .sidebar .user-row, .sidebar .guide-button { display: none; } /* the guide is under More */
+  .sidebar .nav-list, .sidebar .nav-foot > .nav-item, .sidebar .user-row, .sidebar .guide-button, .sidebar .avatar-button { display: none; } /* the guide is under More */
   .search-button { width: 36px; height: 36px; justify-content: center; padding: 0; background: none; border-color: transparent; color: var(--text-2); }
   .search-button kbd { display: none; }
   .topbar { padding: 18px 16px 2px; }
@@ -1108,10 +1108,11 @@ dialog.drawer::backdrop { background: rgb(0 0 0 / 0.45); -webkit-backdrop-filter
 
 /* ---------- Admin rack ---------- */
 
-.rack-layout { display: grid; grid-template-columns: minmax(320px, 500px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.rack-layout { display: grid; grid-template-columns: minmax(380px, 1.6fr) minmax(300px, 1fr); gap: 18px; align-items: start; }
 .rack-layout .card { margin-bottom: 16px; }
 .rack-preview-card { position: sticky; top: 76px; }
 .rack-preview-card .rack-view { width: 100%; }
+.rack-preview-card .rack2 { grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 9rem); }
 .rack-preview-card .rack-item { cursor: grab; touch-action: none; }
 .rack-item.selected { box-shadow: 0 0 0 2px var(--accent), 0 0 16px color-mix(in srgb, var(--accent) 50%, transparent); z-index: 3; }
 .offrack-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -2285,3 +2286,38 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .dev-alerts .hint { margin: 8px 0 6px; }
 .d-alerts { display: flex; align-items: center; gap: 6px; margin: 4px 0 0; }
 .d-alerts svg { width: 14px; height: 14px; flex: none; }
+
+/* Admin → Server: address & reverse proxy */
+.acc-list { display: grid; gap: 6px; margin-bottom: 10px; }
+.acc-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; font-size: 13.5px; }
+.acc-row > span:last-child { overflow-wrap: anywhere; }
+.proxy-pick { flex-wrap: wrap; margin-bottom: 10px; }
+.proxy-pick button { flex: 1 1 auto; padding: 0 12px; }
+.howto-block { position: relative; margin: 8px 0; }
+.howto-code { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+.howto-block > button { position: absolute; top: 8px; right: 8px; }
+.howto-steps li { margin-bottom: 4px; }
+@media (max-width: 720px) { .acc-row { grid-template-columns: 1fr; gap: 0; } }
+
+/* VMs: sortable columns (headers on wide screens, a menu on phones) */
+.vm-head .vm-sort { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font: inherit; color: var(--muted); border-radius: 4px; }
+.vm-head .vm-sort:hover, .vm-head .vm-sort.on { color: var(--text); }
+.vm-head .vm-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vm-head .vm-sort .arrow { font-size: 11px; }
+#vm-sort { width: auto; }
+@media (min-width: 721px) { #vm-sort { display: none; } }
+.vm-head .vm-sorts { display: inline-flex; gap: 14px; }
+
+/* The avatar and its menu (Admin, the look, the guide, Log out) */
+.avatar-button { display: inline-flex; align-items: center; gap: 2px; height: 36px; padding: 0 6px 0 4px; border: 0; border-radius: 999px; background: none; color: var(--muted); cursor: pointer; }
+.avatar-button:hover, .avatar-button[aria-expanded="true"], .avatar-button.active { background: var(--surface-2); color: var(--text); }
+.avatar-button.active .avatar { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--text); }
+.avatar-button svg { width: 14px; height: 14px; }
+.user-menu { position: fixed; z-index: 60; min-width: 220px; padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); display: grid; gap: 2px; }
+.user-menu-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.user-menu-head > span:last-child { display: grid; line-height: 1.25; }
+.user-menu-head small { color: var(--muted); font-size: 12px; }
+.user-menu-item { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 13.5px; text-decoration: none; cursor: pointer; text-align: left; width: 100%; }
+.user-menu-item:hover, .user-menu-item:focus-visible { background: var(--surface-2); outline: none; }
+.user-menu-item svg { width: 16px; height: 16px; color: var(--muted); }
+.user-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }

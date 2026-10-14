@@ -339,15 +339,11 @@ const HD = (() => {
         el('div', { class: 'nav-foot' },
           el('button', { type: 'button', class: 'search-button', title: 'Search (Ctrl K or /)', 'aria-label': 'Search', 'aria-keyshortcuts': 'Control+K', onclick: openSearch },
             icon('search'), el('span', { class: 'label', text: 'Search' }), el('kbd', { text: navigator.platform?.startsWith('Mac') ? '⌘K' : 'Ctrl K' })),
-          el('a', { class: 'icon-button guide-button', href: '/guide.pdf', target: '_blank', rel: 'noopener', title: 'User guide (PDF)', 'aria-label': 'User guide (PDF)' }, icon('file-text')),
-          el('button', { type: 'button', class: 'icon-button look-button', title: 'Look on this device', 'aria-label': 'Look on this device', 'aria-haspopup': 'dialog', onclick: (e) => openLook(e.currentTarget) }, icon('palette')),
-          signed ? navLink(admin, 'nav-item') : null,
-          signed
-            ? el('div', { class: 'user-row' },
-              el('span', { class: 'avatar', title: `${userName || (st.viewer ? 'This device' : 'Admin')} · ${st.viewer ? 'view only' : 'administrator'}`, text: (userName || (st.viewer ? 'V' : 'A')).charAt(0).toUpperCase() }),
-              el('span', { class: 'label user-text' }, el('strong', { text: userName || (st.viewer ? 'This device' : 'Admin') }), el('small', { text: st.viewer ? 'View only' : 'Administrator' })),
-              el('button', { type: 'button', class: 'icon-button label', title: 'Log out', 'aria-label': 'Log out', onclick: logout }, icon('log-out')))
-            : el('a', { class: 'nav-item', href: `/login${next}` }, icon('log-in'), el('span', { class: 'label', text: 'Log in' }))));
+          // signed in: Admin, the look, the guide and Log out are in the menu on the avatar
+          ...(signed ? [userButton(st, admin)] : [
+            el('a', { class: 'icon-button guide-button', href: '/guide.pdf', target: '_blank', rel: 'noopener', title: 'User guide (PDF)', 'aria-label': 'User guide (PDF)' }, icon('file-text')),
+            el('button', { type: 'button', class: 'icon-button look-button', title: 'Look on this device', 'aria-label': 'Look on this device', 'aria-haspopup': 'dialog', onclick: (e) => openLook(e.currentTarget) }, icon('palette')),
+            el('a', { class: 'nav-item', href: `/login${next}` }, icon('log-in'), el('span', { class: 'label', text: 'Log in' }))])));
     }
     if (bar) {
       const tabs = items.filter((n) => ['overview', 'rack', 'services', 'energy'].includes(n.key));
@@ -362,6 +358,57 @@ const HD = (() => {
         if (userName) shell();
       }).catch(() => {});
     }
+  }
+
+  // The avatar: who is signed in, and a menu with Admin, the look, the guide and Log out
+  function userButton(st, admin) {
+    const who = userName || (st.viewer ? 'This device' : 'Admin');
+    const role = st.viewer ? 'View only' : 'Administrator';
+    const btn = el('button', { type: 'button', class: `avatar-button${st.active === 'admin' ? ' active' : ''}`, title: `${who} · ${role.toLowerCase()}`, 'aria-label': `${who}: menu`, 'aria-haspopup': 'menu', 'aria-expanded': 'false' },
+      el('span', { class: 'avatar', text: who.charAt(0).toUpperCase() }), icon('chevron-down'));
+    btn.addEventListener('click', () => (document.querySelector('.user-menu') ? closeUserMenu() : openUserMenu(btn, st, admin, who, role)));
+    return btn;
+  }
+  function closeUserMenu(focusBack) {
+    const m = document.querySelector('.user-menu');
+    if (!m) return;
+    m.remove();
+    const b = document.querySelector('.avatar-button');
+    b?.setAttribute('aria-expanded', 'false');
+    if (focusBack) b?.focus();
+  }
+  function openUserMenu(btn, st, admin, who, role) {
+    const item = (ic, label, attrs) => el(attrs.href ? 'a' : 'button', { role: 'menuitem', class: 'user-menu-item', ...(attrs.href ? {} : { type: 'button' }), ...attrs }, icon(ic), el('span', { text: label }));
+    const menu = el('div', { class: 'user-menu', role: 'menu', 'aria-label': who },
+      el('div', { class: 'user-menu-head' }, el('span', { class: 'avatar', text: who.charAt(0).toUpperCase() }), el('span', null, el('strong', { text: who }), el('small', { text: role }))),
+      item('settings', 'Admin', { href: admin.href, 'data-act': 'admin' }),
+      item('palette', 'Look on this device', { 'data-act': 'look', onclick: () => { closeUserMenu(); openLook(btn); } }),
+      item('file-text', 'User guide (PDF)', { href: '/guide.pdf', target: '_blank', rel: 'noopener', 'data-act': 'guide' }),
+      el('hr'),
+      item('log-out', 'Log out', { 'data-act': 'logout', onclick: logout }));
+    const r = btn.getBoundingClientRect();
+    menu.style.top = `${Math.round(r.bottom + 6)}px`;
+    menu.style.right = `${Math.max(8, Math.round(document.documentElement.clientWidth - r.right))}px`;
+    document.body.append(menu);
+    btn.setAttribute('aria-expanded', 'true');
+    menu.querySelector('.user-menu-item').focus();
+    const outside = (e) => {
+      if (!menu.contains(e.target) && !btn.contains(e.target)) done();
+    };
+    const keys = (e) => {
+      const items = [...menu.querySelectorAll('.user-menu-item')];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === 'Escape') done(true);
+      else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    };
+    const done = (focusBack) => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', keys);
+      closeUserMenu(focusBack);
+    };
+    setTimeout(() => document.addEventListener('pointerdown', outside));
+    document.addEventListener('keydown', keys);
   }
 
   // Phones: Docs, Updates, Wall, Admin and Log out in a sheet from the bottom

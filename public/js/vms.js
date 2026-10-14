@@ -13,6 +13,52 @@ let view = location.hash === '#containers' || location.hash.startsWith('#c:') ? 
 let openKind = 'vm'; // what the open drawer shows: a VM or a container
 let node = '';
 let openKey = null; // the VM whose details are open
+// sorting: per view, remembered in this browser; a second click on the same column turns it around
+const SORTS = {
+  vms: { id: ['ID', (g) => Number(g.vmid)], name: ['Name', (g) => String(g.name || '').toLowerCase()], status: ['Status', (g) => (running(g) ? 0 : 1)], cpu: ['CPU', (g) => (running(g) ? g.cpu ?? 0 : -1)], mem: ['Memory', (g) => (running(g) ? g.mem ?? 0 : -1)], disk: ['Disk', (g) => (g.disk ? g.disk.used / g.disk.size : -1)], net: ['Network', (g) => (g.rxBps ?? -1) + (g.txBps ?? 0)], backup: ['Last backup', (g) => g.backup?.last ?? 0] },
+  containers: { problems: ['Problems first', (c) => (ctProblem(c) ? 0 : ctRunning(c) ? 1 : 2)], name: ['Name', (c) => c.name.toLowerCase()], state: ['State', (c) => (ctRunning(c) ? 0 : 1)], cpu: ['CPU', (c) => (ctRunning(c) ? c.cpu ?? 0 : -1)], mem: ['Memory', (c) => (ctRunning(c) ? c.memUsed ?? 0 : -1)], restarts: ['Restarts', (c) => c.restarts ?? 0], host: ['Host', (c) => String(c.hostName || '').toLowerCase()] },
+};
+const DESC_FIRST = new Set(['cpu', 'mem', 'disk', 'net', 'backup', 'restarts']); // biggest first on the first click
+let sorts = { vms: { key: 'id', desc: false }, containers: { key: 'problems', desc: false } };
+try {
+  const saved = JSON.parse(localStorage.getItem('lookout-vm-sort') || 'null');
+  for (const v of ['vms', 'containers']) if (saved?.[v] && SORTS[v][saved[v].key]) sorts[v] = { key: saved[v].key, desc: Boolean(saved[v].desc) };
+} catch {
+  /* the defaults */
+}
+function setSort(v, key) {
+  const cur = sorts[v];
+  sorts[v] = cur.key === key ? { key, desc: !cur.desc } : { key, desc: DESC_FIRST.has(key) };
+  try {
+    localStorage.setItem('lookout-vm-sort', JSON.stringify(sorts));
+  } catch {
+    /* only for this visit */
+  }
+  render(last);
+}
+function sorted(v, list, tie) {
+  const { key, desc } = sorts[v];
+  const f = SORTS[v][key][1];
+  return [...list].sort((a, b) => {
+    const x = f(a);
+    const y = f(b);
+    const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+    return (desc ? -c : c) || tie(a, b);
+  });
+}
+// the column headers as buttons, and the same choice in a menu for phones (where headers are hidden)
+function sortHead(v, cols, cls) {
+  const sel = $('vm-sort');
+  sel.replaceChildren(...Object.entries(SORTS[v]).map(([k, [label]]) => el('option', { value: k, text: `Sort: ${label}` })));
+  sel.value = sorts[v].key;
+  sel.onchange = () => setSort(v, sel.value);
+  const btn = (label, key) => el('button', { type: 'button', class: `vm-sort${sorts[v].key === key ? ' on' : ''}`, 'aria-sort': sorts[v].key === key ? (sorts[v].desc ? 'descending' : 'ascending') : null, onclick: () => setSort(v, key) },
+    label, sorts[v].key === key ? el('span', { class: 'arrow', text: sorts[v].desc ? '↓' : '↑' }) : null);
+  // a column may hold two (the first: ID and name)
+  return el('div', { class: `vm-head${cls ? ` ${cls}` : ''}` }, cols.map((c) => (Array.isArray(c[0])
+    ? el('span', { class: 'vm-sorts' }, c.map(([label, key]) => btn(label, key)))
+    : c[1] ? btn(c[0], c[1]) : el('span', { text: c[0] }))));
+}
 
 const DAY = 86400e3;
 const running = (g) => g.status === 'running';
@@ -69,6 +115,7 @@ function row(g) {
 
 function render(d) {
   HD.shell({ active: 'vms', title: d.title, admin: d.loggedIn, viewer: d.viewer });
+  $('vm-settings-link').hidden = !d.loggedIn; // where they show and with what: Admin → Dashboard
   const hasCt = (d.containerHosts || []).length > 0;
   if (!d.proxmox && hasCt) view = 'containers';
   $('vm-view').hidden = !(d.proxmox && hasCt);
@@ -111,9 +158,9 @@ function render(d) {
   sel.replaceChildren(el('option', { value: '', text: 'All nodes' }), ...nodes.map((n) => el('option', { value: n, text: n })));
   sel.value = node;
   const q = $('vm-q').value.trim().toLowerCase();
-  const shown = items.filter((g) => matches(g, q)).sort((a, b) => (running(a) ? 0 : 1) - (running(b) ? 0 : 1) || String(a.name).localeCompare(String(b.name)));
+  const shown = sorted('vms', items.filter((g) => matches(g, q)), (a, b) => Number(a.vmid) - Number(b.vmid));
   $('vm-list').replaceChildren(
-    el('div', { class: 'vm-head', 'aria-hidden': 'true' }, ['Name', 'Status', 'CPU', 'Memory', 'Disk', 'Network', 'Last backup'].map((t) => el('span', { text: t }))),
+    sortHead('vms', [[['ID', 'id'], ['Name', 'name']], ['Status', 'status'], ['CPU', 'cpu'], ['Memory', 'mem'], ['Disk', 'disk'], ['Network', 'net'], ['Last backup', 'backup']]),
     ...(shown.length ? shown.map(row) : [el('p', { class: 'empty', text: items.length ? 'Nothing matches.' : 'No VMs or containers.' })]));
   // where backups were looked for, so "None" can be checked against Proxmox
   const st = d.backupStorages || [];
@@ -168,10 +215,10 @@ function renderContainers(d) {
   })));
   $('vm-node').hidden = true;
   const q = $('vm-q').value.trim().toLowerCase();
-  const shown = list.filter((c) => ctMatches(c, q)).sort((a, b) => (ctProblem(b) ? 1 : 0) - (ctProblem(a) ? 1 : 0) || (ctRunning(a) ? 0 : 1) - (ctRunning(b) ? 0 : 1) || a.name.localeCompare(b.name));
+  const shown = sorted('containers', list.filter((c) => ctMatches(c, q)), (a, b) => a.name.localeCompare(b.name));
   $('vm-list').replaceChildren(
-    el('div', { class: 'vm-head ct-head', 'aria-hidden': 'true' }, ['Container', 'State', 'CPU', 'Memory', 'Restarts', 'Host', 'Status'].map((t) => el('span', { text: t }))),
-    ...(shown.length ? shown.map(ctRow) : [el('p', { class: 'empty', text: list.length ? 'Nothing matches.' : 'No containers.' })]));
+    sortHead('containers', [['Container', 'name'], ['State', 'state'], ['CPU', 'cpu'], ['Memory', 'mem'], ['Restarts', 'restarts'], ['Host', 'host'], ['Status', null]], 'ct-head'),
+    ...(shown.length ? shown.map(ctRow) : [el('p', { class: 'empty', text: list.length ? 'Nothing matches.' : 'No containers yet. Add a Docker host (through a socket proxy) or Portainer as a connection on a device in Admin → Devices. A Portainer card under Services has a "Show its containers" button that does it for you.' })]));
   $('vm-notes').replaceChildren(...(d.containerHosts || []).filter((h) => h.error).map((h) => el('p', { class: 'hint', text: `${h.name}: ${h.error}` })),
     el('p', { class: 'hint', text: 'A container labelled lookout.ignore=true is listed but never alerted.' }));
   if (openKey) (openKind === 'ct' ? fillContainerDrawer : fillDrawer)();

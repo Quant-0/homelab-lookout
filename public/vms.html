@@ -18,6 +18,7 @@
       <h1 class="page-title">VMs and containers</h1>
       <span class="page-meta" id="updated"></span>
       <span class="spacer"></span>
+      <a class="button" id="vm-settings-link" href="/admin#vm-settings" hidden>Settings</a>
       <div class="page-actions" id="nav"></div>
     </header>
     <main class="vms-main">
@@ -28,6 +29,7 @@
         <label class="vm-search"><span class="sr-only">Search VMs</span><input type="search" id="vm-q" placeholder="Search by name, ID, address or OS" autocomplete="off"></label>
         <div class="seg" id="vm-filter" role="group" aria-label="Show"></div>
         <select id="vm-node" aria-label="Node" hidden></select>
+        <select id="vm-sort" aria-label="Sort by"></select>
       </div>
       <section class="card vm-card-list" aria-live="polite"><div id="vm-list"></div></section>
       <div id="vm-notes"></div>

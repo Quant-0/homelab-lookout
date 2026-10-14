@@ -127,6 +127,7 @@ const DEFAULT_SETTINGS = {
     // a public page at /status with only up/down and uptime of the services: no addresses or hardware
     statusPage: { enabled: false, title: '' },
     linkUrl: '', // where links in alert messages point; empty = this server's own address
+    trustedProxies: [], // reverse proxies whose X-Forwarded-For / -Proto are believed
   },
   power: {
     plan: 'spot',
@@ -728,6 +729,18 @@ function validateDashboard(d) {
     else if (cl?.kind === 'file' && config.icons.some((i) => i.id === cl.id)) carrierLogo = { kind: 'file', id: cl.id };
     else throw new UserError('Upload or link the provider logo again');
   }
+  // reverse proxies allowed to report the visitor's address: IPs or CIDR ranges
+  let trustedProxies = config.settings.dashboard.trustedProxies || [];
+  if (d.trustedProxies !== undefined) {
+    const list = (Array.isArray(d.trustedProxies) ? d.trustedProxies : String(d.trustedProxies).split(/[\s,]+/)).map((x) => String(x).trim()).filter(Boolean);
+    if (list.length > 10) throw new UserError('At most 10 reverse proxies');
+    for (const x of list) {
+      const [base, bits] = x.split('/');
+      const okBits = bits === undefined || (/^\d{1,3}$/.test(bits) && Number(bits) <= (net.isIPv6(base) ? 128 : 32) && Number(bits) >= (net.isIPv6(base) ? 64 : 16));
+      if (!net.isIP(base) || !okBits) throw new UserError(`Reverse proxy: ${x.slice(0, 60)} is not an IP address or a range like 10.0.0.0/24 (at most /16)`);
+    }
+    trustedProxies = [...new Set(list)];
+  }
   // the address links in alert messages point to (empty: this server's own)
   const linkUrl = d.linkUrl === undefined ? config.settings.dashboard.linkUrl || '' : str(d.linkUrl, 200, 'Address for links');
   if (linkUrl && !/^https?:\/\/[a-z0-9.\-]+(:\d{1,5})?$|^https?:\/\/\[[0-9a-f:.]+\](:\d{1,5})?$/i.test(linkUrl.replace(/\/$/, ''))) throw new UserError('Address for links: like https://lookout.home.arpa:8443, without a path');
@@ -745,6 +758,7 @@ function validateDashboard(d) {
     vms,
     statusPage,
     linkUrl: linkUrl.replace(/\/$/, ''),
+    trustedProxies,
   };
 }
 
@@ -5515,7 +5529,50 @@ function endSession(s) {
 // HTTPS requests get a __Host- cookie with the Secure flag; plain HTTP a separate cookie, so a
 // session created over HTTPS is never sent over HTTP. COOKIE_SECURE=1 is for TLS-terminating proxies.
 function secureRequest(req) {
-  return process.env.COOKIE_SECURE === '1' || (process.env.COOKIE_SECURE !== '0' && Boolean(req.socket.encrypted));
+  return process.env.COOKIE_SECURE === '1' || (process.env.COOKIE_SECURE !== '0' && (Boolean(req.socket.encrypted) || forwardedHttps(req)));
+}
+
+// Behind a reverse proxy (Admin → Server → Address & reverse proxy): only a connection from a proxy
+// you entered may say who the visitor is (X-Forwarded-For) and that it came over https
+// (X-Forwarded-Proto). From anywhere else those headers are ignored, so nobody can fake an address.
+const plainIp = (ip) => String(ip || '').replace(/^::ffff:(?=\d+\.)/, '');
+function ipInList(ip, list) {
+  const a = plainIp(ip);
+  if (!net.isIP(a)) return false;
+  return (list || []).some((entry) => {
+    const [base, bits] = entry.split('/');
+    if (bits === undefined) return plainIp(base) === a;
+    if (net.isIPv4(a) && net.isIPv4(base)) {
+      const n = (x) => x.split('.').reduce((v, o) => (v << 8) + Number(o), 0) >>> 0;
+      const mask = Number(bits) === 0 ? 0 : (~0 << (32 - Number(bits))) >>> 0;
+      return (n(a) & mask) === (n(base) & mask);
+    }
+    const bl = new net.BlockList();
+    try {
+      bl.addSubnet(base, Number(bits), net.isIPv6(base) ? 'ipv6' : 'ipv4');
+      return bl.check(a, net.isIPv6(a) ? 'ipv6' : 'ipv4');
+    } catch {
+      return false;
+    }
+  });
+}
+const proxyList = () => config.settings.dashboard.trustedProxies || [];
+const fromProxy = (req) => ipInList(req.socket.remoteAddress, proxyList());
+// The visitor: the right-most address in X-Forwarded-For that isn't one of your proxies
+function clientIp(req) {
+  const sock = plainIp(req.socket.remoteAddress);
+  if (!fromProxy(req)) return sock;
+  const chain = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => plainIp(x.trim())).filter(Boolean);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (!net.isIP(chain[i])) return sock; // garbage: don't guess
+    if (!ipInList(chain[i], proxyList())) return chain[i];
+  }
+  return chain[0] && net.isIP(chain[0]) ? chain[0] : sock;
+}
+function forwardedHttps(req) {
+  if (!fromProxy(req)) return false;
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
 }
 const cookieName = (req) => (secureRequest(req) ? '__Host-hd_session' : 'hd_session');
 
@@ -5540,7 +5597,7 @@ function getSession(req) {
   }
   if (now - s.seen > 60e3) sessionsDirty = true; // "last used" is saved now and then, not on every request
   s.seen = now;
-  s.ip = req.socket.remoteAddress || s.ip;
+  s.ip = clientIp(req) || s.ip;
   return s;
 }
 
@@ -5551,7 +5608,7 @@ function createSession(req, res, user, { keep = false } = {}) {
   const s = {
     id: sessionHash(token), pub: crypto.randomBytes(8).toString('hex'), user, csrf: crypto.randomBytes(32).toString('base64url'),
     created: now, seen: now, secure: secureRequest(req), keep: Boolean(keep), authAt: now, pw: admin?.changedAt ?? null,
-    name: deviceName(req.headers['user-agent']), ip: req.socket.remoteAddress || '',
+    name: deviceName(req.headers['user-agent']), ip: clientIp(req),
   };
   sessions.set(s.id, s);
   // at most 20 at a time: the longest unused go
@@ -5780,7 +5837,7 @@ function deviceName(ua) {
 function rememberDevice(req, res, admin) {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
-  const rec = { id: crypto.randomBytes(8).toString('hex'), hash: tokenHash(token), user: admin.username, pw: admin.changedAt ?? null, name: deviceName(req.headers['user-agent']), created: now, lastSeen: now, lastIp: req.socket.remoteAddress || '', expires: now + REMEMBER_MS, secure: secureRequest(req) };
+  const rec = { id: crypto.randomBytes(8).toString('hex'), hash: tokenHash(token), user: admin.username, pw: admin.changedAt ?? null, name: deviceName(req.headers['user-agent']), created: now, lastSeen: now, lastIp: clientIp(req), expires: now + REMEMBER_MS, secure: secureRequest(req) };
   remembered.set(rec.hash, rec);
   for (const r of [...remembered.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(REMEMBER_MAX)) forgetDevice(r);
   saveRemembered();
@@ -5805,7 +5862,7 @@ function getViewer(req) {
   const rec = rememberedFor(req);
   if (!rec) return null;
   rec.lastSeen = Date.now();
-  rec.lastIp = req.socket.remoteAddress || '';
+  rec.lastIp = clientIp(req);
   rememberedDirty = true;
   if (!viewerCsrf.has(rec.id)) viewerCsrf.set(rec.id, crypto.randomBytes(32).toString('base64url'));
   return { user: rec.user, csrf: viewerCsrf.get(rec.id), readOnly: true, device: rec };
@@ -6730,7 +6787,7 @@ function dashboardPayload() {
 }
 
 async function handleLogin(req, res) {
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req) || '?';
   const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
   if (wait) {
     res.setHeader('Retry-After', String(wait));
@@ -6804,7 +6861,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     return sendJson(res, 200, { challenge: newChallenge('login'), rpId: site.rpId, timeout: 120000, userVerification: 'required' });
   }
   if (p === '/api/passkey/login' && m === 'POST') {
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req) || '?';
     const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
     if (wait) {
       res.setHeader('Retry-After', String(wait));
@@ -6910,7 +6967,7 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/reauth' && m === 'POST') {
     // Confirming the password: locked out like the login form, logged either way
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req) || '?';
     const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
     if (wait) {
       res.setHeader('Retry-After', String(wait));
@@ -6944,7 +7001,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
   if (p === '/api/reauth/passkey' && m === 'POST') {
     if (session.readOnly) return sendError(res, 403, 'Sign in with the password first');
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req) || '?';
     const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
     if (wait) {
       res.setHeader('Retry-After', String(wait));
@@ -7112,7 +7169,7 @@ async function handleApi(req, res, url, session, viewer = null) {
     const before = structuredClone(config.settings);
     const next = validateSettings(body, config.settings);
     // making the dashboard or the status page public is a step-up change too
-    if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled) || (next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '')) && !freshAuth(session)) return stepUpRequired(res);
+    if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled) || (next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '') || JSON.stringify(next.dashboard.trustedProxies || []) !== JSON.stringify(before.dashboard.trustedProxies || [])) && !freshAuth(session)) return stepUpRequired(res);
     config.settings = next;
     saveConfig();
     if ((next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '')) initAllowedHosts();
@@ -7185,6 +7242,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   }
 
   if (p === '/api/admin/server' && m === 'GET') return sendJson(res, 200, { ...serverStatus(), current: secureRequest(req) ? 'https' : 'http' });
+  if (p === '/api/admin/access' && m === 'GET') return sendJson(res, 200, accessCheck(req));
   if (p === '/api/admin/server' && m === 'PUT') {
     const next = validateServerSettings(await readBody(req));
     const old = await applyServer(next); // throws (and changes nothing) if a port can't be used
@@ -7461,6 +7519,33 @@ async function handleApi(req, res, url, session, viewer = null) {
     const [check, integ] = await Promise.all([checkService(svc), runIntegration(svc, secret)]);
     for (const k of svcSessions.keys()) if (!old && k.startsWith(svc.id + '|')) svcSessions.delete(k);
     return sendJson(res, 200, { check, stats: integ.stats, error: integ.error });
+  }
+  // A Portainer service card counts containers; its containers themselves come from a Portainer
+  // connection on a device. This copies the card's address, environment and token into one (the token
+  // never leaves the server), on the device it runs on, or a new device named after it.
+  const pc = p.match(/^\/api\/admin\/services\/([0-9a-f-]{36})\/portainer-connection$/);
+  if (pc && m === 'POST') {
+    const svc = config.services.find((x) => x.id === pc[1]);
+    if (!svc) return sendError(res, 404, 'Not found');
+    if (svc.integration?.type !== 'portainer' || !svc.connection?.url) throw new UserError('Only for a Portainer card with a connection URL');
+    if (!svc.secret) throw new UserError('Enter the access token on the card first');
+    const token = decryptSecret(serviceSecretHost(svc));
+    const env = String(svc.integration.options?.env || '').trim();
+    const fields = validateHostInput({ name: `${svc.name} containers`, address: svc.connection.url, username: env, tlsMode: svc.connection.tlsMode, fingerprint: svc.connection.fingerprint }, 'portainer');
+    const same = config.hosts.find((h) => h.type === 'portainer' && h.address === fields.address && (h.username || '') === fields.username);
+    if (same) throw new UserError(`It is already a connection on ${config.devices.find((d) => d.id === same.deviceId)?.name || 'a device'}`);
+    let dev = svc.deviceId && config.devices.find((d) => d.id === svc.deviceId);
+    if (!dev) {
+      dev = newDevice({ name: svc.name, kind: 'server' });
+      config.devices.push(dev);
+    }
+    const h = { id: crypto.randomUUID(), type: 'portainer', ...fields, deviceId: dev.id, secret: null };
+    h.secret = encryptSecret(h, token);
+    config.hosts.push(h);
+    saveConfig();
+    event('devices', `Portainer connection added to ${dev.name} from the ${svc.name} card`);
+    pollHost(h);
+    return sendJson(res, 201, { device: dev.name });
   }
   const sm = p.match(/^\/api\/admin\/services\/([0-9a-f-]{36})$/);
   if (sm) {
@@ -8130,7 +8215,7 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/admin/password' && m === 'POST') {
     // Guessing the current password here is locked out like the login form
-    const ip = req.socket.remoteAddress || '?';
+    const ip = clientIp(req) || '?';
     const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
     if (wait) {
       res.setHeader('Retry-After', String(wait));
@@ -8946,7 +9031,7 @@ function checkinStatus(c, now = Date.now()) {
 const OPEN_LIMIT = Number(process.env.OPEN_LIMIT_PER_MIN) || 120;
 const openHits = new Map(); // address -> { start, n }
 function openLimitOk(req, res) {
-  const ip = req.socket.remoteAddress || '?';
+  const ip = clientIp(req) || '?';
   const now = Date.now();
   let h = openHits.get(ip);
   if (!h || now - h.start >= 60e3) openHits.set(ip, (h = { start: now, n: 0 }));
@@ -10457,7 +10542,7 @@ function isPingPath(raw) {
 function httpHandler(req, res) {
   const mode = effectiveServer(config.settings.server).http?.mode;
   // a check-in also works over plain HTTP, so `curl http://…/ping/…` needs no trusted certificate
-  if (mode === 'redirect' && listeners.https && !isPingPath(req.url)) return redirectToHttps(req, res);
+  if (mode === 'redirect' && listeners.https && !isPingPath(req.url) && !forwardedHttps(req)) return redirectToHttps(req, res);
   return handle(req, res);
 }
 
@@ -10535,6 +10620,24 @@ function serverUrls() {
     https: listeners.https ? `https://${host}${listeners.https.port === 443 ? '' : `:${listeners.https.port}`}` : null,
     http: listeners.http ? `http://${host}${listeners.http.port === 80 ? '' : `:${listeners.http.port}`}` : null,
   };
+}
+
+// What the server sees of this very request, and what doesn't add up
+function accessCheck(req) {
+  const sock = plainIp(req.socket.remoteAddress);
+  const trusted = fromProxy(req);
+  const xff = req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).slice(0, 200) : null;
+  const xfp = req.headers['x-forwarded-proto'] ? String(req.headers['x-forwarded-proto']).slice(0, 20) : null;
+  const host = String(req.headers.host || '').slice(0, 200);
+  const link = config.settings.dashboard.linkUrl;
+  const warnings = [];
+  if (!trusted && (xff || xfp)) warnings.push(`This came through a proxy at ${sock}, but it is not listed as a reverse proxy, so every visitor looks like ${sock} (the sign-in lockout and the logs too). Add it below.`);
+  if (trusted && !xff) warnings.push(`The proxy at ${sock} sends no X-Forwarded-For, so visitors still look like ${sock}. Turn it on in the proxy (see the instructions).`);
+  if (trusted && !req.socket.encrypted && !xfp) warnings.push('The proxy says nothing about https (X-Forwarded-Proto), so sign-in cookies are not marked secure.');
+  if (link && new URL(link).host.toLowerCase() !== host.toLowerCase() && host.toLowerCase() !== new URL(link).hostname.toLowerCase()) warnings.push(`You opened the dashboard as ${host}; links, push and passkeys use ${new URL(link).host}.`);
+  if (link && link.startsWith('http:') && new URL(link).hostname !== 'localhost') warnings.push('The dashboard address is http://: logins and links would travel unencrypted. Use https://.');
+  return { socketIp: sock, clientIp: clientIp(req), host, https: secureRequest(req), viaProxy: trusted, forwardedFor: xff, forwardedProto: xfp, dashboardAddress: link || null, proxies: proxyList(), warnings,
+    target: { host: HOST, https: effectiveServer(config.settings.server).https?.port || null, http: effectiveServer(config.settings.server).http?.port || null } };
 }
 
 function serverStatus() {

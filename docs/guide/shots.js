@@ -116,7 +116,7 @@ http.createServer((q, res) => {
     await p.keyboard.press('Escape'); await sleep(300);
   });
   await shot('look', async () => {
-    await p.click('.look-button'); await sleep(500);
+    await p.click('.avatar-button'); await p.click('.user-menu [data-act="look"]'); await sleep(500);
     await top('look', 700);
     await p.keyboard.press('Escape'); await sleep(300);
   });

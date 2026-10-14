@@ -285,7 +285,6 @@
             <label><span>Title</span><input name="title" maxlength="60"></label>
             <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
             <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
-            <label class="wide"><span>Dashboard address</span><input name="linkUrl" maxlength="200" placeholder="https://lookout.example.com:8443 (this server’s IP when empty)" autocomplete="off" spellcheck="false"><span class="hint">A domain name for the dashboard: it answers on it (the IP keeps working), and links in alert messages and push notifications use it. The name must point to this server in your DNS.</span></label>
             <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
           </div>
           <div class="carrier-pick" id="carrier-pick"></div>
@@ -306,7 +305,7 @@
           </div>
           <p class="hint">This also applies to the wall display. To leave out single services, untick “Show on Home” on the service. Alert notifications are set on the Alerts tab and are not changed by this.</p>
 
-          <h4>VMs and containers</h4>
+          <h4 id="vm-settings">VMs and containers</h4>
           <fieldset class="checks" aria-label="Where VMs and containers show">
             <legend class="small muted">Show them</legend>
             <label class="check"><input type="checkbox" name="vms.home"> On Home</label>
@@ -537,6 +536,22 @@
         </form>
         <h4>Certificate</h4>
         <div id="web-cert"></div>
+      </section>
+      <section class="card" id="access-card">
+        <h3>Address &amp; reverse proxy</h3>
+        <p class="hint">How people reach the dashboard by name, and the proxy in front of it if there is one (Nginx Proxy Manager, Caddy, Traefik…). The IP address keeps working either way.</p>
+        <form id="access-form">
+          <div class="form-grid">
+            <label class="wide"><span>Dashboard address</span><input name="linkUrl" maxlength="200" placeholder="https://lookout.example.com (the IP address when empty)" autocomplete="off" spellcheck="false"><span class="hint">A domain name for the dashboard: it answers on it, and links in alert messages, push notifications and passkeys use it. The name must point to this server, or to your proxy, in your DNS.</span></label>
+            <label class="wide"><span>Reverse proxies</span><input name="proxies" maxlength="400" placeholder="e.g. 192.168.1.5 (empty: no proxy)" autocomplete="off" spellcheck="false"><span class="hint">The IP address of the proxy in front of the dashboard (or a range like 10.0.0.0/24). Only connections from these may say who the visitor is (X-Forwarded-For) and that they came over https, so the sign-in lockout and the log see real addresses.</span></label>
+          </div>
+          <div class="form-actions"><button type="submit" class="primary">Save</button><span class="msg" id="access-msg" role="status"></span></div>
+        </form>
+        <h4>This connection</h4>
+        <div id="access-check"></div>
+        <h4>Setting up a proxy</h4>
+        <div class="seg proxy-pick" id="proxy-pick" role="group" aria-label="Proxy"></div>
+        <div id="proxy-howto"></div>
       </section>
       <section class="card" id="app-card">
         <h3>Install as an app</h3>

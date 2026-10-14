@@ -209,6 +209,7 @@ Import the CA certificate once on each device to get rid of browser warnings. Do
 ### Reaching it over Tailscale / WireGuard
 
 - **Bound to the VM's internal IP** (reached via WireGuard or a subnet router): browse to `https://<ip>:8443/`.
+- **Behind a reverse proxy** (Nginx Proxy Manager, Caddy, Traefik, nginx, Cloudflare Tunnel): point it at `https://<ip>:8443` (the proxy needn't verify the self-signed certificate), set **Admin → Server → Dashboard address** to the public name, and list the proxy's IP under **Reverse proxies**. Only from those addresses are `X-Forwarded-For` and `X-Forwarded-Proto` believed (the right-most address that isn't a listed proxy is the visitor), so lockouts, rate limits and the log see the real client; from anywhere else the headers are ignored. The same card has copy-ready instructions for each proxy and shows what the server sees of your own request.
 - **Bound to 127.0.0.1 with Tailscale on the VM**: run `tailscale serve --bg --https=443 http://127.0.0.1:8080` with HTTP set to *serve*. Then add the MagicDNS name to `ALLOWED_HOSTS` and set `COOKIE_SECURE=1` in `/etc/homelab-dashboard/env`.
 
 ## Backups

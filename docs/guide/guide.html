@@ -164,7 +164,7 @@ h2, h3 { break-after: avoid; }
 <section class="chapter">
   <div class="kicker">Chapter 2</div>
   <h1>Finding your way</h1>
-  <p class="intro">The pages are in the bar at the top: <span class="ui">Home · Rack · Services · VMs · Energy · Docs · Updates · Log</span>. On the right are Search, the user guide, the look button, Admin and Log out.</p>
+  <p class="intro">The pages are in the bar at the top: <span class="ui">Home · Rack · Services · VMs · Energy · Docs · Updates · Log</span>. On the right are Search and your avatar: click it for <span class="ui">Admin</span>, <span class="ui">Look on this device</span>, the <span class="ui">User guide</span> and <span class="ui">Log out</span>.</p>
   <div class="phones">
     <figure><img src="img/phone-home.png" alt=""><figcaption><b>Phone.</b> The tab bar at the bottom has Home, Rack, Services and Energy.</figcaption></figure>
     <figure><img src="img/phone-more.png" alt=""><figcaption><b>More</b> has VMs, Docs, Updates, Log, the wall display, the guide, the look, Admin and Log out.</figcaption></figure>
@@ -283,7 +283,7 @@ h2, h3 { break-after: avoid; }
   <p class="intro">Every VM and container on your Proxmox hosts, and every Docker container, on one page: <span class="ui">VMs</span> in the top bar.</p>
   <figure><img src="img/vms.png" alt=""><figcaption><b>VMs:</b> status, CPU, memory, disk, network and last backup for each guest.</figcaption></figure>
   <ul>
-    <li><b>Search</b> by name, ID, address or OS, and filter <b>Running</b>, <b>Stopped</b> or <b>Backup</b> (no backup, or an old one).</li>
+    <li><b>Search</b> by name, ID, address or OS, and filter <b>Running</b>, <b>Stopped</b> or <b>Backup</b> (no backup, or an old one). Click a column heading to <b>sort</b> (by ID at first). <span class="ui">Settings</span> opens where VMs are set up.</li>
     <li>The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem. The address comes from the guest agent too.</li>
     <li><b>Last backup</b> is the newest backup Proxmox has of the guest, on any backup storage. A guest is <b>overdue</b> when its newest backup is older than its backup job's interval plus a day (a monthly job allows 32 days); that raises a <i>Backup failed</i> warning.</li>
   </ul>
@@ -293,7 +293,7 @@ h2, h3 { break-after: avoid; }
 <section>
   <h2>Containers</h2>
   <figure><img src="img/containers.png" alt=""><figcaption><b>Containers</b> from a Docker host: state, health, CPU (100 % is one core), memory, restarts and Docker's own status.</figcaption></figure>
-  <p>Containers come from a Docker host through a read-only socket proxy, or from Portainer (chapter 10). A container that <b>keeps restarting</b>, one that <b>stopped</b> although it should run, or one that fails its <b>health check</b> shows under <i>Needs you</i> and sends a <i>Container problem</i> alert. A container you stopped by hand doesn't count, and the label <code>lookout.ignore=true</code> leaves one out.</p>
+  <p>Containers come from a Docker host through a read-only socket proxy, or from Portainer (chapter 10). A Portainer card under Services has <i>Show its containers</i>, which adds that connection for you. A container that <b>keeps restarting</b>, one that <b>stopped</b> although it should run, or one that fails its <b>health check</b> shows under <i>Needs you</i> and sends a <i>Container problem</i> alert. A container you stopped by hand doesn't count, and the label <code>lookout.ignore=true</code> leaves one out.</p>
 </section>
 
 <!-- ============ 7 ============ -->
@@ -504,7 +504,7 @@ h2, h3 { break-after: avoid; }
   </div>
   <h2>Acknowledge</h2>
   <p>Acknowledging means someone is on it: the problem keeps showing until it clears, but the reminders stop. Every channel carries an acknowledge link for a single open problem: a button in push and ntfy, a link in Telegram, iMessage, e-mail and Discord, and <code>ackUrl</code> in a webhook. The link opens a page that asks first, so a link preview can't acknowledge anything, and it only works for that one problem. On Home, use the clock button on the row.</p>
-  <div class="note">The links point to the dashboard's address. If you reach it by a name, set <b>Dashboard address</b> (chapter 14), so the links work from a phone.</div>
+  <div class="note">The links point to the dashboard's address. If you reach it by a name, set <b>Dashboard address</b> (chapter 15), so the links work from a phone.</div>
   <h2>Webhook</h2>
   <p>A JSON POST for Home Assistant, n8n or Node-RED, with <code>severity</code>, <code>title</code>, <code>text</code>, <code>link</code>, <code>ackUrl</code> and the list of <code>alerts</code>. The URL is stored like a password, because its path is often the secret.</p>
 </section>
@@ -528,11 +528,10 @@ h2, h3 { break-after: avoid; }
   <h1>Admin: dashboard, look and power</h1>
   <h2>Dashboard</h2>
   <div class="two-wide">
-    <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-dashboard.png" alt=""></div><figcaption><b>Dashboard:</b> title, provider, the dashboard address and what shows on Home.</figcaption></figure>
+    <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-dashboard.png" alt=""></div><figcaption><b>Dashboard:</b> title, provider and what shows on Home.</figcaption></figure>
     <div>
       <ul>
         <li><b>Title</b>, <b>internet provider</b> (and its logo) and <b>refresh interval</b>.</li>
-        <li><b>Dashboard address:</b> a domain name, like <code>https://lookout.home.arpa:8443</code>. The dashboard answers on it as well as on its IP, and links in alerts use it. The name must point to the server in your DNS.</li>
         <li><b>Services on Home</b> and <b>VMs and containers</b>: where they show and with which numbers.</li>
         <li><b>Status page:</b> switch on the public <code>/status</code> page (chapter 5).</li>
       </ul>
@@ -590,6 +589,12 @@ h2, h3 { break-after: avoid; }
   <h2>Server</h2>
   <figure class="crop"><div class="frame" style="max-height:100mm"><img src="img/admin-system.png" alt=""></div><figcaption><b>Server:</b> this server's version and Node.js, the web server and its certificate.</figcaption></figure>
   <p><b>Web server:</b> the HTTPS and HTTP ports. Keep HTTP on <i>Redirect to HTTPS</i>. <b>Certificate</b> shows the names it covers and when it expires, and <b>Download CA certificate</b> is here.</p>
+  <h3>Address &amp; reverse proxy</h3>
+  <ul>
+    <li><b>Dashboard address:</b> a domain name, like <code>https://lookout.home.arpa</code>. The dashboard answers on it as well as on its IP, and links in alerts, push and passkeys use it.</li>
+    <li><b>Reverse proxies:</b> the IP of Nginx Proxy Manager, Caddy, Traefik or another proxy in front of the dashboard. Only these may report the visitor's real address and https, so the lockout and the Log see real addresses.</li>
+    <li><b>This connection</b> shows what the server sees of your visit and what doesn't add up. <b>Setting up a proxy</b> has copy-ready instructions for each proxy, filled in with your address.</li>
+  </ul>
 </section>
 
 <!-- ============ 16 ============ -->

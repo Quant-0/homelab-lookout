@@ -315,7 +315,6 @@ function fillDashboard(d) {
   carrierMode = null;
   renderCarrier();
   f.refreshSeconds.value = d.refreshSeconds;
-  f.linkUrl.value = d.linkUrl || '';
   f.public.checked = d.public;
   f.homeServices.value = d.homeServices;
   f.serviceAlerts.checked = d.serviceAlerts;
@@ -345,7 +344,6 @@ async function saveSettings(msgId) {
       carrier: d.carrier.value,
       carrierLogo: carrierDraft,
       refreshSeconds: Number(d.refreshSeconds.value),
-      linkUrl: d.linkUrl.value.trim(),
       public: d.public.checked,
       homeServices: d.homeServices.value,
       serviceAlerts: d.serviceAlerts.checked,
@@ -1256,6 +1254,22 @@ function renderIntegrationFields() {
     input.addEventListener('input', () => ((integ.options ||= {})[o.key] = input.value));
     fields.push(el('label', { class: o.multiline ? 'wide' : null }, el('span', { text: o.label }), input));
   }
+  // the card only counts containers; each container (state, health, graphs, alerts) comes from a connection
+  if (type === 'portainer') {
+    const out = el('span', { class: 'msg', role: 'status' });
+    fields.push(el('div', { class: 'wide portainer-link' },
+      el('p', { class: 'hint', text: 'This card counts the containers. To see each one (state, health, CPU, memory and alerts) on the VMs page, Portainer must also be a connection on a device.' }),
+      svcDraft.id && svcDraft.hasSecret ? el('div', { class: 'form-actions' }, el('button', { type: 'button', text: 'Show its containers', onclick: async () => {
+        try {
+          const r = await api('POST', `/api/admin/services/${svcDraft.id}/portainer-connection`, {});
+          out.textContent = `Added as a connection on ${r.device}. The containers appear on the VMs page within a minute.`;
+          out.className = 'msg ok';
+        } catch (e) {
+          out.textContent = e.message;
+          out.className = 'msg error';
+        }
+      } }), out) : el('p', { class: 'hint', text: 'Save the card with its access token first; then "Show its containers" appears here.' })));
+  }
   if (svcDraft.hasSecret && svcDraft.id && !fromDevice) {
     const clear = el('input', { type: 'checkbox', checked: svcDraft.clearSecret });
     clear.addEventListener('change', () => (svcDraft.clearSecret = clear.checked));
@@ -1501,6 +1515,95 @@ $('svc-cancel').addEventListener('click', closeService);
 // Web server (HTTP/HTTPS, ports, certificate)
 
 let web = null;
+
+// --- Address & reverse proxy ---
+
+let access = null;
+let proxyKind = 'npm';
+async function loadAccess() {
+  try {
+    access = await api('GET', '/api/admin/access');
+  } catch (e) {
+    $('access-check').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+    return;
+  }
+  const f = $('access-form').elements;
+  const dash = (state?.settings || (await api('GET', '/api/admin/config')).settings).dashboard; // opened straight on #system: Admin may still be loading
+  f.linkUrl.value = dash.linkUrl || '';
+  f.proxies.value = (dash.trustedProxies || []).join(', ');
+  const a = access;
+  const row = (k, v) => el('div', { class: 'acc-row' }, el('span', { class: 'muted', text: k }), el('span', { class: 'num', text: v }));
+  $('access-check').replaceChildren(...[
+    el('div', { class: 'acc-list' },
+      row('You are seen as', a.viaProxy ? `${a.clientIp} (through the proxy at ${a.socketIp})` : a.clientIp),
+      row('Opened as', `${a.https ? 'https' : 'http'}://${a.host}`),
+      row('Proxy headers', a.forwardedFor || a.forwardedProto ? `X-Forwarded-For: ${a.forwardedFor || '–'} · X-Forwarded-Proto: ${a.forwardedProto || '–'}` : 'none (not through a proxy)')),
+    ...a.warnings.map((w) => el('p', { class: 'banner', text: w })),
+    !a.viaProxy && (a.forwardedFor || a.forwardedProto) ? el('div', { class: 'form-actions' }, el('button', { type: 'button', text: `Trust ${a.socketIp} as the reverse proxy`, onclick: () => {
+      f.proxies.value = [f.proxies.value, a.socketIp].filter(Boolean).join(', ');
+      $('access-form').requestSubmit();
+    } })) : null].filter(Boolean));
+  renderProxyHowto();
+}
+
+const PROXIES = {
+  npm: 'Nginx Proxy Manager', caddy: 'Caddy', traefik: 'Traefik', nginx: 'nginx', tailscale: 'Tailscale serve', cloudflare: 'Cloudflare Tunnel',
+};
+function renderProxyHowto() {
+  const a = access;
+  if (!a) return;
+  const t = a.target;
+  const scheme = t.https ? 'https' : 'http';
+  const port = t.https || t.http;
+  const upstream = `${scheme}://${t.host}:${port}`;
+  const link = a.dashboardAddress && /^https:/.test(a.dashboardAddress) ? new URL(a.dashboardAddress) : null;
+  const domain = link?.hostname || 'lookout.example.com';
+  const code = (text) => {
+    const pre = el('pre', { class: 'howto-code' }, el('code', { text }));
+    const copy = el('button', { type: 'button', class: 'small', text: 'Copy', onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copy.textContent = 'Copied';
+      } catch {
+        getSelection().selectAllChildren(pre);
+      }
+    } });
+    return el('div', { class: 'howto-block' }, pre, copy);
+  };
+  const steps = (...xs) => el('ol', { class: 'small howto-steps' }, xs.map((x) => el('li', null, ...[].concat(x))));
+  const tail = [
+    `Set the Dashboard address above to https://${domain}`,
+    'Open the dashboard through the proxy and look at "This connection": if it says the proxy isn\'t trusted, press Trust.',
+  ];
+  const how = {
+    npm: [steps(
+      ['Hosts → Proxy Hosts → ', el('b', { text: 'Add Proxy Host' }), `: Domain Names `, el('code', { text: domain }), ', Scheme ', el('b', { text: scheme }), ', Forward Hostname ', el('code', { text: t.host }), ', Forward Port ', el('code', { text: String(port) }), '. Websockets Support and Cache Assets: off.'],
+      ['SSL: request a Let\'s Encrypt certificate, and turn on ', el('b', { text: 'Force SSL' }), ' and HTTP/2.'],
+      'NPM sends X-Forwarded-For and X-Forwarded-Proto by itself, and does not check the dashboard\'s own certificate, so nothing else is needed.',
+      ...tail)],
+    caddy: [code(`${domain} {\n  reverse_proxy ${upstream}${scheme === 'https' ? ' {\n    transport http {\n      tls_insecure_skip_verify\n    }\n  }' : ''}\n}`), steps('Caddy gets the certificate and sends X-Forwarded-For and X-Forwarded-Proto by itself.', ...tail)],
+    traefik: [code(`http:\n  routers:\n    lookout:\n      rule: "Host(\`${domain}\`)"\n      entryPoints: [websecure]\n      tls:\n        certResolver: letsencrypt\n      service: lookout\n  services:\n    lookout:\n      loadBalancer:\n        servers:\n          - url: "${upstream}"${scheme === 'https' ? '\n        serversTransport: lookout-tls\n  serversTransports:\n    lookout-tls:\n      insecureSkipVerify: true' : ''}`), steps('In Traefik\'s file provider (dynamic configuration). Use your own entry point and certificate resolver names.', ...tail)],
+    nginx: [code(`server {\n  listen 443 ssl;\n  http2 on;\n  server_name ${domain};\n  ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;\n  ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;\n  client_max_body_size 64m;\n\n  location / {\n    proxy_pass ${upstream};\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n  }\n}`), steps('nginx does not check the dashboard\'s certificate unless you turn on proxy_ssl_verify.', ...tail)],
+    tailscale: [code(`tailscale serve --bg --https=443 ${upstream}`), steps('Run it on the machine the dashboard runs on. The name is the machine\'s Tailscale name, like lookout.your-tailnet.ts.net: use that as the Dashboard address.', 'Tailscale serve connects from 127.0.0.1, so trust 127.0.0.1 as the reverse proxy.', 'Only devices in your tailnet can open it.')],
+    cloudflare: [code(`ingress:\n  - hostname: ${domain}\n    service: ${upstream}${scheme === 'https' ? '\n    originRequest:\n      noTLSVerify: true' : ''}\n  - service: http_status:404`), steps('In the config.yml of cloudflared (or the same in the Zero Trust dashboard: Public hostname, then TLS → No TLS Verify).', 'Trust the address of the machine cloudflared runs on as the reverse proxy.', 'This puts the dashboard on the internet: protect it with Cloudflare Access (a login before the dashboard), and keep the dashboard itself private.', ...tail.slice(0, 1))],
+  };
+  $('proxy-pick').replaceChildren(...Object.entries(PROXIES).map(([k, label]) => el('button', { type: 'button', text: label, 'aria-pressed': String(proxyKind === k), onclick: () => { proxyKind = k; renderProxyHowto(); } })));
+  $('proxy-howto').replaceChildren(...how[proxyKind],
+    el('p', { class: 'hint', text: `Point the proxy at ${upstream}${scheme === 'https' ? ' (https: the HTTP port would redirect)' : ''}. Only let the proxy and your own computers reach that port, so nobody goes around the proxy.` }));
+}
+
+$('access-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  try {
+    const r = await api('PUT', '/api/admin/settings', { dashboard: { ...state.settings.dashboard, linkUrl: f.linkUrl.value.trim(), trustedProxies: f.proxies.value } });
+    state.settings = r.settings;
+    showMsg('access-msg', r.warning ? `Saved. ${r.warning}` : 'Saved', !r.warning);
+    loadAccess();
+  } catch (e) {
+    showMsg('access-msg', e.message, false);
+  }
+});
 
 async function loadWeb() {
   try {
@@ -2851,7 +2954,15 @@ const TABS = ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look',
 // links from before: older tab names, and the cards that moved out of Alerts, "Dashboard & look" and System
 const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'look', backup: 'backups', account: 'security', checkins: 'schedules', maintenance: 'schedules', sessions: 'security', server: 'system' };
 
+// links straight to a section: the tab it is on, then scrolled to
+const SECTIONS = { 'vm-settings': 'dashboard', access: 'system', passkeys: 'security' };
+
 function showTab(name, focus) {
+  const section = SECTIONS[name] ? name : null;
+  if (section) {
+    name = SECTIONS[section];
+    setTimeout(() => $(`${section === 'vm-settings' ? 'vm-settings' : section === 'access' ? 'access-card' : 'passkeys-card'}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 150);
+  }
   name = OLD_TABS[name] || name;
   if (!TABS.includes(name)) name = 'devices';
   for (const t of TABS) {
@@ -2864,7 +2975,10 @@ function showTab(name, focus) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
   if (name === 'services') loadServices();
-  if (name === 'system') loadWeb();
+  if (name === 'system') {
+    loadWeb();
+    loadAccess();
+  }
   if (name === 'backups') loadBackup();
   if (name === 'security') loadRemembered();
   if (name === 'alerts') loadAlerts();

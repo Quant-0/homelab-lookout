@@ -65,7 +65,7 @@ The app opens on Home. When the dashboard can't be reached, the app shows **Can'
 
 ## 2. Everyday use
 
-The pages are in the **bar at the top**: **Home · Rack · Services · Energy · Docs · Updates**, with **Search**, the **look** button (palette), **Admin** and **Log out** on the right. On a tablet the tabs show only icons; on a phone the pages are in the **tab bar** at the bottom (Home, Rack, Services, Energy), and **More** has Docs, Updates, the wall display, the look, Admin and Log out. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
+The pages are in the **bar at the top**: **Home · Rack · Services · VMs · Energy · Docs · Updates · Log**, with **Search** on the right and your **avatar**: click it for **Admin**, **Look on this device**, the **User guide** and **Log out**. On a tablet the tabs show only icons; on a phone the pages are in the **tab bar** at the bottom (Home, Rack, Services, Energy), and **More** has Docs, Updates, the wall display, the look, Admin and Log out. Docs and Updates appear when you're signed in or on a remembered device. **Search** (or **Ctrl K**, or **/**) finds almost anything.
 
 ### Home
 
@@ -126,6 +126,7 @@ The **palette** button (top right, or **More** on a phone) changes the look **on
 Every VM and container on your Proxmox hosts, one row each: status, CPU, memory, disk, network traffic and **last backup**. On a phone it is under **More**.
 
 - **Search** by name, ID, address or OS, and filter **Running**, **Stopped** or **Backup** (no backup, or one older than the limit).
+- **Sort** by clicking a column heading (**ID** is the default; click again to turn the order around), or with the **Sort** menu on a phone. The choice is remembered in this browser. **Settings** (top right) opens where VMs and containers are set up (Admin → Dashboard).
 - The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem. The address under the name comes from the guest agent too.
 - **Last backup** is the newest backup Proxmox has of the VM on any backup storage, including Proxmox Backup Server. *None* means none was found.
 - Click a row for the details: OS, addresses, size, graphs of CPU, memory, network and disk activity, every filesystem, the backups (newest, where, how many, verified), and **Open in Proxmox** (signed in only).
@@ -290,7 +291,7 @@ Ports published by Docker bypass `ufw`, so let only lookout in with Docker's own
 sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 2375 --ctdir ORIGINAL ! -s 192.168.1.140 -j DROP
 ```
 
-Then add a **Docker** connection to the device for that host (address `192.168.1.132:2375`). The dashboard reads each container's state, health, restarts, CPU and memory, never its environment. Problems become **Container problem** alerts: a container that **keeps restarting**, one that **stopped** although its restart policy says it should run (a stop by hand, exit code 137 or 143, doesn't count), or one whose own **health check** fails. Add the label `lookout.ignore=true` to a container to leave it out of alerts. The containers are on the **VMs** page under **Containers**, and a VM whose address matches a Docker host lists its containers.
+Then add a **Docker** connection to the device for that host (address `192.168.1.132:2375`). A **Portainer** card under Services only counts containers; to see each one, add Portainer as a connection on a device, or press **Show its containers** on the card, which does that with the card's own address and token. The dashboard reads each container's state, health, restarts, CPU and memory, never its environment. Problems become **Container problem** alerts: a container that **keeps restarting**, one that **stopped** although its restart policy says it should run (a stop by hand, exit code 137 or 143, doesn't count), or one whose own **health check** fails. Add the label `lookout.ignore=true` to a container to leave it out of alerts. The containers are on the **VMs** page under **Containers**, and a VM whose address matches a Docker host lists its containers.
 
 ### Services
 
@@ -383,7 +384,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 **Status page**: a public page at `/status` showing only whether your services are up, with their uptime over the last 90 days (30 days on a phone) and any planned maintenance. No links, addresses, devices or VMs. Switch it on with **Show the status page to everyone**. It works while the dashboard itself stays private, so you can give people the status page instead of making the whole dashboard public. Services with a status check are listed, in the groups from the Services page.
 
 - **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
-- **Dashboard address**: a domain name for the dashboard, for example `https://lookout.example.com:8443`. The dashboard then answers on that name as well as on its IP, and links in alert messages and push notifications (*Acknowledge*, *Open*) use it. The name must point to this server in your DNS (and, away from home, Tailscale must use that DNS). If the certificate doesn't cover the name, saving says so. Leave it empty to use the IP. Changing it asks for your password.
+- **Dashboard address** moved to **Admin → Server → Address & reverse proxy** (below).
 - **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
@@ -421,6 +422,11 @@ Changes here ask for the password if you haven't typed it in the last 15 minutes
 
 - **This server:** the deployed version, the Node.js version and when its security fixes end, and where the graph history is stored.
 - **Web server:** ports for HTTPS and HTTP. Keep *HTTP does* = **Redirect to HTTPS**. **Certificate** shows the names it covers, when it expires and the CA fingerprint. Changes ask for the password if you haven't typed it in the last 15 minutes.
+- **Address & reverse proxy:**
+  - **Dashboard address**: a domain name for the dashboard, for example `https://lookout.example.com:8443`, or the proxy's name. The dashboard then answers on that name as well as on its IP, and links in alert messages, push notifications and passkeys use it. The name must point to this server (or to the proxy) in your DNS. If the certificate doesn't cover the name, saving says so. Changing it asks for your password.
+  - **Reverse proxies**: the IP address of a proxy in front of the dashboard (Nginx Proxy Manager, Caddy, Traefik, nginx, Tailscale serve, Cloudflare Tunnel), or a range like `10.0.0.0/24`. Only connections from these may report the visitor's own address (`X-Forwarded-For`) and that they came over https (`X-Forwarded-Proto`), so the sign-in lockout, the rate limits and the Log see real addresses. From anywhere else those headers are ignored.
+  - **This connection** shows what the server sees of your own visit (your address, the name and http/https) and points out what doesn't add up, such as a proxy that isn't listed yet (with a **Trust** button).
+  - **Setting up a proxy**: step-by-step instructions for each proxy, filled in with your own address and port, with a copy button. Point the proxy at the HTTPS port (8443): the HTTP port redirects to HTTPS. Switching from plain http to https through the proxy asks you to sign in once more.
 - **Install as an app:** the same steps as in part 1.
 
 ---

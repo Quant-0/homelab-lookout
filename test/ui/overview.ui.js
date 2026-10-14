@@ -94,7 +94,7 @@ const WORDS = ['OK', 'Warning', 'Fault', 'Offline', 'Waiting', 'Not monitored'];
   check(!rackTiles.includes('truenas') && rackTiles[rackTiles.length - 1] === 'UDM Pro', `customize: hidden and reordered, kept after a reload (${rackTiles.join(', ')})`);
 
   // the look on this device: light with a teal accent, then back to the owner's
-  await page.click('.look-button');
+  await page.click('.avatar-button'); await page.click('.user-menu [data-act="look"]');
   await page.waitForSelector('dialog.look-menu');
   await page.click('dialog.look-menu .seg button:text-is("Light")');
   await page.click('dialog.look-menu .swatch[aria-label="Teal"]');
@@ -104,7 +104,7 @@ const WORDS = ['OK', 'Warning', 'Fault', 'Offline', 'Waiting', 'Not monitored'];
   check(await page.evaluate(() => getComputedStyle(document.body).backgroundColor) === 'rgb(243, 245, 248)', 'and the page is light');
   const owner = await page.evaluate(async () => (await (await fetch('/api/admin/config')).json()).settings.appearance);
   check(owner.theme === 'auto' && owner.accent === 'theme', 'the owner’s default is unchanged');
-  await page.click('.look-button');
+  await page.click('.avatar-button'); await page.click('.user-menu [data-act="look"]');
   await page.click('dialog.look-menu button:has-text("Use the owner")');
   check(await page.evaluate(() => [document.documentElement.dataset.theme, document.documentElement.dataset.accent].join()) === 'auto,theme', '"Use the owner’s look" goes back');
   await page.keyboard.press('Escape');
