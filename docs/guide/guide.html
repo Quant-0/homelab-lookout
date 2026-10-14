@@ -131,6 +131,8 @@ h2, h3 { break-after: avoid; }
         <li><b>Keep me signed in</b>: 30 days, ending after a week without use. Restarts and updates don't sign you out.</li>
         <li>A few risky changes ask for the password again if you haven't typed it in the last 15 minutes: backups, alert channels, the web server and making things public.</li>
       </ul>
+      <h3>Passkeys</h3>
+      <p>Once you have added one (chapter 15), <b>Sign in with a passkey</b> uses Face ID, Touch ID, Windows Hello or a security key. The password keeps working. Passkeys work on the dashboard's domain name, not on its IP address.</p>
       <h3>Remember this device for viewing</h3>
       <p>For 30 days, that device can <b>look</b> at every page without the password, but it can't change anything. Use it for a wall tablet.</p>
     </div>
@@ -578,9 +580,10 @@ h2, h3 { break-after: avoid; }
 
 <section class="page">
   <h2>Sign-in &amp; security</h2>
-  <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-security.png" alt=""></div><figcaption><b>Sign-in &amp; security:</b> the password, signed-in browsers and remembered devices.</figcaption></figure>
+  <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-security.png" alt=""></div><figcaption><b>Sign-in &amp; security:</b> the password, passkeys, signed-in browsers and remembered devices.</figcaption></figure>
   <ul>
     <li><b>Admin password:</b> changing it signs out every other browser and remembered device.</li>
+    <li><b>Passkeys:</b> on the Dashboard address, <i>Add a passkey</i>, name it and confirm with Face ID, fingerprint or PIN. A passkey signs in and confirms risky changes; the password keeps working. <i>Remove</i> deletes one.</li>
     <li><b>Signed-in browsers:</b> where you are signed in, normal or kept signed in. <i>Sign out</i> one, or <i>Sign out everywhere else</i>.</li>
     <li><b>Remembered devices:</b> the view-only devices, with <i>Sign out</i> for each.</li>
   </ul>

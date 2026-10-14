@@ -2934,7 +2934,55 @@ $('sessions-others').addEventListener('click', async () => {
   }
 });
 
+// Passkeys: added on the Dashboard address, listed with when they were last used
+async function loadPasskeys() {
+  try {
+    const r = await api('GET', '/api/admin/passkeys');
+    const canAdd = Boolean(r.site && r.here && HD.passkeySupported());
+    $('passkey-add').hidden = !canAdd;
+    const note = !r.site ? r.why
+      : !r.here ? `Open the dashboard at ${r.site.url} to add or use a passkey.`
+        : !HD.passkeySupported() ? 'This browser cannot use passkeys.' : null;
+    const others = r.site ? r.passkeys.filter((x) => x.rpId !== r.site.rpId) : r.passkeys;
+    $('passkeys').replaceChildren(
+      note ? el('p', { class: 'small muted', text: note }) : null,
+      r.passkeys.length ? el('div', { class: 'table-wrap' }, el('table', null,
+        el('thead', null, el('tr', null, el('th', { text: 'Passkey' }), el('th', { text: 'Added' }), el('th', { text: 'Last used' }), el('th'))),
+        el('tbody', null, r.passkeys.map((x) => el('tr', null,
+          el('td', null, el('div', { text: x.name }), others.includes(x) ? el('div', { class: 'small muted', text: `For ${x.rpId}, not the current address` }) : null),
+          el('td', { class: 'small num', text: fmt.time(x.created) }),
+          el('td', { class: 'small num', text: x.lastUsed ? fmt.time(x.lastUsed) : 'Never' }),
+          el('td', { class: 'r' }, el('button', { type: 'button', text: 'Remove', onclick: () => removePasskey(x) }))))))) : el('p', { class: 'small muted', text: 'No passkeys yet.' }));
+  } catch (e) {
+    $('passkeys').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+async function removePasskey(x) {
+  if (!confirm(`Remove the passkey "${x.name}"? It can no longer sign in here. (Delete it on the device too.)`)) return;
+  try {
+    await api('DELETE', `/api/admin/passkeys/${x.id}`);
+  } finally {
+    loadPasskeys();
+  }
+}
+
+$('passkey-add').addEventListener('click', async () => {
+  const guess = /iPhone/.test(navigator.userAgent) ? 'iPhone' : /iPad/.test(navigator.userAgent) ? 'iPad' : /Android/.test(navigator.userAgent) ? 'Android phone' : /Mac OS X/.test(navigator.userAgent) ? 'Mac' : /Windows/.test(navigator.userAgent) ? 'Windows PC' : 'Passkey';
+  const name = prompt('A name for this passkey (which device or key it is on):', guess);
+  if (name === null) return;
+  try {
+    const opts = await api('POST', '/api/admin/passkeys/options', {});
+    const cred = await HD.passkeyCreate(opts);
+    await api('POST', '/api/admin/passkeys', { ...cred, name: name.trim() || guess });
+    loadPasskeys();
+  } catch (e) {
+    $('passkeys').prepend(el('p', { class: 'msg error', role: 'alert', text: HD.passkeyError(e) }));
+  }
+});
+
 async function loadRemembered() {
+  loadPasskeys();
   loadSessions();
   try {
     const r = await api('GET', '/api/admin/remembered');

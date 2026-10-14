@@ -12,6 +12,31 @@ const HD = (() => {
     return s;
   }
 
+  // Passkeys (WebAuthn): base64url <-> bytes, and the browser's create/get turned into JSON for the server
+  const b64u = {
+    enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+    dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (ch) => ch.charCodeAt(0)),
+  };
+  const passkeySupported = () => Boolean(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+  async function passkeyGet(o) {
+    const c = await navigator.credentials.get({ publicKey: {
+      challenge: b64u.dec(o.challenge), rpId: o.rpId, timeout: o.timeout, userVerification: o.userVerification,
+      allowCredentials: (o.allow || []).map((x) => ({ type: 'public-key', id: b64u.dec(x.id), transports: x.transports?.length ? x.transports : undefined })),
+    } });
+    const r = c.response;
+    return { id: c.id, clientDataJSON: b64u.enc(r.clientDataJSON), authenticatorData: b64u.enc(r.authenticatorData), signature: b64u.enc(r.signature), userHandle: r.userHandle ? b64u.enc(r.userHandle) : null };
+  }
+  async function passkeyCreate(o) {
+    const c = await navigator.credentials.create({ publicKey: {
+      challenge: b64u.dec(o.challenge), rp: o.rp, user: { ...o.user, id: b64u.dec(o.user.id) }, pubKeyCredParams: o.pubKeyCredParams,
+      timeout: o.timeout, attestation: o.attestation, authenticatorSelection: o.authenticatorSelection,
+      excludeCredentials: o.exclude.map((x) => ({ type: 'public-key', id: b64u.dec(x.id), transports: x.transports?.length ? x.transports : undefined })),
+    } });
+    return { id: c.id, clientDataJSON: b64u.enc(c.response.clientDataJSON), attestationObject: b64u.enc(c.response.attestationObject), transports: c.response.getTransports?.() || [] };
+  }
+  // What the browser says when the person cancels or the passkey isn't there, in plain words
+  const passkeyError = (e) => (e?.name === 'NotAllowedError' ? 'Cancelled, or no passkey for this dashboard on this device' : e?.name === 'InvalidStateError' ? 'This device already has a passkey for this dashboard' : e?.message || 'The passkey did not work');
+
   // A risky change answers "confirm your password" (step-up): ask for it once, then try again
   async function retryAfterPassword(e, again) {
     if (!e.reauth || !(await confirmPassword())) throw e;
@@ -29,6 +54,34 @@ const HD = (() => {
         el('p', { class: 'small muted', text: 'This change needs your password. It stays confirmed for 15 minutes.' }),
         input, msg,
         el('div', { class: 'form-actions' }, submit, el('button', { type: 'button', text: 'Cancel', onclick: () => dlg.close() })));
+      // a passkey works as well, where there is one for this address
+      if (passkeySupported()) {
+        fetch('/api/passkey', { credentials: 'same-origin', cache: 'no-store' }).then((r) => r.json()).then((pk) => {
+          if (!pk.available || !pk.here) return;
+          const use = el('button', { type: 'button', text: 'Use a passkey', onclick: async () => {
+            use.disabled = true;
+            msg.textContent = '';
+            try {
+              if (!csrf) await session();
+              const h = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf || '' };
+              const o = await fetch('/api/reauth/passkey/options', { method: 'POST', headers: h, body: '{}', credentials: 'same-origin' });
+              const opts = await o.json();
+              if (!o.ok) throw new Error(opts.error || `HTTP ${o.status}`);
+              const r = await fetch('/api/reauth/passkey', { method: 'POST', headers: h, body: JSON.stringify(await passkeyGet(opts)), credentials: 'same-origin' });
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+              confirmed = true;
+              dlg.close();
+            } catch (e) {
+              msg.textContent = passkeyError(e);
+            } finally {
+              use.disabled = false;
+            }
+          } });
+          form.querySelector('.form-actions').prepend(use);
+          form.querySelector('p.small').textContent = 'This change needs your password or a passkey. It stays confirmed for 15 minutes.';
+        }).catch(() => {});
+      }
       const dlg = el('dialog', { class: 'confirm-dialog', 'aria-label': 'Confirm your password' }, form);
       form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
@@ -863,5 +916,5 @@ const HD = (() => {
   // The installable app's service worker (offline screen only; see sw.js)
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-  return { api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, checkText, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  return { passkeyCreate, passkeySupported, passkeyError, api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, checkText, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

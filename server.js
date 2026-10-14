@@ -5499,7 +5499,8 @@ function needsStepUp(p, m) {
   if (/\/test$/.test(p)) return false;
   return p === '/api/admin/server' || p === '/api/admin/backup/settings' || p === '/api/admin/backup/download'
     || p === '/api/admin/backup/restore' || p === '/api/admin/backup/restore-local'
-    || p.startsWith('/api/admin/backup/destinations') || p.startsWith('/api/admin/backup/local/') || p.startsWith('/api/admin/alerts/channels');
+    || p.startsWith('/api/admin/backup/destinations') || p.startsWith('/api/admin/backup/local/') || p.startsWith('/api/admin/alerts/channels')
+    || p.startsWith('/api/admin/passkeys');
 }
 
 function stepUpRequired(res) {
@@ -5567,6 +5568,182 @@ function setCookie(req, res, value, maxAge, name = cookieName(req)) {
     `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureRequest(req) ? '; Secure' : ''}`,
   ]);
 }
+
+// ---------------------------------------------------------------------------
+// Passkeys (WebAuthn): sign in with Face ID, Touch ID, Windows Hello or a security key, as well
+// as with the password, which always keeps working. A passkey belongs to a domain, so it works on
+// the Dashboard address from Admin → Dashboard (a name, not an IP), and only there. A passkey
+// sign-in also counts as typing the password for risky changes. Only public keys are stored.
+
+const PASSKEYS_FILE = path.join(DATA_DIR, 'passkeys.json');
+const MAX_PASSKEYS = 20;
+let passkeys = { userId: null, list: [] }; // list: { id, alg, key (SPKI DER, base64url), rpId, name, created, lastUsed, signCount, transports }
+const passkeyChallenges = new Map(); // challenge -> { kind, expires, session }
+
+function loadPasskeys() {
+  const raw = readJson(PASSKEYS_FILE, null);
+  passkeys = cleanPasskeys(raw);
+}
+function cleanPasskeys(raw) {
+  const list = (Array.isArray(raw?.list) ? raw.list : []).filter((x) => x && typeof x.id === 'string' && /^[A-Za-z0-9_-]{16,1400}$/.test(x.id) && typeof x.key === 'string' && [-7, -257, -8].includes(x.alg) && typeof x.rpId === 'string')
+    .map((x) => ({ id: x.id, alg: x.alg, key: x.key, rpId: x.rpId.slice(0, 253), name: String(x.name || 'Passkey').slice(0, 60), created: Number(x.created) || Date.now(), lastUsed: Number(x.lastUsed) || null, signCount: Number(x.signCount) || 0, transports: Array.isArray(x.transports) ? x.transports.filter((t) => typeof t === 'string').slice(0, 6) : [] }))
+    .slice(0, MAX_PASSKEYS);
+  return { userId: typeof raw?.userId === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(raw.userId) ? raw.userId : null, list };
+}
+function savePasskeys() {
+  writeJsonAtomic(PASSKEYS_FILE, passkeys);
+}
+
+// Where passkeys work: the Dashboard address, when it is a name on https (or localhost)
+function passkeySite() {
+  const link = config.settings.dashboard.linkUrl;
+  if (!link) return { ok: false, why: 'Set a Dashboard address with a domain name (Admin → Dashboard) to use passkeys.' };
+  const u = new URL(link);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host)) return { ok: false, why: 'Passkeys need a domain name, not an IP address: set the Dashboard address to a name (Admin → Dashboard).' };
+  if (u.protocol !== 'https:' && host !== 'localhost') return { ok: false, why: 'Passkeys need https:// in the Dashboard address.' };
+  return { ok: true, rpId: host.toLowerCase(), origin: u.origin, url: link };
+}
+// Is this request on that address (the browser only offers the passkey there)?
+const onPasskeySite = (req, site) => site.ok && String(req.headers.host || '').toLowerCase() === new URL(site.origin).host.toLowerCase();
+
+function newChallenge(kind, extra = {}) {
+  const now = Date.now();
+  for (const [k, v] of passkeyChallenges) if (v.expires < now) passkeyChallenges.delete(k);
+  if (passkeyChallenges.size > 500) passkeyChallenges.clear(); // a flood: start over
+  const c = crypto.randomBytes(32).toString('base64url');
+  passkeyChallenges.set(c, { kind, expires: now + 120e3, ...extra });
+  return c;
+}
+// One use only, and only for what it was made for
+function takeChallenge(c, kind) {
+  const v = typeof c === 'string' ? passkeyChallenges.get(c) : null;
+  if (!v) return null;
+  passkeyChallenges.delete(c);
+  return v.kind === kind && v.expires >= Date.now() ? v : null;
+}
+
+// A small CBOR reader: what WebAuthn uses (integers, byte and text strings, arrays, maps, simple values)
+function cborDecode(buf, pos = 0) {
+  const at = (n) => {
+    if (pos + n > buf.length) throw new UserError('Invalid passkey data');
+  };
+  at(1);
+  const first = buf[pos++];
+  const major = first >> 5;
+  let info = first & 31;
+  let len;
+  if (info < 24) len = info;
+  else if (info === 24) { at(1); len = buf[pos]; pos += 1; }
+  else if (info === 25) { at(2); len = buf.readUInt16BE(pos); pos += 2; }
+  else if (info === 26) { at(4); len = buf.readUInt32BE(pos); pos += 4; }
+  else if (info === 27) { at(8); len = Number(buf.readBigUInt64BE(pos)); pos += 8; }
+  else throw new UserError('Invalid passkey data');
+  if (major === 0) return { value: len, pos };
+  if (major === 1) return { value: -1 - len, pos };
+  if (major === 2) { at(len); return { value: buf.subarray(pos, pos + len), pos: pos + len }; }
+  if (major === 3) { at(len); return { value: buf.toString('utf8', pos, pos + len), pos: pos + len }; }
+  if (major === 4 || major === 5) {
+    if (len > 1000) throw new UserError('Invalid passkey data');
+    if (major === 4) {
+      const arr = [];
+      for (let i = 0; i < len; i++) { const r = cborDecode(buf, pos); arr.push(r.value); pos = r.pos; }
+      return { value: arr, pos };
+    }
+    const map = new Map();
+    for (let i = 0; i < len; i++) { const k = cborDecode(buf, pos); const v = cborDecode(buf, k.pos); map.set(k.value, v.value); pos = v.pos; }
+    return { value: map, pos };
+  }
+  if (major === 7) return { value: info === 20 ? false : info === 21 ? true : null, pos };
+  throw new UserError('Invalid passkey data');
+}
+
+// A COSE public key (ES256, RS256 or Ed25519) as a key Node can verify with
+function coseToKey(cose) {
+  const kty = cose.get(1);
+  const alg = cose.get(3);
+  const b = (x) => Buffer.from(x).toString('base64url');
+  if (kty === 2 && alg === -7 && cose.get(-1) === 1) return { alg, key: crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: b(cose.get(-2)), y: b(cose.get(-3)) }, format: 'jwk' }) };
+  if (kty === 3 && alg === -257) return { alg, key: crypto.createPublicKey({ key: { kty: 'RSA', n: b(cose.get(-1)), e: b(cose.get(-2)) }, format: 'jwk' }) };
+  if (kty === 1 && alg === -8 && cose.get(-1) === 6) return { alg, key: crypto.createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b(cose.get(-2)) }, format: 'jwk' }) };
+  throw new UserError('This kind of passkey is not supported');
+}
+
+// The authenticator data: which site, user present and verified, the counter, and (on creation) the key
+function parseAuthData(ad) {
+  if (ad.length < 37) throw new UserError('Invalid passkey data');
+  const out = { rpIdHash: ad.subarray(0, 32), flags: ad[32], signCount: ad.readUInt32BE(33) };
+  if (out.flags & 0x40) {
+    if (ad.length < 55) throw new UserError('Invalid passkey data');
+    const idLen = ad.readUInt16BE(53);
+    if (idLen > 1023 || ad.length < 55 + idLen) throw new UserError('Invalid passkey data');
+    out.credId = ad.subarray(55, 55 + idLen);
+    out.cose = cborDecode(ad, 55 + idLen).value;
+  }
+  return out;
+}
+
+// clientDataJSON: the right kind, our challenge, our address
+function checkClientData(raw, type, kind, site) {
+  let cd;
+  try {
+    cd = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+  } catch {
+    throw new UserError('Invalid passkey data');
+  }
+  // the challenge is used up first, so a refused answer can't be tried again
+  const ch = takeChallenge(cd.challenge, kind);
+  if (!ch) throw new UserError('The passkey request ran out; try again');
+  if (cd.type !== type) throw new UserError('Invalid passkey data');
+  if (cd.origin !== site.origin || cd.crossOrigin === true) throw new UserError(`The passkey was used on ${String(cd.origin).slice(0, 80)}, not on ${site.origin}`);
+  return ch;
+}
+const b64u = (v, max = 4096) => {
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-]*={0,2}$/.test(v) || v.length > max) throw new UserError('Invalid passkey data');
+  return Buffer.from(v, 'base64url');
+};
+const rpHash = (rpId) => crypto.createHash('sha256').update(rpId).digest();
+
+// Registration: attestation "none" (which phone or key it is doesn't matter, only that it holds the key)
+function verifyRegistration(b, site) {
+  checkClientData(b.clientDataJSON, 'webauthn.create', 'create', site);
+  const att = cborDecode(b64u(b.attestationObject, 16384)).value;
+  if (!(att instanceof Map) || !Buffer.isBuffer(att.get('authData'))) throw new UserError('Invalid passkey data');
+  const ad = parseAuthData(att.get('authData'));
+  if (!ad.rpIdHash.equals(rpHash(site.rpId))) throw new UserError('The passkey is for another site');
+  if (!(ad.flags & 0x01) || !(ad.flags & 0x04)) throw new UserError('The passkey must check that it is you (Face ID, fingerprint or PIN)');
+  if (!ad.credId || !(ad.cose instanceof Map)) throw new UserError('Invalid passkey data');
+  const { alg, key } = coseToKey(ad.cose);
+  return { id: ad.credId.toString('base64url'), alg, key: key.export({ type: 'spki', format: 'der' }).toString('base64url'), signCount: ad.signCount };
+}
+
+// Sign-in or confirmation: the signature over the authenticator data and the client data's hash
+function verifyAssertion(b, kind, site) {
+  const ch = checkClientData(b.clientDataJSON, 'webauthn.get', kind, site);
+  const cred = passkeys.list.find((x) => x.id === b.id && x.rpId === site.rpId);
+  if (!cred) throw new UserError('This passkey is not known here (it may have been removed)');
+  if (b.userHandle && passkeys.userId && b64u(b.userHandle, 128).toString('base64url') !== passkeys.userId) throw new UserError('This passkey is not known here');
+  const adBuf = b64u(b.authenticatorData);
+  const ad = parseAuthData(adBuf);
+  if (!ad.rpIdHash.equals(rpHash(site.rpId))) throw new UserError('The passkey is for another site');
+  if (!(ad.flags & 0x01) || !(ad.flags & 0x04)) throw new UserError('The passkey must check that it is you (Face ID, fingerprint or PIN)');
+  const data = Buffer.concat([adBuf, crypto.createHash('sha256').update(b64u(b.clientDataJSON)).digest()]);
+  const key = crypto.createPublicKey({ key: Buffer.from(cred.key, 'base64url'), format: 'der', type: 'spki' });
+  const ok = crypto.verify(cred.alg === -8 ? null : 'sha256', data, key, b64u(b.signature, 1024));
+  if (!ok) throw new UserError('The passkey signature did not match');
+  // a counter that goes backwards means a copied key (passkeys synced between devices keep it at 0)
+  if (ad.signCount && cred.signCount && ad.signCount <= cred.signCount) throw new UserError('This passkey looks copied; remove it and add it again');
+  cred.signCount = ad.signCount;
+  cred.lastUsed = Date.now();
+  savePasskeys();
+  return { cred, ch };
+}
+
+const publicPasskey = (x) => ({ id: x.id, name: x.name, created: x.created, lastUsed: x.lastUsed, rpId: x.rpId });
+const passkeyFailure = (ip) => {
+  registerFailure('ip:' + ip, 5);
+  registerFailure('global', 20);
+};
 
 // Remembered devices. "Remember this device" at login gives that browser 30 days of view-only
 // access: what the dashboard shows, plus Docs and Updates, but no changes and no Admin; those ask
@@ -6613,6 +6790,50 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/login' && m === 'POST') return handleLogin(req, res);
 
+  // Passkey sign-in: whether it works here, a challenge, and the answer (locked out like the password)
+  if (p === '/api/passkey' && m === 'GET') {
+    const site = passkeySite();
+    return sendJson(res, 200, { available: site.ok && passkeys.list.some((x) => x.rpId === site.rpId), here: onPasskeySite(req, site), url: site.ok ? site.url : null });
+  }
+  if (p === '/api/passkey/options' && m === 'POST') {
+    if (!openLimitOk(req, res)) return;
+    const site = passkeySite();
+    if (!site.ok) return sendError(res, 404, site.why);
+    const ctx = requestCtx.getStore();
+    if (ctx) ctx.logged = true; // a challenge is not a change
+    return sendJson(res, 200, { challenge: newChallenge('login'), rpId: site.rpId, timeout: 120000, userVerification: 'required' });
+  }
+  if (p === '/api/passkey/login' && m === 'POST') {
+    const ip = req.socket.remoteAddress || '?';
+    const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+    if (wait) {
+      res.setHeader('Retry-After', String(wait));
+      return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+    }
+    const site = passkeySite();
+    if (!site.ok) return sendError(res, 404, site.why);
+    const body = await readBody(req, 64 * 1024);
+    const admin = readAdmin();
+    let used;
+    try {
+      if (!admin) throw new UserError('No admin account');
+      used = verifyAssertion(body, 'login', site).cred;
+    } catch (e) {
+      passkeyFailure(ip);
+      event('sign-in', `Failed passkey sign-in from ${ip}`, e.message);
+      return sendError(res, 401, e instanceof UserError ? e.message : 'The passkey was not accepted');
+    }
+    loginFailures.delete('ip:' + ip);
+    const old = getSession(req);
+    if (old) sessions.delete(old.id);
+    const keep = body.keep === true;
+    createSession(req, res, admin.username, { keep });
+    const ctx = requestCtx.getStore();
+    if (ctx) ctx.user = admin.username;
+    event('sign-in', `Signed in with the passkey "${used.name}" from ${ip}${keep ? ' (kept signed in for 30 days)' : ''}`);
+    return sendJson(res, 200, { ok: true });
+  }
+
   // the status page: public once switched on (signed in, it can be previewed before)
   if (p === '/api/status' && m === 'GET') {
     if (!config.settings.dashboard.statusPage.enabled && !session) return sendError(res, 404, 'The status page is switched off');
@@ -6711,6 +6932,90 @@ async function handleApi(req, res, url, session, viewer = null) {
     saveSessions();
     event('sign-in', 'Password confirmed for a change');
     return sendJson(res, 200, { ok: true, until: session.authAt + STEP_UP_MS });
+  }
+
+  // Confirming a risky change with a passkey instead of the password
+  if (p === '/api/reauth/passkey/options' && m === 'POST') {
+    if (session.readOnly) return sendError(res, 403, 'Sign in with the password first');
+    const site = passkeySite();
+    if (!site.ok) return sendError(res, 404, site.why);
+    requestCtx.getStore().logged = true;
+    return sendJson(res, 200, { challenge: newChallenge('reauth', { session: session.id }), rpId: site.rpId, timeout: 120000, userVerification: 'required', allow: passkeys.list.filter((x) => x.rpId === site.rpId).map((x) => ({ id: x.id, transports: x.transports })) });
+  }
+  if (p === '/api/reauth/passkey' && m === 'POST') {
+    if (session.readOnly) return sendError(res, 403, 'Sign in with the password first');
+    const ip = req.socket.remoteAddress || '?';
+    const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+    if (wait) {
+      res.setHeader('Retry-After', String(wait));
+      return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+    }
+    const site = passkeySite();
+    if (!site.ok) return sendError(res, 404, site.why);
+    const body = await readBody(req, 64 * 1024);
+    try {
+      const { cred, ch } = verifyAssertion(body, 'reauth', site);
+      if (ch.session !== session.id) throw new UserError('The passkey request was for another sign-in');
+      session.authAt = Date.now();
+      saveSessions();
+      event('sign-in', `Confirmed a change with the passkey "${cred.name}"`);
+      return sendJson(res, 200, { ok: true, until: session.authAt + STEP_UP_MS });
+    } catch (e) {
+      passkeyFailure(ip);
+      event('sign-in', `Passkey not accepted when confirming a change, from ${ip}`, e.message);
+      return sendError(res, 403, e instanceof UserError ? e.message : 'The passkey was not accepted');
+    }
+  }
+
+  // --- Passkeys (Admin → Sign-in & security) ---
+  if (p === '/api/admin/passkeys' && m === 'GET') {
+    const site = passkeySite();
+    return sendJson(res, 200, { site: site.ok ? { rpId: site.rpId, url: site.url } : null, why: site.ok ? null : site.why, here: onPasskeySite(req, site), passkeys: passkeys.list.map(publicPasskey) });
+  }
+  if (p === '/api/admin/passkeys/options' && m === 'POST') {
+    const site = passkeySite();
+    if (!site.ok) throw new UserError(site.why);
+    if (passkeys.list.length >= MAX_PASSKEYS) throw new UserError(`At most ${MAX_PASSKEYS} passkeys`);
+    if (!passkeys.userId) {
+      passkeys.userId = crypto.randomBytes(16).toString('base64url');
+      savePasskeys();
+    }
+    requestCtx.getStore().logged = true;
+    return sendJson(res, 200, {
+      challenge: newChallenge('create'),
+      rp: { id: site.rpId, name: config.settings.dashboard.title || 'Homelab Lookout' },
+      user: { id: passkeys.userId, name: session.user, displayName: `${session.user} (${config.settings.dashboard.title || 'Homelab Lookout'})` },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      timeout: 120000,
+      attestation: 'none',
+      authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
+      exclude: passkeys.list.filter((x) => x.rpId === site.rpId).map((x) => ({ id: x.id, transports: x.transports })),
+    });
+  }
+  if (p === '/api/admin/passkeys' && m === 'POST') {
+    const site = passkeySite();
+    if (!site.ok) throw new UserError(site.why);
+    const b = await readBody(req, 64 * 1024);
+    const name = str(b.name, 60, 'Name') || 'Passkey';
+    const reg = verifyRegistration(b, site);
+    if (passkeys.list.some((x) => x.id === reg.id)) throw new UserError('This passkey is already added');
+    if (passkeys.list.length >= MAX_PASSKEYS) throw new UserError(`At most ${MAX_PASSKEYS} passkeys`);
+    const transports = Array.isArray(b.transports) ? b.transports.filter((t) => ['internal', 'hybrid', 'usb', 'nfc', 'ble'].includes(t)) : [];
+    passkeys.list.push({ ...reg, rpId: site.rpId, name, created: Date.now(), lastUsed: null, transports });
+    savePasskeys();
+    session.authAt = Date.now(); // just proved who it is
+    saveSessions();
+    event('sign-in', `Passkey added: ${name}`);
+    return sendJson(res, 201, { passkeys: passkeys.list.map(publicPasskey) });
+  }
+  const pk = p.match(/^\/api\/admin\/passkeys\/([A-Za-z0-9_-]{16,1400})$/);
+  if (pk && m === 'DELETE') {
+    const x = passkeys.list.find((y) => y.id === pk[1]);
+    if (!x) return sendError(res, 404, 'Not found');
+    passkeys.list = passkeys.list.filter((y) => y !== x);
+    savePasskeys();
+    event('sign-in', `Passkey removed: ${x.name}`);
+    return sendJson(res, 200, { passkeys: passkeys.list.map(publicPasskey) });
   }
 
   // --- Signed-in browsers ---
@@ -9609,6 +9914,7 @@ function backupBundle() {
     docsHistory,
     events,
     incidents,
+    passkeys,
     energy,
     history: historySnapshot(),
     files: { backgrounds: files(BACKGROUND_DIR, config.backgrounds), icons: files(ICON_DIR, config.icons) },
@@ -9775,6 +10081,10 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   // the change log comes back too (entries checked like when loading), and the restore is added to it
   incidents = cleanIncidents(bundle.incidents);
   saveIncidents();
+  if (bundle.passkeys) {
+    passkeys = cleanPasskeys(bundle.passkeys);
+    savePasskeys();
+  }
   if (Array.isArray(bundle.events)) {
     const cutoff = Date.now() - EVENT_DAYS * 864e5;
     events = bundle.events.filter((e) => e && Number.isFinite(e.t) && e.t >= cutoff && typeof e.text === 'string')
@@ -10336,6 +10646,7 @@ async function main() {
   loadAlertState();
   loadEvents();
   loadIncidents();
+  loadPasskeys();
   loadUpdates();
   loadDocs();
   loadDocsHistory();

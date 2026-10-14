@@ -487,6 +487,13 @@
           <div class="form-actions"><button type="submit" class="primary">Change password</button><span class="msg" id="pw-msg" role="status"></span></div>
         </form>
       </section>
+      <section class="card" id="passkeys-card">
+        <div class="card-head">
+          <div class="title"><h3>Passkeys</h3><p class="hint">Sign in with Face ID, Touch ID, Windows Hello or a security key instead of typing the password. The password keeps working. A passkey also confirms risky changes. Passkeys belong to the Dashboard address, so they work there and nowhere else.</p></div>
+          <button type="button" class="primary" id="passkey-add" hidden>Add a passkey</button>
+        </div>
+        <div id="passkeys"></div>
+      </section>
       <section class="card">
         <div class="card-head">
           <div class="title"><h3>Signed-in browsers</h3><p class="hint">Where you are signed in. A normal sign-in lasts 12 hours (2 without use); "Keep me signed in" 30 days (a week without use). Either way, backups, backup and alert destinations, the web server and making things public ask for the password again after 15 minutes. Changing the password signs out all but this one.</p></div>

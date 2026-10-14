@@ -21,6 +21,8 @@
       <label class="check"><input type="checkbox" id="keep"> Keep me signed in on this device (30 days; risky changes still ask for the password)</label>
       <label class="check" id="remember-row"><input type="checkbox" id="remember"> Remember this device for viewing only (30 days, e.g. a wall tablet)</label>
       <button class="primary" type="submit">Sign in</button>
+      <button type="button" class="passkey-btn" id="passkey" hidden>Sign in with a passkey</button>
+      <p class="small muted" id="passkey-elsewhere" hidden></p>
       <p class="msg error" id="login-error" role="alert"></p>
     </form>
   </div>

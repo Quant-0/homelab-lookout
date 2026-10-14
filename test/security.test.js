@@ -60,9 +60,12 @@ const patterned = {
   destinations: [['PUT', `/api/admin/backup/destinations/${U}`], ['DELETE', `/api/admin/backup/destinations/${U}`], ['POST', `/api/admin/backup/destinations/${U}/test`], ['POST', `/api/admin/backup/destinations/${U}/sshkey`]],
   incidents: [['POST', '/api/admin/incidents/00000000000000aa/ack']],
   pushSubs: [['POST', `/api/admin/alerts/channels/${U}/subscriptions`], ['DELETE', `/api/admin/alerts/channels/${U}/subscriptions/00000000000000aa`]],
+  passkeys: [['DELETE', '/api/admin/passkeys/AAAAAAAAAAAAAAAAAAAAAA']],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
 const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
+// open to everyone: signing in (password or passkey) and the status page
+const OPEN = new Set(['/api/login', '/api/status', '/api/passkey', '/api/passkey/options', '/api/passkey/login']);
 const bodyFor = (m) => (m === 'GET' ? undefined : {});
 
 async function run() {
@@ -73,12 +76,15 @@ async function run() {
   // --- a stranger: everything but the login form needs a login ---
   let leaks = [];
   for (const [m, p] of ROUTES) {
-    if (p === '/api/login' || p === '/api/status') continue; // the status page is public by choice (below)
+    if (OPEN.has(p)) continue; // signing in, and the status page (public by choice, below)
     const r = await call(m, p, { body: bodyFor(m) });
     if (r.status !== 401) leaks.push(`${m} ${p} → ${r.status}`);
   }
   ok(!leaks.length, `stranger: every API route answers 401${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
   ok((await call('GET', '/api/status')).status === 404, 'stranger: the status page is not there until switched on');
+  const pk = await call('GET', '/api/passkey');
+  ok(pk.status === 200 && pk.json.available === false && pk.json.url === null, 'stranger: passkeys are off without a dashboard address');
+  ok((await call('POST', '/api/passkey/options', { body: {} })).status === 404 && (await call('POST', '/api/passkey/login', { body: {} })).status === 404, 'stranger: no passkey sign-in without a dashboard address');
   for (const [p, next] of [['/', ''], ['/services', '?next=services'], ['/energy', '?next=energy'], ['/admin', '?next=admin'], ['/docs', '?next=docs'], ['/updates', '?next=updates'], ['/guide.pdf', '?next=guide']]) {
     const r = await call('GET', p);
     ok(r.status === 303 && r.headers.get('location') === `/login${next}`, `stranger: ${p} sends to the login page`);
@@ -157,14 +163,14 @@ async function run() {
   const vcsrf = (await call('GET', '/api/session', { cookie: device })).json.csrf;
   leaks = [];
   for (const [m, p] of ROUTES) {
-    if (p === '/api/login' || p === '/api/status' || VIEWER_OK.has(`${m} ${p}`)) continue;
+    if (OPEN.has(p) || VIEWER_OK.has(`${m} ${p}`)) continue;
     const res = await call(m, p, { cookie: device, csrf: vcsrf, body: bodyFor(m) });
     if (res.status !== 401) leaks.push(`${m} ${p} → ${res.status}`);
   }
   ok(!leaks.length, `remembered device: every route outside the read list answers 401${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
 
   // --- the admin: writes need the CSRF token and this origin ---
-  const writes = ROUTES.filter(([m, p]) => m !== 'GET' && p !== '/api/login');
+  const writes = ROUTES.filter(([m, p]) => m !== 'GET' && !OPEN.has(p));
   const refusedAll = async (label, opts) => {
     const bad = [];
     for (const [m, p] of writes) {

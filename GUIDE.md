@@ -45,6 +45,7 @@ Open **https://192.168.1.140:8443** and sign in with the admin account. After 5 
 - Either way, a few risky changes ask for the password again if you haven't typed it in the last 15 minutes: downloading or restoring a backup, backup settings and destinations, alert channels, the web server settings, and making the dashboard or the status page public. Everything else just works.
 - **Admin → Sign-in & security → Signed-in browsers** lists where you are signed in, with **Sign out** for each and **Sign out everywhere else**. A new password signs out every other browser.
 - **Remember this device for viewing only** is for a wall tablet: it can look, never change anything.
+- **Sign in with a passkey** (Face ID, Touch ID, Windows Hello or a security key) once you have added one under **Admin → Sign-in & security → Passkeys**. The password keeps working. A passkey also confirms the risky changes above (**Use a passkey** in the dialog). Passkeys belong to a domain name, so they work on the **Dashboard address** (Admin → Dashboard), not on the IP address; on the IP, the sign-in page says where they work.
 
 Away from home, the same address works through Tailscale.
 
@@ -412,6 +413,7 @@ Changes here ask for the password if you haven't typed it in the last 15 minutes
 ### Sign-in & security
 
 - **Admin password:** changing it signs out every other browser and remembered device.
+- **Passkeys:** open the dashboard on its Dashboard address (a domain name), press **Add a passkey**, give it a name (which phone, computer or key it is on) and confirm with Face ID, fingerprint or PIN. Add one on each device you use; a passkey synced by iCloud Keychain or Google Password Manager works on your other devices too. **Remove** deletes one here (delete it on the device as well). If you change the Dashboard address to another name, passkeys for the old name stop working there: add new ones.
 - **Signed-in browsers** lists where you are signed in (normal or *kept signed in*), with last use and address. **Sign out** ends one; **Sign out everywhere else** ends all but this one.
 - **Remembered devices** lists every device ticked *Remember this device for viewing only*, with browser, last use and address. **Sign out** forgets one; **Sign out all** forgets all of them.
 
