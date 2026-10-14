@@ -1,10 +1,34 @@
 // Screenshots of the example lab for the user guide
 const { chromium, devices } = require('playwright');
+const http = require('node:http');
 const OUT = process.argv[2];
 const SVG = process.argv[3];
 const B = 'http://127.0.0.1:18080';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const done = [];
+
+// a Docker host behind a read-only socket proxy, for the Containers view
+const C = [
+  { id: 'a1', name: 'jellyfin', image: 'jellyfin/jellyfin', state: 'running', status: 'Up 6 days (healthy)', health: 'healthy', policy: 'unless-stopped', mem: 820e6 },
+  { id: 'b2', name: 'immich-server', image: 'ghcr.io/immich-app/immich-server', state: 'running', status: 'Up 6 days', policy: 'always', mem: 1.4e9 },
+  { id: 'c3', name: 'postgres', image: 'postgres:16', state: 'running', status: 'Up 6 days (healthy)', health: 'healthy', policy: 'always', mem: 310e6 },
+  { id: 'd4', name: 'paperless', image: 'paperless-ngx/paperless-ngx', state: 'running', status: 'Up 2 days', policy: 'unless-stopped', mem: 540e6 },
+  { id: 'e5', name: 'watchtower', image: 'containrrr/watchtower', state: 'exited', status: 'Exited (0) 3 days ago', exitCode: 0, policy: 'no', mem: 0 },
+  { id: 'f6', name: 'uptime-test', image: 'louislam/uptime-kuma', state: 'restarting', status: 'Restarting (1) 4 seconds ago', restarts: 14, policy: 'always', mem: 0 },
+];
+let cpuT = 0;
+let sysT = 0;
+http.createServer((q, res) => {
+  const json = (code, o) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify(o));
+  if (q.url === '/version') return json(200, { Version: '27.3.1' });
+  if (q.url === '/containers/json?all=1') return json(200, C.map((c) => ({ Id: c.id.padEnd(64, '0'), Names: [`/${c.name}`], Image: c.image, State: c.state, Status: c.status, Created: 1790000000, Labels: { 'com.docker.compose.project': 'apps' } })));
+  const m = /^\/containers\/([0-9a-z]+)\/(json|stats\?stream=false&one-shot=true)$/.exec(q.url);
+  const c = m && C.find((x) => x.id.padEnd(64, '0') === m[1]);
+  if (!c) return json(404, {});
+  if (m[2] === 'json') return json(200, { State: { Status: c.state, ExitCode: c.exitCode ?? 0, StartedAt: new Date(Date.now() - 6 * 864e5).toISOString(), ...(c.health ? { Health: { Status: c.health } } : {}) }, RestartCount: c.restarts ?? 0, HostConfig: { RestartPolicy: { Name: c.policy } }, Config: { Env: [] } });
+  cpuT += 3e8; sysT += 4e9;
+  return json(200, { cpu_stats: { cpu_usage: { total_usage: cpuT * (1 + C.indexOf(c)) }, system_cpu_usage: sysT, online_cpus: 4 }, memory_stats: { usage: c.mem, limit: 8e9, stats: { inactive_file: 0 } } });
+}).listen(18471, '127.0.0.1');
 
 (async () => {
   const b = await chromium.launch();
@@ -50,6 +74,17 @@ const done = [];
       { a: { item: id('core-switch'), port: 'rj7' }, b: { item: pp, port: 'pp9' }, color: 'green', label: 'Hallway AP' },
       { a: { item: id('edge'), port: 'sfp10' }, b: { item: id('core-switch'), port: 'sfp25' }, color: 'red', label: '10G' },
     ] }) });
+    // check-ins, a weekly maintenance window, the status page, a push channel and a webhook
+    await fetch('/api/admin/checkins', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Nightly NAS backup', everyMin: 1440, graceMin: 120, deviceId: id('vault') }) });
+    const ck2 = await (await fetch('/api/admin/checkins', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Certificate renewal', everyMin: 10080, graceMin: 1440 }) })).json();
+    await fetch(ck2.checkin.path);
+    await fetch('/api/admin/maintenance', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Proxmox updates', targets: { all: false, devices: [id('atlas')], services: [], checkins: [] }, schedule: { kind: 'weekly', days: [0], start: '03:00', minutes: 90 } }) });
+    const cfg2 = await (await fetch('/api/admin/config')).json();
+    await fetch('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ dashboard: { ...cfg2.settings.dashboard, statusPage: { enabled: true, title: 'Lab status' }, linkUrl: 'https://lookout.home.arpa:8443' } }) });
+    await fetch('/api/admin/alerts/channels', { method: 'POST', headers: H, body: JSON.stringify({ type: 'push', name: 'Phones' }) });
+    await fetch('/api/admin/alerts/channels', { method: 'POST', headers: H, body: JSON.stringify({ type: 'ntfy', name: 'ntfy', url: 'https://ntfy.sh', topic: 'homelab-x7k2p9q4m3', auth: 'none' }) });
+    // a Docker host, and a device reached through the switch
+    await fetch('/api/admin/devices', { method: 'POST', headers: H, body: JSON.stringify({ name: 'apps', kind: 'server', location: 'none', connections: [{ type: 'docker', address: '127.0.0.1:18471' }], parent: id('core-switch') }) });
   }, SVG);
   // a new public IP, so Home shows the notice
   await fetch('https://127.0.0.1:18443/__wan?ip=203.0.113.99').catch(() => {});
@@ -123,8 +158,36 @@ const done = [];
     await full('docs');
   });
 
+  // incidents: acknowledge the PSU problem first, so the list shows who did
+  await p.evaluate(async () => {
+    const { csrf } = await (await fetch('/api/session')).json();
+    const x = (await (await fetch('/api/admin/incidents')).json()).incidents.find((i) => i.open && /PS2/.test(i.title));
+    if (x) await fetch(`/api/admin/incidents/${x.id}/ack`, { method: 'POST', headers: { 'X-CSRF-Token': csrf } });
+  });
+  await p.goto(B + '/log#incidents'); await sleep(2000);
+  await shot('incidents', () => top('incidents', 620));
+
+  // VMs and containers
+  await p.goto(B + '/vms'); await sleep(2500);
+  await shot('vms', () => top('vms'));
+  await shot('vm-drawer', async () => {
+    await p.click('.vm-row >> nth=0').catch(() => p.click('tbody tr >> nth=0')); await sleep(1800);
+    await top('vm-drawer');
+    await p.keyboard.press('Escape'); await sleep(400);
+  });
+  await shot('containers', async () => {
+    await p.click('#vm-view button:has-text("Containers")'); await sleep(1500);
+    await top('containers', 700);
+  });
+
+  // the public status page
+  const anon = await b.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2, colorScheme: 'dark' });
+  const sp = await anon.newPage();
+  await sp.goto(B + '/status'); await sleep(2000);
+  await shot('status', () => sp.screenshot({ path: `${OUT}/status.png`, clip: { x: 0, y: 0, width: 1280, height: 760 } }));
+
   // admin tabs
-  for (const tab of ['devices', 'services', 'alerts', 'power', 'dashboard', 'system']) {
+  for (const tab of ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look', 'power', 'backups', 'security', 'system']) {
     await p.goto(`${B}/admin#${tab}`); await p.reload(); await sleep(2000);
     await shot(`admin-${tab}`, () => top(`admin-${tab}`));
   }
@@ -146,8 +209,20 @@ const done = [];
     const ed = await p.$('#svc-editor'); await ed.scrollIntoViewIfNeeded(); await sleep(300);
     await ed.screenshot({ path: `${OUT}/service-edit.png` });
   });
-  await p.goto(`${B}/admin#dashboard`); await p.reload(); await sleep(1800);
+  await p.goto(`${B}/admin#look`); await p.reload(); await sleep(1800);
   await shot('appearance', () => el('appearance', '#appearance-card'));
+  await shot('device-alerts', async () => {
+    await p.goto(`${B}/admin#devices`); await p.reload(); await sleep(1500);
+    await p.click('.device-row:has-text("vault")'); await sleep(1000);
+    await p.fill('input[name=alertPct]', '85');
+    await (await p.$('.dev-alerts')).screenshot({ path: `${OUT}/device-alerts.png` });
+    await p.click('#device-cancel');
+  });
+  await shot('push-editor', async () => {
+    await p.goto(`${B}/admin#alerts`); await p.reload(); await sleep(1800);
+    await p.click('#al-channels .svc-row:has-text("Phones") button:has-text("Edit")'); await sleep(800);
+    await (await p.$('#al-editor')).screenshot({ path: `${OUT}/push-editor.png` });
+  });
 
   // light theme
   const light = await b.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2, colorScheme: 'light' });
@@ -185,4 +260,5 @@ const done = [];
   console.log('done:', done.length, done.join(' '));
   console.log('errors:', errs.join(' | ') || 'none');
   await b.close();
+  process.exit(0); // the Docker mock would keep it running
 })();

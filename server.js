@@ -8901,7 +8901,7 @@ function alertConditions(all = false) {
       for (const c of d.containers.filter((x) => !x.ignore)) {
         const id = `${h.id}:${c.name}`;
         if (c.state === 'restarting' || c.recentRestarts >= 3) {
-          add('container', `${id}:loop`, 'critical', `${name}: ${c.name} keeps restarting`, `${c.recentRestarts || 0} restarts in 15 minutes${c.exitCode ? `; last exit code ${c.exitCode}` : ''}`, own);
+          add('container', `${id}:loop`, 'critical', `${name}: ${c.name} keeps restarting`, `${c.recentRestarts ? `${c.recentRestarts} restarts in 15 minutes` : `Restarting now${c.restarts ? `, ${c.restarts} restarts in all` : ''}`}${c.exitCode ? `; last exit code ${c.exitCode}` : ''}`, own);
         } else if (c.state === 'exited' && c.policy && c.policy !== 'no' && (c.oom || (c.exitCode && ![137, 143].includes(c.exitCode)))) {
           // its restart policy says it should run; 137/143 are a stop by hand (killed or terminated)
           add('container', `${id}:stopped`, 'critical', `${name}: ${c.name} stopped`, c.oom ? 'It ran out of memory' : `Exit code ${c.exitCode}; its restart policy is ${c.policy}`, own);

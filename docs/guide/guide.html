@@ -80,7 +80,7 @@ h2, h3 { break-after: avoid; }
   <h1>Homelab<br><b>Lookout</b></h1>
   <p class="lead">Your servers, network, power and services on one calm screen. This guide walks through every page with a sample lab, from signing in to patching cables in the rack.</p>
   <div class="shot"><img src="img/home-top.png" alt=""></div>
-  <div class="foot">Version 2026.10 · All names, numbers and addresses in this guide are sample data.</div>
+  <div class="foot">Version 2026.10.14 · All names, numbers and addresses in this guide are sample data.</div>
 </section>
 
 <!-- ============ CONTENTS ============ -->
@@ -98,18 +98,21 @@ h2, h3 { break-after: avoid; }
     <li><span class="n">2</span><span class="t"><b>Finding your way</b><span>Menus, search and your own look</span></span></li>
     <li><span class="n">3</span><span class="t"><b>Home</b><span>Problems, power, internet and devices</span></span></li>
     <li><span class="n">4</span><span class="t"><b>Rack and patch cables</b><span>The rack drawn to scale, cabling it</span></span></li>
-    <li><span class="n">5</span><span class="t"><b>Services</b><span>Your apps and virtual machines</span></span></li>
-    <li><span class="n">6</span><span class="t"><b>Energy report</b><span>kWh and cost per day, month and device</span></span></li>
-    <li><span class="n">7</span><span class="t"><b>Docs, Updates and Log</b><span>Documentation, what's outdated, what changed</span></span></li>
-    <li><span class="n">8</span><span class="t"><b>Wall display</b><span>A screen for the wall</span></span></li>
-    <li><span class="n">9</span><span class="t"><b>Admin: devices</b><span>The catalog, connections, the rack</span></span></li>
-    <li><span class="n">10</span><span class="t"><b>Admin: services</b><span>Cards, integrations, numbers</span></span></li>
-    <li><span class="n">11</span><span class="t"><b>Admin: alerts, power, look</b><span>Notifications, tariffs, themes, logo</span></span></li>
-    <li><span class="n">12</span><span class="t"><b>Admin: system and backups</b><span>Web server, backups, remembered devices</span></span></li>
-    <li><span class="n">13</span><span class="t"><b>Keeping it safe</b><span>Good habits</span></span></li>
-    <li><span class="n">14</span><span class="t"><b>When something doesn't work</b><span>Common problems and fixes</span></span></li>
+    <li><span class="n">5</span><span class="t"><b>Services and the status page</b><span>Your apps, their checks, a public status page</span></span></li>
+    <li><span class="n">6</span><span class="t"><b>VMs and containers</b><span>Proxmox guests, backups, Docker</span></span></li>
+    <li><span class="n">7</span><span class="t"><b>Energy report</b><span>kWh and cost per day, month and device</span></span></li>
+    <li><span class="n">8</span><span class="t"><b>Docs, Updates, Log and Incidents</b><span>Documentation, what's outdated, what happened</span></span></li>
+    <li><span class="n">9</span><span class="t"><b>Wall display</b><span>A screen for the wall</span></span></li>
+    <li><span class="n">10</span><span class="t"><b>Admin: devices</b><span>The catalog, connections, dependencies, alerts</span></span></li>
+    <li><span class="n">11</span><span class="t"><b>Admin: services</b><span>Status checks, integrations, numbers</span></span></li>
+    <li><span class="n">12</span><span class="t"><b>Admin: alerts</b><span>Push, ntfy and more; acknowledging</span></span></li>
+    <li><span class="n">13</span><span class="t"><b>Admin: check-ins and maintenance</b><span>Backups and cron jobs, planned work</span></span></li>
+    <li><span class="n">14</span><span class="t"><b>Admin: dashboard, look, power</b><span>Address, status page, themes, app icon, tariffs</span></span></li>
+    <li><span class="n">15</span><span class="t"><b>Admin: backups, security, server</b><span>Backups, signed-in browsers, web server</span></span></li>
+    <li><span class="n">16</span><span class="t"><b>Keeping it safe</b><span>Good habits</span></span></li>
+    <li><span class="n">17</span><span class="t"><b>When something doesn't work</b><span>Common problems and fixes</span></span></li>
   </ol>
-  <div class="note"><b>About the sample lab.</b> The screenshots show an example setup: a UniFi gateway (<i>edge</i>), a 24-port switch (<i>core-switch</i>), two Dell servers (<i>atlas</i> with Proxmox, <i>vault</i> with TrueNAS), a patch panel, an access point, two cameras and twelve services. One power supply in <i>atlas</i> is failing on purpose, so you can see how problems look.</div>
+  <div class="note"><b>About the sample lab.</b> The screenshots show an example setup: a UniFi gateway (<i>edge</i>), a 24-port switch (<i>core-switch</i>), two Dell servers (<i>atlas</i> with Proxmox, <i>vault</i> with TrueNAS), a Docker host (<i>apps</i>), a patch panel, an access point, two cameras and twelve services. A power supply in <i>atlas</i> is failing and a container keeps restarting on purpose, so you can see how problems look.</div>
 </section>
 
 <!-- ============ 1 ============ -->
@@ -119,18 +122,22 @@ h2, h3 { break-after: avoid; }
   <p class="intro">Lookout runs on one machine in your lab and you open it in a browser, for example <code>https://lookout.home.arpa:8443</code>. Ask whoever installed it for the address and the admin login.</p>
 
   <div class="two-wide">
-    <figure><img src="img/signin.png" alt=""><figcaption><b>Sign in.</b> Tick <i>Remember this device for viewing</i> on your own phone or wall tablet.</figcaption></figure>
+    <figure><img src="img/signin.png" alt=""><figcaption><b>Sign in.</b> <i>Keep me signed in</i> on your own phone and computer; <i>Remember this device for viewing</i> on a wall tablet.</figcaption></figure>
     <div>
       <h3>Sign in</h3>
       <p>Enter the admin user name and password. After five wrong passwords you have to wait, first 30 seconds, then longer each time, up to an hour.</p>
-      <p>A login lasts 2 hours without use and 12 hours at most.</p>
-      <h3>Remember this device</h3>
-      <p>For 30 days, that device can <b>look</b> at every page without the password, but it can't change anything. Admin always asks for the password. <span class="ui">Log out</span> makes the server forget the device.</p>
+      <ul>
+        <li>A normal sign-in lasts 12 hours (2 hours without use).</li>
+        <li><b>Keep me signed in</b>: 30 days, ending after a week without use. Restarts and updates don't sign you out.</li>
+        <li>A few risky changes ask for the password again if you haven't typed it in the last 15 minutes: backups, alert channels, the web server and making things public.</li>
+      </ul>
+      <h3>Remember this device for viewing</h3>
+      <p>For 30 days, that device can <b>look</b> at every page without the password, but it can't change anything. Use it for a wall tablet.</p>
     </div>
   </div>
 
   <h2>Trust the certificate (once per device)</h2>
-  <p>Lookout makes its own small certificate authority, so the browser warns you until the device trusts it. Download it from <code>/ca.crt</code> or <span class="ui">Admin → System → Download CA certificate</span>, check the fingerprint against the one shown under <span class="ui">Certificate</span>, and import it:</p>
+  <p>Lookout makes its own small certificate authority, so the browser warns you until the device trusts it. Download it from <code>/ca.crt</code> or <span class="ui">Admin → Server → Download CA certificate</span>, check the fingerprint against the one shown under <span class="ui">Certificate</span>, and import it:</p>
   <table>
     <tr><th>Device</th><th>How</th></tr>
     <tr><td>iPhone / iPad</td><td>Open the file → Settings → <i>Profile Downloaded</i> → Install. Then General → About → <b>Certificate Trust Settings</b> → turn it on.</td></tr>
@@ -145,19 +152,20 @@ h2, h3 { break-after: avoid; }
   <ol class="steps">
     <li>Trust the certificate first (above).</li>
     <li><b>Android:</b> Chrome menu ⋮ → <b>Install app</b>. <b>iPhone:</b> Safari → Share → <b>Add to Home Screen</b>. <b>PC:</b> the install icon at the end of the address bar.</li>
-    <li>Open the app and sign in with <i>Remember this device</i> ticked. On an iPhone, sign in <i>inside</i> the app.</li>
+    <li>Open the app and sign in with <i>Keep me signed in</i> ticked. On an iPhone, sign in <i>inside</i> the app.</li>
+    <li>For alerts on the phone, turn on <b>push</b> in the app (chapter 12).</li>
   </ol>
-  <p>When the server can't be reached, the app says <i>Can't reach the dashboard</i> and opens by itself once it is back.</p></div>
+  <p>The app icon is your logo (chapter 14). When the server can't be reached, the app says <i>Can't reach the dashboard</i> and opens by itself once it is back.</p></div>
 </section>
 
 <!-- ============ 2 ============ -->
 <section class="chapter">
   <div class="kicker">Chapter 2</div>
   <h1>Finding your way</h1>
-  <p class="intro">The pages are in the bar at the top: <span class="ui">Home · Rack · Services · Energy · Docs · Updates · Log</span>. On the right are Search, the look button, Admin and Log out.</p>
+  <p class="intro">The pages are in the bar at the top: <span class="ui">Home · Rack · Services · VMs · Energy · Docs · Updates · Log</span>. On the right are Search, the user guide, the look button, Admin and Log out.</p>
   <div class="phones">
     <figure><img src="img/phone-home.png" alt=""><figcaption><b>Phone.</b> The tab bar at the bottom has Home, Rack, Services and Energy.</figcaption></figure>
-    <figure><img src="img/phone-more.png" alt=""><figcaption><b>More</b> has Docs, Updates, Log, the wall display, the look, Admin and Log out.</figcaption></figure>
+    <figure><img src="img/phone-more.png" alt=""><figcaption><b>More</b> has VMs, Docs, Updates, Log, the wall display, the guide, the look, Admin and Log out.</figcaption></figure>
     <figure><img src="img/phone-services.png" alt=""><figcaption>Every page works on a phone, one column at a time.</figcaption></figure>
   </div>
   <p>Docs and Updates appear when you're signed in or on a remembered device. Log and Admin are for the admin only.</p>
@@ -179,30 +187,33 @@ h2, h3 { break-after: avoid; }
   <div class="kicker">Chapter 3</div>
   <h1>Home</h1>
   <p class="intro">Home answers one question: is everything all right? It shows problems first, then power and the internet, then every device drawn the way it looks.</p>
-  <figure class="crop"><div class="frame"><img src="img/home.png" alt=""></div><figcaption><b>Home in the sample lab:</b> a public IP change, one faulty power supply, the power and internet cards, and the devices.</figcaption></figure>
+  <figure class="crop"><div class="frame"><img src="img/home.png" alt=""></div><figcaption><b>Home in the sample lab:</b> the problems, the power and internet cards, and the devices.</figcaption></figure>
 </section>
 
 <section class="page">
   <h2>At the top: the summary and "Needs you"</h2>
   <p>The pill says how many faults and things to watch there are, or <b>All normal</b>. Below it, one row per problem, worst first, with how long it has been going on. Click a row to open the device. A connection that stops answering is listed only after 2 minutes, so a single slow reading doesn't raise an alarm.</p>
-  <figure><img src="img/snooze.png" alt=""><figcaption><b>Snooze.</b> The clock button on a row hides it for 1 day or 1 week, for everyone. The teal row is a notice that your public IP changed; × closes it.</figcaption></figure>
+  <figure><img src="img/snooze.png" alt=""><figcaption><b>The clock button</b> on a row: <i>Acknowledge</i> it, or snooze it for 1 day or 1 week.</figcaption></figure>
   <ul>
-    <li><b>Snooze</b> (admin): the problem leaves the top of Home and the wall display, but the device still shows it and alerts are still sent. A warning that turns into a fault comes back by itself. <span class="ui">N snoozed · Show</span> lists them; the bell ends a snooze.</li>
+    <li><b>Acknowledge</b> (admin): someone is on it. The problem stays until it clears, but no more reminders are sent. The row says <i>Acknowledged by …</i>. You can also acknowledge from the alert message itself (chapter 12).</li>
+    <li><b>Snooze</b> (admin): the problem leaves the top of Home and the wall display for 1 day or 1 week, but the device still shows it and alerts are still sent. A warning that turns into a fault comes back by itself.</li>
+    <li><b>Behind core-switch</b>: when a switch or host is down, what is reached through it is grouped under it, muted, with one alert for the cause (chapter 10).</li>
+    <li><b>Maintenance</b> and <b>Alerts muted</b>: problems during planned work, or on something whose alerts are switched off. Shown, not sent.</li>
     <li><b>Public IP changed</b>: shown until an admin closes it. It stays in the Log.</li>
   </ul>
 
   <h2>Power and Internet</h2>
   <div class="two-wide">
     <figure><img src="img/power-drawer.png" alt=""><figcaption><b>Power details:</b> today, this month, the forecast, cost per day and the yearly figures.</figcaption></figure>
-    <figure><img src="img/net-card.png" alt=""><figcaption><b>Internet:</b> traffic now against your speed test, the last 24 hours (download filled, upload violet), clients, provider and public IP.</figcaption></figure>
+    <figure><img src="img/net-card.png" alt=""><figcaption><b>Internet:</b> traffic now against your speed test, the last 24 hours, clients, provider and public IP.</figcaption></figure>
   </div>
-  <p><b>Power</b> shows what the lab draws now, today's and this month's cost, and a graph of the last 24 hours. Click it for the details and a link to the Energy report; the range buttons (24 h / 7 d / 30 d) in the details are remembered in your browser.</p>
-  <p><b>Internet</b> comes from your gateway (UniFi or Omada). Next to the heading are your internet provider and its logo; the public IP is only shown to people who are signed in.</p>
+  <p><b>Power</b> shows what the lab draws now, today's and this month's cost, and a graph of the last 24 hours. Power comes from server controllers, smart plugs, UPSes and PoE, and estimates for the rest. Click it for the details and the Energy report.</p>
+  <p><b>Internet</b> comes from your gateway (UniFi or Omada), with your provider and its logo. The public IP is only shown to people who are signed in.</p>
 </section>
 
-<section class="page">
+<section>
   <h2>Devices and their details</h2>
-  <p>Each device has a tile with its drawing, one status (<b>OK</b>, <b>Warning</b>, <b>Fault</b> or <b>Offline</b>), its worst problem or model, and one key number. Click a tile for the details: problems first, then numbers, graphs, power supplies, fans, drives, ports and VMs, with buttons for its Docs sheet and Admin.</p>
+  <p>Each device has a tile with its drawing, one status (<b>OK</b>, <b>Warning</b>, <b>Fault</b>, <b>Offline</b>, <b>Unreachable</b> or <b>Maintenance</b>), its worst problem or model, and one key number. Click a tile for the details: problems first, then numbers, graphs, power supplies, fans, drives, ports, VMs and containers, with buttons for its Docs sheet and Admin.</p>
   <figure><img src="img/device-drawer.png" alt=""><figcaption><b>Details for atlas:</b> the failing power supply first, then power, temperature, CPU and memory with their graphs.</figcaption></figure>
   <div class="two">
     <figure><img src="img/customize-home.png" alt=""><figcaption><b>Customize</b> (admin): drag tiles into another order and hide the ones you don't need.</figcaption></figure>
@@ -234,7 +245,6 @@ h2, h3 { break-after: avoid; }
         <li>Click a cable to change its colour, add a label, or <b>Remove</b> it.</li>
         <li><span class="ui">Done</span> leaves patch mode.</li>
       </ol>
-      <p>Cables run along their own lane between the devices, with a plug in each port. Point at one to see both ends and its label.</p>
     </div>
     <figure><img src="img/patch.png" alt=""><figcaption><b>Patch mode</b> with a cable picked: its colour, label and Remove.</figcaption></figure>
   </div></div>
@@ -245,34 +255,63 @@ h2, h3 { break-after: avoid; }
 <!-- ============ 5 ============ -->
 <section class="chapter">
   <div class="kicker">Chapter 5</div>
-  <h1>Services</h1>
+  <h1>Services and the status page</h1>
   <p class="intro">Your self-hosted apps, grouped the way you like, each with a status dot and up to four live numbers. Click a card to open the app.</p>
-  <figure><img src="img/services.png" alt=""><figcaption><b>Services</b> in four groups, then the virtual machines and containers from Proxmox with CPU, memory and uptime.</figcaption></figure>
+  <figure><img src="img/services.png" alt=""><figcaption><b>Services</b> in four groups, each with its status and numbers.</figcaption></figure>
   <ul>
-    <li>The dot is green when the app answers; point at it for the response time.</li>
+    <li>The dot is green when the service's <b>status check</b> passes: a web page, a ping, a TCP port or a DNS lookup (chapter 11). Point at it for the response time.</li>
+    <li>For an <code>https://</code> service the certificate's expiry is watched too: a warning two weeks before, critical the last three days.</li>
     <li>The numbers come from each app's integration: movies and series in Jellyfin, queued downloads, blocked queries, photos in Immich, and so on.</li>
     <li><span class="ui">Customize</span> (admin) drags services between groups, renames groups, sets columns and hides services.</li>
   </ul>
+  <h2>The status page</h2>
+  <div class="two-wide">
+    <figure class="crop"><div class="frame" style="max-height:75mm"><img src="img/status.png" alt=""></div><figcaption><b>The status page</b> at <code>/status</code>: up or down and the uptime of each service, with no links or addresses.</figcaption></figure>
+    <div>
+      <p>A public page for the people who use your services: whether each one is up, its uptime over 90 days (30 on a phone), and planned maintenance. It shows no links, addresses, devices or VMs.</p>
+      <p>Switch it on in <span class="ui">Admin → Dashboard</span>. It works while the dashboard itself stays private, so you can share it instead of the dashboard.</p>
+    </div>
+  </div>
 </section>
 
 <!-- ============ 6 ============ -->
 <section class="chapter">
   <div class="kicker">Chapter 6</div>
+  <h1>VMs and containers</h1>
+  <p class="intro">Every VM and container on your Proxmox hosts, and every Docker container, on one page: <span class="ui">VMs</span> in the top bar.</p>
+  <figure><img src="img/vms.png" alt=""><figcaption><b>VMs:</b> status, CPU, memory, disk, network and last backup for each guest.</figcaption></figure>
+  <ul>
+    <li><b>Search</b> by name, ID, address or OS, and filter <b>Running</b>, <b>Stopped</b> or <b>Backup</b> (no backup, or an old one).</li>
+    <li>The disk is a container's own disk, or for a VM with the QEMU guest agent its fullest filesystem. The address comes from the guest agent too.</li>
+    <li><b>Last backup</b> is the newest backup Proxmox has of the guest, on any backup storage. A guest is <b>overdue</b> when its newest backup is older than its backup job's interval plus a day (a monthly job allows 32 days); that raises a <i>Backup failed</i> warning.</li>
+  </ul>
+  <figure class="crop"><div class="frame" style="max-height:95mm"><img src="img/vm-drawer.png" alt=""></div><figcaption><b>A guest's details:</b> size, graphs of CPU, memory, network and disk, its filesystems, its backups and backup job, and <i>Open in Proxmox</i>.</figcaption></figure>
+</section>
+
+<section>
+  <h2>Containers</h2>
+  <figure><img src="img/containers.png" alt=""><figcaption><b>Containers</b> from a Docker host: state, health, CPU (100 % is one core), memory, restarts and Docker's own status.</figcaption></figure>
+  <p>Containers come from a Docker host through a read-only socket proxy, or from Portainer (chapter 10). A container that <b>keeps restarting</b>, one that <b>stopped</b> although it should run, or one that fails its <b>health check</b> shows under <i>Needs you</i> and sends a <i>Container problem</i> alert. A container you stopped by hand doesn't count, and the label <code>lookout.ignore=true</code> leaves one out.</p>
+</section>
+
+<!-- ============ 7 ============ -->
+<section class="chapter">
+  <div class="kicker">Chapter 7</div>
   <h1>Energy report</h1>
   <p class="intro">How much the lab used and what it cost, per day or per month, split per device, priced with your own electricity plan and grid tariff.</p>
   <figure class="crop"><div class="frame"><img src="img/energy.png" alt=""></div><figcaption><b>October in the sample lab:</b> kWh, cost and average price, a bar per day, and each device's share.</figcaption></figure>
   <ul>
     <li><span class="ui">Month / Year</span> switches between days in a month and months in a year; ‹ › step through periods.</li>
     <li>Point at a bar for that day. <span class="ui">Show as table</span> gives the same numbers as a table.</li>
-    <li><b>Per device</b> separates measured power (from server controllers and PoE) from estimates you entered.</li>
+    <li><b>Per device</b> separates measured power (server controllers, smart plugs, PoE) from estimates you entered.</li>
     <li><b>Downloads:</b> <i>Excel (NO)</i> opens straight in Norwegian Excel; <i>CSV</i> is for everything else.</li>
   </ul>
 </section>
 
-<!-- ============ 7 ============ -->
+<!-- ============ 8 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 7</div>
-  <h1>Docs, Updates and Log</h1>
+  <div class="kicker">Chapter 8</div>
+  <h1>Docs, Updates, Log and Incidents</h1>
   <h2>Docs</h2>
   <div class="two-wide">
     <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/docs.png" alt=""></div><figcaption><b>The server sheet for atlas:</b> facts read automatically, then your own notes.</figcaption></figure>
@@ -295,20 +334,25 @@ h2, h3 { break-after: avoid; }
       <p><b>Nothing is ever installed from Lookout.</b> Update on the device itself, then press <i>Check now</i>.</p>
     </div>
   </div></div>
+</section>
 
+<section class="page">
   <h2>Log</h2>
   <div class="two-wide">
     <figure class="crop"><div class="frame" style="max-height:95mm"><img src="img/log.png" alt=""></div><figcaption><b>The Log:</b> every change, with what changed and who did it.</figcaption></figure>
     <div>
-      <p>Everything that happens, newest first, grouped by day: changes in Admin and Docs (<i>Title: Homelab → My Lab</i>), devices found, problems starting and clearing, notifications sent, snoozes, IP changes, patch cables, sign-ins, update checks and backups.</p>
+      <p>Everything that happens, newest first, grouped by day: changes in Admin and Docs (<i>Title: Homelab → My Lab</i>), devices found, problems starting and clearing, notifications sent, acknowledgements, snoozes, IP changes, patch cables, sign-ins, update checks and backups.</p>
       <p>Filter by category, search, and <span class="ui">Download CSV</span>. Entries are kept for a year and go into backups. Passwords are never written to it.</p>
     </div>
   </div>
+  <h2>Incidents</h2>
+  <figure class="crop"><div class="frame" style="max-height:62mm"><img src="img/incidents.png" alt=""></div><figcaption><b>Incidents:</b> each problem from start to end, who acknowledged it, and the totals for the last 30 days.</figcaption></figure>
+  <p><span class="ui">Incidents</span> at the top of the Log lists every problem from when it appeared to when it cleared: how long it lasted, who acknowledged it and when, and whether it was behind another outage or during maintenance. <b>Open only</b> shows the ones still going on, each with an <b>Acknowledge</b> button. Incidents are kept for a year.</p>
 </section>
 
-<!-- ============ 8 ============ -->
+<!-- ============ 9 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 8</div>
+  <div class="kicker">Chapter 9</div>
   <h1>Wall display</h1>
   <p class="intro">One screen for a tablet or TV, readable from across the room. Open it from <span class="ui">Wall display</span> on Home, or at <code>/wall</code>.</p>
   <figure><img src="img/wall.png" alt=""><figcaption><b>The wall at 1920 × 1080:</b> the headline and logo, the problem in focus, power, internet, the rack and the services along the bottom.</figcaption></figure>
@@ -316,17 +360,17 @@ h2, h3 { break-after: avoid; }
     <li><b>Needs you</b> shows one problem at a time, eight seconds each, with the full list beside it.</li>
     <li>The buttons by the clock fade out when nobody touches the screen; touch it or move the mouse to bring them back.</li>
     <li>Tap anything to open it on Home. The full-screen button keeps the screen awake where the browser allows it.</li>
-    <li>For a wall tablet, sign in once with <i>Remember this device</i>; it then shows the wall without a password and can't change anything.</li>
+    <li>For a wall tablet, sign in once with <i>Remember this device for viewing</i>; it then shows the wall without a password and can't change anything.</li>
   </ul>
   <figure><img src="img/wall-customize.png" alt=""><figcaption><b>Customize</b> (admin): choose panels, their order and size (Normal, Wide, Tall, Big), the top bar, patch cables, and which services and devices to show.</figcaption></figure>
 </section>
 
-<!-- ============ 9 ============ -->
+<!-- ============ 10 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 9</div>
+  <div class="kicker">Chapter 10</div>
   <h1>Admin: devices</h1>
-  <p class="intro">Admin has six tabs: <span class="ui">Devices · Services · Alerts · Power &amp; cost · Dashboard &amp; look · System</span>. Passwords, tokens and keys are entered here and nowhere else; they are stored encrypted and never shown again.</p>
-  <figure><img src="img/admin-devices.png" alt=""><figcaption><b>Devices:</b> the rack editor on the left (drag to move, double-click an empty U to add a panel) and every device on the right.</figcaption></figure>
+  <p class="intro">Admin has ten tabs in three groups: <b>Monitoring</b> (<span class="ui">Devices · Services · Alerts · Check-ins &amp; maintenance</span>), <b>Dashboard</b> (<span class="ui">Dashboard · Look · Power &amp; cost</span>) and <b>System</b> (<span class="ui">Backups · Sign-in &amp; security · Server</span>). On a phone, the section menu at the top switches between them. Passwords, tokens and keys are entered here and nowhere else; they are stored encrypted and never shown again.</p>
+  <figure><img src="img/admin-devices.png" alt=""><figcaption><b>Devices:</b> the rack editor (drag to move, double-click an empty U to add a panel) and every device.</figcaption></figure>
 
   <div class="keep"><h2>Add a device from the catalog</h2>
   <div class="two-wide">
@@ -356,43 +400,72 @@ h2, h3 { break-after: avoid; }
     <tr><td>SNMPv3</td><td>Cisco, Aruba, MikroTik, Netgear, QNAP, UPS cards</td><td>A read-only SNMPv3 user with SHA and AES</td></tr>
     <tr><td>NUT</td><td>A USB UPS</td><td>NUT's <code>upsd</code> listening on the network</td></tr>
     <tr><td>Omada</td><td>TP-Link Omada</td><td>A local <i>Viewer</i> on the Omada controller</td></tr>
+    <tr><td>Shelly, Tasmota</td><td>Smart plugs</td><td>Nothing (or the plug's web password). Only reads the power.</td></tr>
+    <tr><td>Home Assistant</td><td>Any power sensor Home Assistant reads</td><td>A long-lived access token and the sensor's entity ID</td></tr>
+    <tr><td>Docker</td><td>A Docker host's containers</td><td>A <b>socket proxy</b> that only allows reading containers (<code>CONTAINERS=1</code>, <code>POST=0</code>)</td></tr>
+    <tr><td>Portainer</td><td>A Portainer environment</td><td>An access token, and the environment ID</td></tr>
+    <tr><td>Ping</td><td>Anything without an API</td><td>Nothing; it only has to answer ping</td></tr>
   </table>
   <div class="two-wide">
-    <figure class="crop"><div class="frame" style="max-height:130mm"><img src="img/device-edit.png" alt=""></div><figcaption><b>Editing atlas:</b> where it sits, how it's drawn, and its two connections.</figcaption></figure>
+    <figure class="crop"><div class="frame" style="max-height:130mm"><img src="img/device-edit.png" alt=""></div><figcaption><b>Editing atlas:</b> where it sits, how it's drawn, and its connections.</figcaption></figure>
     <div>
       <h3>Self-signed certificates</h3>
       <p>Choose <b>Pin SHA-256 fingerprint</b> and press <span class="ui">Fetch certificate</span>. Lookout checks the fingerprint <i>before</i> sending the password. If it changes later (a firmware update), the device stops with <i>fingerprint mismatch; nothing was sent</i>. Find out why, then fetch and save the new one.</p>
       <h3>More</h3>
       <ul>
+        <li><b>Power reading from:</b> <i>Automatic</i> (the controller, then a smart plug, then the estimate), one of them, or <i>Not counted</i>. Each device is counted once.</li>
         <li><b>Estimated power</b> for devices without a power sensor.</li>
-        <li><b>In the rack</b> with height and lowest U, <b>outside the rack</b>, or not placed.</li>
-        <li><b>Look</b> and <b>Drive bays</b> change the drawing when <i>Auto</i> guesses wrong.</li>
-        <li>A desktop NAS goes on a <b>shelf</b> in the rack.</li>
+        <li><b>In the rack</b> with height and lowest U, <b>outside the rack</b>, or not placed. <b>Look</b> and <b>Drive bays</b> change the drawing.</li>
       </ul>
     </div>
   </div>
 </section>
 
-<!-- ============ 10 ============ -->
+<section class="page">
+  <h2>Reached through</h2>
+  <p>Each device has <b>Reached through</b>: the switch, gateway or host it depends on. <i>Automatic</i> uses what UniFi reports (an access point hangs off its switch); for servers, choose it yourself. When that device is down, everything behind it (devices, their services and check-ins) is grouped under it on Home as <i>Behind core-switch</i>, their tiles say <b>Unreachable</b>, and only one alert is sent, naming what is behind it.</p>
+  <h2>Alerts for this device</h2>
+  <div class="two">
+    <figure><img src="img/device-alerts.png" alt=""><figcaption><b>Alerts for vault:</b> its own <i>Full at</i> limit; the greyed ones are the general limits.</figcaption></figure>
+    <div>
+      <ul>
+        <li><b>Mute</b> stops messages for the device and the services and check-ins on it. Its problems still show, marked <i>Alerts muted</i>. For planned work, use maintenance instead (chapter 13).</li>
+        <li><b>Full at</b>, <b>Disks hot at</b> and <b>Other sensors at</b>: limits for this device only. Empty uses the limits under Alerts. A limit here also wins over the iDRAC's own warning level.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 11 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 10</div>
+  <div class="kicker">Chapter 11</div>
   <h1>Admin: services</h1>
   <div class="two-wide">
-    <figure><img src="img/service-edit.png" alt=""><figcaption><b>Editing Jellyfin:</b> name, group, link, icon, connection and integration.</figcaption></figure>
+    <figure><img src="img/service-edit.png" alt=""><figcaption><b>Editing Jellyfin:</b> name, group, link, icon, connection, status check and integration.</figcaption></figure>
     <div>
       <ol class="steps">
-        <li><span class="ui">Add service</span>, then a <b>name</b>, <b>group</b> and the <b>link</b> the card opens.</li>
+        <li><span class="ui">Add service</span>, then a <b>name</b>, <b>group</b>, the <b>link</b> the card opens and the device it <b>runs on</b>.</li>
         <li>An <b>icon</b>: search 2,800 app icons, upload your own, or use a letter.</li>
-        <li>The <b>Connection URL</b> for the status check (can be an internal address).</li>
+        <li>The <b>Connection URL</b> (can be an internal address) and a <b>status check</b>.</li>
         <li>The <b>integration</b> and its API key, then <span class="ui">Test</span>.</li>
         <li>Pick up to four <b>numbers</b> for the card and <span class="ui">Save service</span>.</li>
       </ol>
       <div class="note warn">Over plain <code>http://</code> a key travels unencrypted on your network; the form warns you.</div>
     </div>
   </div>
+  <h2>Status checks</h2>
+  <table>
+    <tr><th>Check</th><th>Up when</th></tr>
+    <tr><td>Web page</td><td>The URL answers. Optionally a <b>path</b> (<code>/health</code>), a word it <b>must contain</b>, a <b>JSON value</b> (<code>status</code> = <code>ok</code>), and <b>only success</b> (2xx/3xx) so a login page doesn't count.</td></tr>
+    <tr><td>Ping</td><td>The host answers ping.</td></tr>
+    <tr><td>TCP port</td><td>Something listens on the port (SSH on 22, a database on 5432).</td></tr>
+    <tr><td>DNS lookup</td><td>Your DNS server (Pi-hole, AdGuard) resolves a name, optionally to an expected address.</td></tr>
+  </table>
+  <p><b>Mute alerts</b> on a service keeps it on the page and on Home, but sends no messages for it.</p>
   <h2>Infrastructure cards</h2>
   <table>
     <tr><th>Integration</th><th>Numbers from</th><th>Shows</th></tr>
+    <tr><td>Proxmox VE</td><td>A Proxmox device you added</td><td>VMs running, CPU, memory; the link opens Proxmox</td></tr>
     <tr><td>TrueNAS</td><td>A TrueNAS device you added, or its own URL and key</td><td>Alerts, unhealthy pools, space</td></tr>
     <tr><td>Synology DSM</td><td>A Synology device, or DSM's login</td><td>Volume used, CPU, memory, temperature</td></tr>
     <tr><td>UniFi Network</td><td>A UniFi console, or its own login</td><td>Clients, WAN, devices offline, speed test</td></tr>
@@ -401,21 +474,83 @@ h2, h3 { break-after: avoid; }
   </table>
 </section>
 
-<!-- ============ 11 ============ -->
+<!-- ============ 12 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 11</div>
-  <h1>Admin: alerts, power and look</h1>
-  <h2>Alerts</h2>
+  <div class="kicker">Chapter 12</div>
+  <h1>Admin: alerts</h1>
+  <figure><img src="img/admin-alerts.png" alt=""><figcaption><b>Alerts:</b> channels, and what to send where.</figcaption></figure>
+  <ol class="steps">
+    <li>Add a <b>channel</b> and press <span class="ui">Send test</span>: push to the app, ntfy, Telegram, Discord, e-mail, iMessage (Sendblue) or a webhook.</li>
+    <li>For each alert type (offline, service down, hardware, storage, temperature, space, TrueNAS, power, container, check-in, backup), pick the channels and a wait time so short blips stay quiet.</li>
+    <li>Choose whether to send a message when it clears, and reminders while it lasts.</li>
+  </ol>
+  <p>Several alerts at once go out as one message. At most 30 messages go to one channel per hour.</p>
+</section>
+
+<section class="page">
+  <h2>Push to the app</h2>
   <div class="two-wide">
-    <figure><img src="img/admin-alerts.png" alt=""><figcaption><b>Alerts:</b> channels, and what to send where.</figcaption></figure>
+    <figure><img src="img/push-editor.png" alt=""><figcaption><b>A push channel:</b> the devices that get it, and <i>Turn on for this device</i>.</figcaption></figure>
     <div>
       <ol class="steps">
-        <li>Add a <b>channel</b>: ntfy, Telegram, Discord or e-mail. Press <span class="ui">Test</span>.</li>
-        <li>For each alert type (offline, service down, hardware, storage, temperature, space, power, backup), pick the channels and a wait time so short blips stay quiet.</li>
-        <li>Choose whether to send a message when it clears, and reminders.</li>
+        <li>Add a <b>Push to the app</b> channel and save it.</li>
+        <li>On each phone, tablet or computer, open this channel and press <span class="ui">Turn on for this device</span>; allow notifications.</li>
+        <li>On iPhone and iPad, install the app on the Home Screen first and do it inside the app (iOS 16.4 or newer).</li>
       </ol>
-      <p>At most 30 messages go to one channel per hour.</p>
+      <p>Messages are encrypted so only your device can read them. A critical alert stays on screen, and one open problem has an <b>Acknowledge</b> button.</p>
     </div>
+  </div>
+  <h2>Acknowledge</h2>
+  <p>Acknowledging means someone is on it: the problem keeps showing until it clears, but the reminders stop. Every channel carries an acknowledge link for a single open problem: a button in push and ntfy, a link in Telegram, iMessage, e-mail and Discord, and <code>ackUrl</code> in a webhook. The link opens a page that asks first, so a link preview can't acknowledge anything, and it only works for that one problem. On Home, use the clock button on the row.</p>
+  <div class="note">The links point to the dashboard's address. If you reach it by a name, set <b>Dashboard address</b> (chapter 14), so the links work from a phone.</div>
+  <h2>Webhook</h2>
+  <p>A JSON POST for Home Assistant, n8n or Node-RED, with <code>severity</code>, <code>title</code>, <code>text</code>, <code>link</code>, <code>ackUrl</code> and the list of <code>alerts</code>. The URL is stored like a password, because its path is often the secret.</p>
+</section>
+
+<!-- ============ 13 ============ -->
+<section class="chapter">
+  <div class="kicker">Chapter 13</div>
+  <h1>Admin: check-ins and maintenance</h1>
+  <figure><img src="img/admin-schedules.png" alt=""><figcaption><b>Check-ins &amp; maintenance:</b> two jobs that call in, and a weekly window for Proxmox updates.</figcaption></figure>
+  <h2>Check-ins</h2>
+  <p>A check-in catches the backup or cron job that silently stopped running. Give it a name, how often the job runs and how late it may be. Then add its address to the end of the job:</p>
+  <p><code>0 3 * * * backup.sh &amp;&amp; curl -fsS -m 10 http://lookout:8080/ping/… || curl -fsS -m 10 http://lookout:8080/ping/…/fail</code></p>
+  <p>It is <b>OK</b> while the job calls in time, <b>Late</b> after the period and <b>Missed</b> after the grace time; <code>…/fail</code> reports a failure at once. Keep the address like a password; <i>New address</i> replaces it.</p>
+  <h2>Maintenance</h2>
+  <p><span class="ui">Plan maintenance</span> for work you know about: <b>Everything</b>, or the devices, services and check-ins it covers; <b>Starting now</b>, <b>Once</b>, or <b>Every week</b>. While it is on, problems are shown as <i>Maintenance</i>, no alerts are sent, and the time doesn't count against uptime. <span class="ui">End now</span> stops it early.</p>
+</section>
+
+<!-- ============ 14 ============ -->
+<section class="chapter">
+  <div class="kicker">Chapter 14</div>
+  <h1>Admin: dashboard, look and power</h1>
+  <h2>Dashboard</h2>
+  <div class="two-wide">
+    <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-dashboard.png" alt=""></div><figcaption><b>Dashboard:</b> title, provider, the dashboard address and what shows on Home.</figcaption></figure>
+    <div>
+      <ul>
+        <li><b>Title</b>, <b>internet provider</b> (and its logo) and <b>refresh interval</b>.</li>
+        <li><b>Dashboard address:</b> a domain name, like <code>https://lookout.home.arpa:8443</code>. The dashboard answers on it as well as on its IP, and links in alerts use it. The name must point to the server in your DNS.</li>
+        <li><b>Services on Home</b> and <b>VMs and containers</b>: where they show and with which numbers.</li>
+        <li><b>Status page:</b> switch on the public <code>/status</code> page (chapter 5).</li>
+      </ul>
+      <div class="note warn"><b>Keep "Make the dashboard public" off</b> unless you really mean it: it shows Home, the rack and services to anyone who can reach the server. Share the status page instead.</div>
+    </div>
+  </div>
+</section>
+
+<section class="page">
+  <h2>Look</h2>
+  <div class="two">
+    <div>
+      <ul>
+        <li><b>Theme</b> (21) and <b>accent</b>: the default look for everyone.</li>
+        <li><b>Logo:</b> the default, a built-in icon in a colour, or your own image (PNG, JPEG, WebP or SVG). It is shown in the top bar, on the sign-in page and as the browser tab icon.</li>
+        <li><b>The app icon</b> is drawn from the logo on the theme's colour when you press <span class="ui">Save</span>. A phone that already has the app keeps its old icon: on iPhone, remove the app and add it again.</li>
+        <li><b>Background</b> image or gradient, blur, dimming and card opacity.</li>
+      </ul>
+    </div>
+    <figure class="crop"><div class="frame" style="max-height:150mm"><img src="img/appearance.png" alt=""></div><figcaption><b>Look:</b> theme, accent, logo and background, previewed live.</figcaption></figure>
   </div>
   <h2>Power &amp; cost</h2>
   <div class="two-wide">
@@ -427,64 +562,57 @@ h2, h3 { break-after: avoid; }
   </div>
 </section>
 
-<section class="page">
-  <h2>Dashboard &amp; look</h2>
-  <div class="two">
-    <div>
-      <ul>
-        <li><b>Title</b>, <b>internet provider</b> and <b>refresh interval</b>.</li>
-        <li><b>Provider logo:</b> found automatically from who owns your public IP, or upload one, paste a link, or none.</li>
-        <li><b>Services on Home:</b> one line with the count, tiles, a compact list, only the ones down, or off.</li>
-        <li><b>VMs and containers:</b> where they show and with which numbers.</li>
-        <li><b>Theme</b> (21) and <b>accent</b>: the default look for everyone.</li>
-        <li><b>Logo:</b> the default, a built-in icon in a colour, or your own image (PNG, JPEG, WebP or SVG).</li>
-        <li><b>Background</b> image or gradient, blur, dimming and card opacity.</li>
-      </ul>
-      <div class="note warn"><b>Keep "Make the dashboard public" off</b> unless you really mean it: it shows Home, the rack and services to anyone who can reach the server.</div>
-    </div>
-    <figure class="crop"><div class="frame" style="max-height:150mm"><img src="img/appearance.png" alt=""></div><figcaption><b>Appearance:</b> theme, accent, logo and background, previewed live.</figcaption></figure>
-  </div>
-</section>
-
-<!-- ============ 12 ============ -->
+<!-- ============ 15 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 12</div>
-  <h1>Admin: system and backups</h1>
-  <figure><img src="img/admin-system.png" alt=""><figcaption><b>System:</b> the web server and certificate, backups and remembered devices.</figcaption></figure>
+  <div class="kicker">Chapter 15</div>
+  <h1>Admin: backups, security and server</h1>
+  <h2>Backups</h2>
+  <figure class="crop"><div class="frame" style="max-height:110mm"><img src="img/admin-backups.png" alt=""></div><figcaption><b>Backups:</b> download or restore, automatic backups and where they go.</figcaption></figure>
   <ul>
-    <li><b>Web server:</b> the HTTPS and HTTP ports. Keep HTTP on <i>Redirect to HTTPS</i>. <b>Certificate</b> shows what it covers and when it expires.</li>
     <li><b>Download now</b> gives one encrypted file with everything, including all passwords. Choose a passphrase of at least 12 characters and keep it in your password manager.</li>
     <li><b>Restore</b> reads such a file; the current state is saved first.</li>
     <li><b>Automatic backups</b> run daily and can also go to a NAS folder, S3 storage or another machine over SSH.</li>
-    <li><b>Admin password:</b> changing it signs out every other session and remembered device.</li>
-    <li><b>Remembered devices:</b> see which phones and tablets can view without a password, and sign them out.</li>
   </ul>
   <div class="note"><b>Moving to a new server:</b> download a backup, install Lookout on the new machine, and restore it. Devices keep their passwords because they travel inside the encrypted backup.</div>
 </section>
 
-<!-- ============ 13 ============ -->
+<section class="page">
+  <h2>Sign-in &amp; security</h2>
+  <figure class="crop"><div class="frame" style="max-height:120mm"><img src="img/admin-security.png" alt=""></div><figcaption><b>Sign-in &amp; security:</b> the password, signed-in browsers and remembered devices.</figcaption></figure>
+  <ul>
+    <li><b>Admin password:</b> changing it signs out every other browser and remembered device.</li>
+    <li><b>Signed-in browsers:</b> where you are signed in, normal or kept signed in. <i>Sign out</i> one, or <i>Sign out everywhere else</i>.</li>
+    <li><b>Remembered devices:</b> the view-only devices, with <i>Sign out</i> for each.</li>
+  </ul>
+  <h2>Server</h2>
+  <figure class="crop"><div class="frame" style="max-height:100mm"><img src="img/admin-system.png" alt=""></div><figcaption><b>Server:</b> this server's version and Node.js, the web server and its certificate.</figcaption></figure>
+  <p><b>Web server:</b> the HTTPS and HTTP ports. Keep HTTP on <i>Redirect to HTTPS</i>. <b>Certificate</b> shows the names it covers and when it expires, and <b>Download CA certificate</b> is here.</p>
+</section>
+
+<!-- ============ 16 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 13</div>
+  <div class="kicker">Chapter 16</div>
   <h1>Keeping it safe</h1>
   <p class="intro">Lookout was built to be safe by default. A few habits keep it that way.</p>
   <table>
     <tr><th>Do</th><th>Why</th></tr>
-    <tr><td>Keep the dashboard private</td><td>Public mode lets anyone on the network see your lab.</td></tr>
+    <tr><td>Keep the dashboard private</td><td>Public mode lets anyone on the network see your lab. Share the status page instead.</td></tr>
     <tr><td>Use read-only accounts</td><td>Then even a leaked secret can't change anything.</td></tr>
     <tr><td>Pin fingerprints</td><td>The password is only sent to the device you trusted. When one changes, find out why before re-fetching.</td></tr>
     <tr><td>HTTPS only</td><td>Keep HTTP on <i>Redirect to HTTPS</i>.</td></tr>
-    <tr><td>Remember only your own devices</td><td>If a phone is lost, sign it out under <i>Remembered devices</i>.</td></tr>
+    <tr><td>Keep signed in only on your own devices</td><td>If a phone is lost, sign it out under <i>Signed-in browsers</i>.</td></tr>
     <tr><td>A unique admin password</td><td>Change it if someone may have seen it.</td></tr>
+    <tr><td>Treat check-in and webhook addresses as passwords</td><td>Anyone who knows one can use it.</td></tr>
+    <tr><td>Use a socket proxy for Docker</td><td>Never give the dashboard the Docker socket itself.</td></tr>
     <tr><td>Store the backup passphrase safely</td><td>A backup holds every password Lookout knows.</td></tr>
-    <tr><td>Restore only your own backups</td><td>A restore replaces everything.</td></tr>
     <tr><td>Look at the Log now and then</td><td>Failed sign-ins and unexpected changes show up there.</td></tr>
   </table>
   <p>Secrets are encrypted on disk (AES-256-GCM) and never sent back to the browser. A form only says whether one is set. Changing a device's address or user name without retyping its password deletes the old password, so it is never sent somewhere new.</p>
 </section>
 
-<!-- ============ 14 ============ -->
+<!-- ============ 17 ============ -->
 <section class="chapter">
-  <div class="kicker">Chapter 14</div>
+  <div class="kicker">Chapter 17</div>
   <h1>When something doesn't work</h1>
   <table>
     <tr><th>What you see</th><th>What to do</th></tr>
@@ -492,15 +620,17 @@ h2, h3 { break-after: avoid; }
     <tr><td>No "Install app" option</td><td>Trust the certificate first. On an iPhone it has to be Safari.</td></tr>
     <tr><td><i>Can't reach the dashboard</i></td><td>You're not at home or on your VPN. The app opens by itself when it's back.</td></tr>
     <tr><td><i>Too many failed attempts</i></td><td>Wait the time shown. It doubles with each failure, up to an hour.</td></tr>
-    <tr><td>Asked for the password again</td><td>The 30 days ran out, the device was signed out, or the password changed.</td></tr>
+    <tr><td>Asked for the password again</td><td>The sign-in ran out, it was signed out, or the password changed. A risky change asks after 15 minutes.</td></tr>
     <tr><td>A device says Offline</td><td>Admin → Devices → open it → <b>Test</b> shows why: a changed certificate, a changed password, or a device that is really down.</td></tr>
-    <tr><td>A service is red but works</td><td>Check its <b>Connection URL</b> in Admin → Services and press <b>Test</b>.</td></tr>
-    <tr><td>Alerts don't arrive</td><td>Admin → Alerts → <b>Test</b> on the channel; check that the alert's row ticks that channel.</td></tr>
+    <tr><td>A service is red but works</td><td>Check its <b>Connection URL</b> and <b>status check</b> in Admin → Services and press <b>Test</b>.</td></tr>
+    <tr><td>Alerts don't arrive</td><td>Admin → Alerts → <b>Send test</b> on the channel; check that the alert's row ticks that channel, and that the device isn't muted or in maintenance.</td></tr>
+    <tr><td>Push doesn't turn on</td><td>On iPhone, use the installed app, not Safari. The browser must allow notifications for the site.</td></tr>
+    <tr><td>Acknowledge links don't open</td><td>Set <b>Dashboard address</b> to an address your phone can reach.</td></tr>
+    <tr><td>The app icon is old</td><td>Press Save under Look, then remove the app and add it again.</td></tr>
     <tr><td>A graph is missing</td><td>Graphs appear a few minutes after a device is added.</td></tr>
-    <tr><td>The wrong drawing</td><td>Edit the device and set <b>Look</b> and <b>Drive bays</b> by hand.</td></tr>
     <tr><td>Excel shows one column</td><td>Use the <b>Excel (NO)</b> download.</td></tr>
   </table>
-  <div class="note">Every problem, change and sign-in is in the <b>Log</b>, which is often the quickest way to find out what happened and when.</div>
+  <div class="note">Every problem, change and sign-in is in the <b>Log</b>, and every problem's start and end is under <b>Incidents</b>: often the quickest way to find out what happened and when.</div>
 </section>
 
 </body>
