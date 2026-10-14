@@ -160,6 +160,7 @@ const DEFAULT_SETTINGS = {
     blur: 12, // px
     dim: 35, // % scrim over the background
     cardOpacity: 85, // % (below 100 gives frosted-glass cards)
+    appIcons: null, // the installed app's icons drawn from the logo: ids in the icon store
     logo: { kind: 'default' }, // default | icon (a built-in icon in a colour) | file (an uploaded or library image)
   },
 };
@@ -821,7 +822,29 @@ function validateAppearance(a) {
     dim: num(a.dim, 0, 90, 'Background dimming', { int: true }),
     cardOpacity: num(a.cardOpacity, 30, 100, 'Card opacity', { int: true }),
     logo: validateLogo(a.logo), // left out (an older client): kept as it is
+    appIcons: validAppIcons(a.appIcons === undefined ? config.settings.appearance?.appIcons : a.appIcons),
   };
+}
+
+// The installed app's icons, drawn from the logo by the browser (Admin → Look): ids in the icon store
+const APP_ICON_SIZES = { 180: 180, 192: 192, 512: 512, maskable: 512 };
+function validAppIcons(v) {
+  if (!v || typeof v !== 'object') return null;
+  const out = {};
+  for (const k of Object.keys(APP_ICON_SIZES)) {
+    if (!config.icons.some((i) => i.id === v[k] && i.source === `app-icon:${k}`)) return null;
+    out[k] = v[k];
+  }
+  return out;
+}
+
+// A PNG of exactly this size (from its IHDR chunk)
+function appIconPng(b64, size) {
+  const buf = Buffer.from(String(b64 || ''), 'base64');
+  if (buf.length > 600 * 1024) throw new UserError('App icon too large');
+  if (buf.length < 33 || !buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || buf.toString('latin1', 12, 16) !== 'IHDR') throw new UserError('App icons must be PNG');
+  if (buf.readUInt32BE(16) !== size || buf.readUInt32BE(20) !== size) throw new UserError(`App icon must be ${size}×${size}`);
+  return buf;
 }
 
 // Sections not present in the request keep their current values.
@@ -4326,6 +4349,7 @@ function storeIcon(buf, source, clean = sanitizeImage) {
 function pruneIcons() {
   const used = new Set(config.services.filter((s) => s.icon?.kind === 'file').map((s) => s.icon.id));
   if (config.settings.appearance.logo?.kind === 'file') used.add(config.settings.appearance.logo.id);
+  for (const id of Object.values(config.settings.appearance.appIcons || {})) used.add(id);
   if (config.settings.dashboard.carrierLogo?.kind === 'file') used.add(config.settings.dashboard.carrierLogo.id);
   if (alertState.carrier?.iconId) used.add(alertState.carrier.iconId);
   for (const icon of config.icons.filter((i) => !used.has(i.id))) {
@@ -5690,7 +5714,7 @@ function redirect(res, location) {
   res.end();
 }
 
-function readBody(req) {
+function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     if (type !== 'application/json') return reject(Object.assign(new UserError('Content-Type must be application/json'), { status: 415 }));
@@ -5698,7 +5722,7 @@ function readBody(req) {
     let size = 0;
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(Object.assign(new UserError('Request body too large'), { status: 413 }));
         req.destroy();
       } else chunks.push(c);
@@ -5723,6 +5747,13 @@ function initAllowedHosts() {
   const names = [HOST.includes(':') ? `[${HOST}]` : HOST];
   if (HOST === '127.0.0.1' || HOST === '::1') names.push('localhost', '127.0.0.1', '[::1]');
   for (const extra of String(process.env.ALLOWED_HOSTS || '').split(',')) if (extra.trim()) names.push(extra.trim().toLowerCase());
+  // the dashboard address set in Admin (a domain name): answered on too
+  const own = config.settings?.dashboard?.linkUrl;
+  if (own) {
+    const u = new URL(own);
+    names.push(u.host.toLowerCase());
+    if (!u.port) names.push(u.hostname.toLowerCase());
+  }
   for (const n of names) {
     if (/:\d+$/.test(n) && !n.endsWith(']')) allowedHosts.add(n);
     else {
@@ -6006,7 +6037,7 @@ function svgHeaders(res) {
 
 // Built-in icons (the Lucide subset the pages use), read once for drawing a logo on the server
 let iconShapes = null;
-function logoIconSvg(name, color) {
+function logoIconSvg(name, color, bare = false) {
   if (!iconShapes) {
     try {
       iconShapes = JSON.parse(fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'icons.js'), 'utf8').match(/const HD_ICONS = (\{[\s\S]*?\});\n/)[1]);
@@ -6017,7 +6048,7 @@ function logoIconSvg(name, color) {
   const esc = (v) => String(v).replace(/[^a-zA-Z0-9 .,#-]/g, '');
   const parts = (iconShapes[name] || []).map(([tag, attrs]) => `<${esc(tag)} ${Object.entries(attrs).map(([k, v]) => `${esc(k)}="${esc(v)}"`).join(' ')}/>`).join('');
   const c = LOGO_COLORS[color] || LOGO_COLORS.blue;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#16191e"/><g transform="translate(14 14) scale(1.5)" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${parts}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${bare ? '' : '<rect width="64" height="64" rx="14" fill="#16191e"/>'}<g transform="translate(14 14) scale(1.5)" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${parts}</g></svg>`;
 }
 
 // The current logo as one image: the top bar, the sign-in page and the browser tab all load /logo
@@ -6025,7 +6056,8 @@ function sendLogo(req, res) {
   const logo = config.settings.appearance.logo || { kind: 'default' };
   let mime = 'image/svg+xml';
   let data = null;
-  if (logo.kind === 'icon') data = Buffer.from(logoIconSvg(logo.name, logo.color));
+  // ?bare=1: a built-in icon without its dark tile (for drawing the app icon on the theme colour)
+  if (logo.kind === 'icon') data = Buffer.from(logoIconSvg(logo.name, logo.color, new URL(req.url, 'http://x').searchParams.get('bare') === '1'));
   else if (logo.kind === 'file') {
     const rec = config.icons.find((i) => i.id === logo.id);
     try {
@@ -6287,7 +6319,14 @@ function appHead() {
     ? `<meta name="theme-color" content="${THEME_COLORS[theme]}">`
     : `<meta name="theme-color" content="${THEME_COLORS.light}" media="(prefers-color-scheme: light)"><meta name="theme-color" content="${THEME_COLORS.dark}" media="(prefers-color-scheme: dark)">`;
   // use-credentials: the app gets its name from the dashboard title only when signed in
-  return `<link rel="preload" href="/static/fonts/inter-5.3.0.woff2" as="font" type="font/woff2" crossorigin><link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">${color}<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">\n</head>`;
+  return `<link rel="preload" href="/static/fonts/inter-5.3.0.woff2" as="font" type="font/woff2" crossorigin><link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">${color}<link rel="apple-touch-icon" href="${appIconUrl(180)}"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">\n</head>`;
+}
+
+// The app icon: drawn from the logo, else the shipped one (?v= changes with the picture, so it is fetched again)
+function appIconUrl(k) {
+  const id = config.settings.appearance.appIcons?.[k];
+  if (id) return `/app-icon/${k}.png?v=${id.slice(0, 12)}`;
+  return { 180: '/static/icons/apple-touch-icon.png', 192: '/static/icons/icon-192.png', 512: '/static/icons/icon-512.png', maskable: '/static/icons/maskable-512.png' }[k];
 }
 
 // Installable app. The name is the dashboard title for those who may see the dashboard,
@@ -6305,9 +6344,9 @@ function manifest(sees) {
     background_color: '#08090a',
     theme_color: THEME_COLORS[config.settings.appearance.theme] || THEME_COLORS.dark,
     icons: [
-      { src: '/static/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: '/static/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: '/static/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: appIconUrl(192), sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: appIconUrl(512), sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: appIconUrl('maskable'), sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
   };
 }
@@ -6771,12 +6810,13 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (((next.dashboard.public && !before.dashboard.public) || (next.dashboard.statusPage?.enabled && !before.dashboard.statusPage?.enabled) || (next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '')) && !freshAuth(session)) return stepUpRequired(res);
     config.settings = next;
     saveConfig();
+    if ((next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '')) initAllowedHosts();
     if (config.settings.dashboard.refreshSeconds !== prevRefresh) schedulePolling();
     else if (JSON.stringify(config.settings.power) !== prevPower) ensurePrices().catch(() => {});
     const what = changesText(before, config.settings);
     if (what) event('settings', `Settings changed: ${what.split('; ').map((x) => x.split(':')[0]).slice(0, 4).join(', ')}${what.split('; ').length > 4 ? ', …' : ''}`, what);
     else requestCtx.getStore().logged = true; // saved without changes
-    return sendJson(res, 200, { settings: config.settings });
+    return sendJson(res, 200, { settings: config.settings, warning: addressWarning(config.settings.dashboard.linkUrl) });
   }
 
   if (p === '/api/admin/hosts' && m === 'POST') {
@@ -7503,6 +7543,29 @@ async function handleApi(req, res, url, session, viewer = null) {
     }
     return sendJson(res, 200, await sendToChannel({ ...c, id: null }, testMessage(), { secret, rateLimit: false }));
   }
+  // The app icons, drawn by the browser from the logo: { icons: { 180, 192, 512, maskable } } as base64 PNG, or null for the shipped ones
+  if (p === '/api/admin/app-icons' && m === 'GET') {
+    const theme = config.settings.appearance.theme;
+    return sendJson(res, 200, { background: THEME_COLORS[theme] || THEME_COLORS.dark, custom: Boolean(config.settings.appearance.appIcons), logo: config.settings.appearance.logo?.kind || 'default' });
+  }
+  if (p === '/api/admin/app-icons' && m === 'PUT') {
+    const b = await readBody(req, 4 << 20);
+    const old = config.settings.appearance.appIcons;
+    let next = null;
+    if (b.icons) {
+      const bufs = Object.fromEntries(Object.entries(APP_ICON_SIZES).map(([k, size]) => [k, appIconPng(b.icons[k], size)]));
+      next = Object.fromEntries(Object.entries(bufs).map(([k, buf]) => [k, storeIcon(buf, `app-icon:${k}`).id]));
+    }
+    config.settings.appearance.appIcons = next;
+    for (const id of Object.values(old || {})) {
+      fs.rmSync(path.join(ICON_DIR, id), { force: true });
+      config.icons = config.icons.filter((i) => i.id !== id);
+    }
+    saveConfig();
+    event('settings', next ? 'App icon drawn from the logo' : 'App icon back to the default');
+    return sendJson(res, 200, { custom: Boolean(next) });
+  }
+
   // Push: the key a browser subscribes with, and turning it on or off for this browser
   if (p === '/api/admin/push/key' && m === 'GET') return sendJson(res, 200, { publicKey: vapidKeys().publicKey });
   const ps = p.match(/^\/api\/admin\/alerts\/channels\/([0-9a-f-]{36})\/subscriptions(?:\/([0-9a-f]{16}))?$/);
@@ -7915,6 +7978,15 @@ async function handle(req, res) {
       return res.end(body);
     }
     if (p === '/sw.js') return sendStatic(res, '/sw.js');
+    // the app icon, like the logo: public (a home screen fetches it without a session)
+    const ai = p.match(/^\/app-icon\/(180|192|512|maskable)\.png$/);
+    if (ai) {
+      const id = config.settings.appearance.appIcons?.[ai[1]];
+      if (!id) return sendStatic(res, appIconUrl(ai[1]));
+      const data = fs.readFileSync(path.join(ICON_DIR, id));
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': data.length, 'Cache-Control': 'public, max-age=86400' });
+      return res.end(data);
+    }
     if (p === '/offline') return sendPage(res, 'offline.html', null);
     const im = p.match(/^\/media\/icon\/([0-9a-f]{32})$/);
     if (im) {
@@ -9096,6 +9168,16 @@ function ackTokenOk(id, t) {
   const want = Buffer.from(ackToken(id));
   const got = Buffer.from(String(t || ''));
   return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+// A dashboard address the certificate doesn't cover: browsers would refuse it
+function addressWarning(link) {
+  if (!link || !link.startsWith('https:') || !tlsInfo) return null;
+  const u = new URL(link);
+  const name = u.hostname.replace(/^\[|\]$/g, '');
+  const x = new crypto.X509Certificate(tlsInfo.cert);
+  const covered = net.isIP(name) ? x.checkIP(name) : x.checkHost(name);
+  return covered ? null : `The certificate does not cover ${name}, so browsers will warn on that address. Add it to the certificate (deploy/install.sh makes a new one with the names in TLS_NAMES).`;
 }
 
 // Where links in messages point: the address set in Admin, or this server's own

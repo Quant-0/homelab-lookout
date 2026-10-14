@@ -349,7 +349,7 @@ To arrange the page, press **Customize** on the Services page:
 - From the message: ntfy has an **Acknowledge** button; Telegram, iMessage and e-mail have an *Acknowledge* link; and Discord has the link in the message. The link opens a page that asks first, so a link preview can't acknowledge anything. You don't need to sign in. The link only works for that one problem.
 - On Home: use the clock button on the row, then **Acknowledge**.
 
-The links point to this server's own address. If you reach it by another name (for example over Tailscale), set **Address for links in alert messages** under Dashboard.
+The links point to this server's IP address, or to the **Dashboard address** under Dashboard when you set one.
 
 ### Check-ins & maintenance
 
@@ -382,7 +382,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 **Status page**: a public page at `/status` showing only whether your services are up, with their uptime over the last 90 days (30 days on a phone) and any planned maintenance. No links, addresses, devices or VMs. Switch it on with **Show the status page to everyone**. It works while the dashboard itself stays private, so you can give people the status page instead of making the whole dashboard public. Services with a status check are listed, in the groups from the Services page.
 
 - **Title**, **Internet provider** (leave empty to use the name the UniFi console reports) and **Refresh interval**.
-- **Address for links in alert messages**: where the *Acknowledge* and *Open* links in messages point, for example `https://lookout.home.arpa:8443`. Leave it empty to use this server's own address. Changing it asks for your password.
+- **Dashboard address**: a domain name for the dashboard, for example `https://lookout.example.com:8443`. The dashboard then answers on that name as well as on its IP, and links in alert messages and push notifications (*Acknowledge*, *Open*) use it. The name must point to this server in your DNS (and, away from home, Tailscale must use that DNS). If the certificate doesn't cover the name, saving says so. Leave it empty to use the IP. Changing it asks for your password.
 - **Provider logo:** **Automatic** looks up who owns your public IP in the internet registry (RDAP), finds the provider's website there and uses its icon (**Find again** retries; a failed lookup is retried after a week). If it picks the wrong one or none, use **Upload**, **Link** (paste an https link to the image; the dashboard keeps a copy) or **None**.
 - **Make the dashboard public (viewable without login).** Keep this **off** (see [Keeping it safe](#4-keeping-it-safe)).
 - **Services on Home:** **One line with the count** at the bottom of Home (the default), **Tiles**, a **Compact list** (one row each), **Only the ones that are down**, or **Off** (they stay on the Services tab). The wall display follows the same choice. To leave out a single service, untick **Show on Home** on that service. Untick **A service that is down shows under "Needs you"** to keep services out of Home's alerts and the top summary as well; notifications from the Alerts tab are not changed.
@@ -392,7 +392,7 @@ While it is on, problems on what it covers are listed on Home as *Maintenance* b
 ### Look
 
 - **Theme** (21, including Auto: the classics like Nord and Dracula, plus Graphite, OLED Black for wall screens, Deep Ocean, Forest, Ember, Rosé Pine, Synthwave, Arctic, Sandstone and High Contrast) and **Accent**: the **default look for everyone**. Each viewer can still pick their own on their device with the palette button.
-- **Logo:** **Default**, a **Built-in icon** in one of eight colours, or an **Image** (upload PNG, JPEG, WebP or SVG up to 1 MB, or search the icon library). It is shown in the top bar, on the sign-in page and as the browser tab icon. SVG files with scripts or links to other files are refused.
+- **Logo:** **Default**, a **Built-in icon** in one of eight colours, or an **Image** (upload PNG, JPEG, WebP or SVG up to 1 MB, or search the icon library). It is shown in the top bar, on the sign-in page and as the browser tab icon. It is also the **app icon** for the installed app, drawn on the theme's background colour when you press Save (Default keeps the original icon). A phone that already has the app keeps its old icon: on iPhone, remove the app from the Home Screen and add it again; Android updates it by itself within a day or so. SVG files with scripts or links to other files are refused.
 - **Background** (built-in gradients or your own image), blur, dimming and card opacity. **Revert** undoes changes you haven't saved.
 
 ### Backups

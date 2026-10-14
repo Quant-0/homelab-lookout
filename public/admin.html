@@ -285,7 +285,7 @@
             <label><span>Title</span><input name="title" maxlength="60"></label>
             <label><span>Internet provider</span><input name="carrier" maxlength="60" placeholder="From UniFi when empty"></label>
             <label><span>Refresh interval (seconds)</span><input name="refreshSeconds" type="number" min="10" max="3600" step="1" required></label>
-            <label class="wide"><span>Address for links in alert messages</span><input name="linkUrl" maxlength="200" placeholder="This server’s own address when empty" autocomplete="off" spellcheck="false"></label>
+            <label class="wide"><span>Dashboard address</span><input name="linkUrl" maxlength="200" placeholder="https://lookout.example.com:8443 (this server’s IP when empty)" autocomplete="off" spellcheck="false"><span class="hint">A domain name for the dashboard: it answers on it (the IP keeps working), and links in alert messages and push notifications use it. The name must point to this server in your DNS.</span></label>
             <label class="check wide"><input type="checkbox" name="public"> Make the dashboard public (viewable without login)</label>
           </div>
           <div class="carrier-pick" id="carrier-pick"></div>
@@ -346,6 +346,7 @@
         <div class="swatches-row" id="accent-row" role="group" aria-label="Accent"></div>
         <h4>Logo</h4>
         <div class="logo-pick" id="logo-pick"></div>
+        <p class="hint" id="app-icon-hint">The installed app uses the logo too, on the theme's background colour. A phone that already has the app keeps the old icon: on iPhone, remove it from the Home Screen and add it again.</p>
         <h4>Background</h4>
         <div class="bg-grid" id="bg-grid" role="group" aria-label="Background"></div>
         <p class="hint">Upload JPEG, PNG or WebP (max 10 MB). Location, camera and other metadata are removed on upload. Images are only served to viewers who can see the dashboard.</p>

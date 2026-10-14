@@ -356,7 +356,7 @@ async function saveSettings(msgId) {
   try {
     const r = await api('PUT', '/api/admin/settings', body);
     state.settings = r.settings;
-    showMsg(msgId, 'Saved', true);
+    showMsg(msgId, r.warning ? `Saved. ${r.warning}` : 'Saved', !r.warning);
   } catch (e) {
     showMsg(msgId, e.message, false);
   }
@@ -2761,9 +2761,15 @@ async function deleteBackground(img) {
 
 $('ap-save').addEventListener('click', async () => {
   try {
-    const r = await api('PUT', '/api/admin/settings', { appearance });
+    const r = await api('PUT', '/api/admin/settings', { appearance: { ...appearance, appIcons: undefined } });
     state.settings = r.settings;
     appearance = structuredClone(r.settings.appearance);
+    let iconNote = '';
+    try {
+      await drawAppIcons();
+    } catch (e) {
+      iconNote = ` (the app icon could not be updated: ${e.message})`;
+    }
     logoMode = null;
     renderAppearance();
     // the new logo in the top bar and the browser tab right away
@@ -2771,11 +2777,65 @@ $('ap-save').addEventListener('click', async () => {
     for (const img of document.querySelectorAll('.brand img')) img.src = v;
     const tab = document.querySelector('link[rel="icon"]');
     if (tab) tab.href = v;
-    showMsg('ap-msg', 'Saved', true);
+    showMsg('ap-msg', `Saved${iconNote}`, !iconNote);
   } catch (e) {
     showMsg('ap-msg', e.message, false);
   }
 });
+
+// The installed app's icons: the logo drawn on the theme colour, as PNG (iPhone can't use SVG).
+// A built-in icon is drawn without its dark tile; an uploaded picture that fills its square is used whole.
+async function drawAppIcons() {
+  const info = await api('GET', '/api/admin/app-icons');
+  if (info.logo === 'default') {
+    if (info.custom) await api('PUT', '/api/admin/app-icons', { icons: null });
+    return;
+  }
+  const img = new Image();
+  img.src = `/logo?bare=1&v=${Date.now()}`;
+  await img.decode();
+  const w = img.naturalWidth || 512;
+  const h = img.naturalHeight || 512;
+  // does the picture fill its square (no transparent corners)?
+  let full = false;
+  if (info.logo === 'file') {
+    const t = document.createElement('canvas');
+    t.width = 64;
+    t.height = 64;
+    const c = t.getContext('2d');
+    c.drawImage(img, 0, 0, 64, 64);
+    full = [[0, 0], [63, 0], [0, 63], [63, 63]].every(([x, y]) => c.getImageData(x, y, 1, 1).data[3] > 250);
+  }
+  const draw = (size, { scale, round }) => {
+    const cv = document.createElement('canvas');
+    cv.width = size;
+    cv.height = size;
+    const c = cv.getContext('2d');
+    c.fillStyle = info.background;
+    if (round) {
+      c.beginPath();
+      c.roundRect(0, 0, size, size, size * 0.22);
+      c.fill();
+      c.clip();
+    } else c.fillRect(0, 0, size, size);
+    if (full) {
+      const k = Math.max(size / w, size / h); // cover
+      c.drawImage(img, (size - w * k) / 2, (size - h * k) / 2, w * k, h * k);
+    } else {
+      const k = (size * scale) / Math.max(w, h);
+      c.drawImage(img, (size - w * k) / 2, (size - h * k) / 2, w * k, h * k);
+    }
+    return cv.toDataURL('image/png').split(',')[1];
+  };
+  // a built-in icon's drawing has its own margin; an uploaded one gets one here (maskable: inside the safe zone)
+  const s = info.logo === 'icon' ? { any: 1, mask: 0.82 } : { any: 0.72, mask: 0.6 };
+  await api('PUT', '/api/admin/app-icons', { icons: {
+    180: draw(180, { scale: s.any }),
+    192: draw(192, { scale: s.any, round: true }),
+    512: draw(512, { scale: s.any, round: true }),
+    maskable: draw(512, { scale: s.mask }),
+  } });
+}
 
 $('ap-revert').addEventListener('click', () => {
   appearance = structuredClone(state.settings.appearance);
