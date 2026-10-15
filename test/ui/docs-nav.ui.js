@@ -11,7 +11,7 @@ const P2 = '44444444-4444-4444-8444-444444444444';
 function seed(dir) {
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ devices: [
     { id: ORION, name: 'Orion', kind: 'server', location: 'rack', u: 10, height: 2 },
-    { id: LYNX, name: 'Lynx', kind: 'server', location: 'none', u: null, height: 1 },
+    { id: LYNX, name: 'Core-sw', kind: 'server', location: 'none', u: null, height: 1 },
   ] }), { mode: 0o600 });
   fs.writeFileSync(path.join(dir, 'docs.json'), JSON.stringify({ servers: {}, network: { networks: [], reservations: [], notes: '' }, pages: [
     { id: P1, title: 'Restore from backup', folder: 'Procedures', body: 'x', updatedAt: 1 },
@@ -38,7 +38,7 @@ async function run() {
   await page.waitForSelector('#docs-nav .nav-group');
   const groupNamed = async (name) => page.locator('.nav-group.editing').nth(await page.$$eval('.nav-group.editing', (gs, n) => gs.findIndex((g) => (g.querySelector('.group-name')?.value || g.querySelector('strong')?.textContent) === n), name));
   const menu = () => page.$$eval('#docs-nav .nav-group', (gs) => gs.map((g) => `${g.querySelector('.nav-group-name, .group-name, strong')?.value || g.querySelector('.nav-group-name, strong')?.textContent}:${[...g.querySelectorAll('.nav-group-items a span:first-child, .nav-edit-item[data-item] span:last-child')].map((x) => x.textContent).join('+')}`).join(' | '));
-  check(await menu() === 'Servers & devices:Orion+Lynx | Network:Network plan+Switch ports+Topology | Procedures:Restore from backup | Pages:Shopping list', `old folders became groups: ${await menu()}`);
+  check(await menu() === 'Servers & devices:Orion+Core-sw | Network:Network plan+Switch ports+Topology | Procedures:Restore from backup | Pages:Shopping list', `old folders became groups: ${await menu()}`);
 
   // collapse, remembered after a reload; a group with the open page stays open
   await page.click('#docs-nav .nav-group[data-id="network"] .nav-group-toggle');
@@ -50,18 +50,18 @@ async function run() {
   await page.waitForSelector('.docs-content h2');
   check(await page.isVisible('#nav-network'), 'opening one of its pages expands it');
 
-  // edit: new group, drag Lynx into it, move Shopping list with the keyboard, move a group, rename
+  // edit: new group, drag Core-sw into it, move Shopping list with the keyboard, move a group, rename
   await page.click('#nav-edit');
   await page.waitForSelector('.nav-group.editing');
   await page.click('#docs-nav button:has-text("New group")');
   const item = (t) => page.locator('.nav-edit-item', { hasText: t });
-  const from = await item('Lynx').boundingBox();
+  const from = await item('Core-sw').boundingBox();
   const target = await (await groupNamed('Hardware')).boundingBox();
   await page.mouse.move(from.x + 20, from.y + from.height / 2);
   await page.mouse.down();
   for (let i = 1; i <= 10; i++) await page.mouse.move(from.x + 20, from.y + from.height / 2 + ((target.y + target.height / 2 - from.y - from.height / 2) * i) / 10);
   await page.mouse.up();
-  check((await menu()).endsWith('Hardware:Lynx'), `Lynx dragged into the new group: ${await menu()}`);
+  check((await menu()).endsWith('Hardware:Core-sw'), `Core-sw dragged into the new group: ${await menu()}`);
   await item('Shopping list').focus();
   await page.keyboard.press('ArrowUp');
   check((await menu()).includes('Procedures:Restore from backup+Shopping list'), `arrow up past the top moves into the group above: ${await menu()}`);
@@ -74,14 +74,14 @@ async function run() {
   await page.waitForSelector('#nav-edit');
   await page.reload();
   await page.waitForSelector('#docs-nav .nav-group');
-  check(await menu() === 'Network:Network plan+Switch ports+Topology | Servers:Orion | Procedures:Restore from backup+Shopping list | Hardware:Lynx', `saved: ${await menu()}`);
+  check(await menu() === 'Network:Network plan+Switch ports+Topology | Servers:Orion | Procedures:Restore from backup+Shopping list | Hardware:Core-sw', `saved: ${await menu()}`);
 
   // deleting a group sends its sheets back to the default group; the page editor offers the groups
   await page.click('#nav-edit');
   await (await groupNamed('Hardware')).locator('.nav-del').click();
   await page.click('#docs-nav button:has-text("Save menu")');
   await page.waitForSelector('#nav-edit');
-  check((await menu()).includes('Servers:Orion+Lynx') && !(await menu()).includes('Hardware'), `deleted group: ${await menu()}`);
+  check((await menu()).includes('Servers:Orion+Core-sw') && !(await menu()).includes('Hardware'), `deleted group: ${await menu()}`);
   await page.click('#docs-nav a:has-text("New page")');
   await page.waitForSelector('.docs-content select option', { state: 'attached' });
   const opts = await page.$$eval('.docs-content select option', (o) => o.map((x) => x.textContent));

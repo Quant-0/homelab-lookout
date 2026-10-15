@@ -31,7 +31,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await call('POST', '/api/admin/devices', { name: 'orion', kind: 'server', location: 'rack', u: 17, height: 2, front: { model: 'dell14', drives: '8x3.5' } });
   await call('POST', '/api/admin/devices', { name: 'DS418', kind: 'nas', location: 'rack', u: 11, height: 3, front: { model: 'synology-ds', drives: 'auto' } });
   // a server picked from the catalog: the brand chooses the front
-  await call('POST', '/api/admin/devices', { name: 'lynx', kind: 'server', location: 'rack', u: 7, height: 2, model: { brand: 'HPE', name: 'ProLiant DL380 Gen10' } });
+  await call('POST', '/api/admin/devices', { name: 'core-sw', kind: 'server', location: 'rack', u: 7, height: 2, model: { brand: 'HPE', name: 'ProLiant DL380 Gen10' } });
   await call('POST', '/api/admin/devices', { name: 'core', kind: 'switch', location: 'rack', u: 3, height: 1, front: { model: 'u-usw-pro-max-48-poe', drives: 'auto' } });
   for (const [kind, u, height, ports] of [['patch', 23, 1, 24], ['brush', 21, 1], ['cable', 16, 1], ['blank', 15, 1], ['vented', 14, 1], ['shelf', 10, 1], ['blank', 1, 2]]) {
     await call('POST', '/api/admin/rack/passive', { kind, u, height, ...(ports ? { ports } : {}) });

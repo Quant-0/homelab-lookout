@@ -58,7 +58,7 @@ async function run() {
   const vented = r.json.item;
   r = await req('POST', '/api/admin/rack/passive', { kind: 'brush', u: 11 });
   ok(r.status === 400 && /overlaps Orion/.test(r.json.error), `panel over a device rejected: ${r.json.error}`);
-  r = await req('POST', '/api/admin/devices', { name: 'Lynx', kind: 'server', location: 'rack', u: 4, height: 1 });
+  r = await req('POST', '/api/admin/devices', { name: 'Core-sw', kind: 'server', location: 'rack', u: 4, height: 1 });
   ok(r.status === 400 && /overlaps the vented panel at U3/.test(r.json.error), `device over a panel rejected: ${r.json.error}`);
   r = await req('POST', '/api/admin/rack/passive', { kind: 'patch', u: 6, ports: 48, height: 2 });
   ok(r.status === 201 && r.json.item.ports === 48, '48-port patch panel');
