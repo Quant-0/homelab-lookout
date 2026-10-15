@@ -236,6 +236,8 @@ function event(cat, text, detail = null) {
   if (detail) e.detail = String(detail).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 2000);
   if (ctx?.user) e.by = ctx.user;
   if (ctx) ctx.logged = true;
+  if (ctx && !ctx.done) (ctx.texts ||= []).push(e.text);
+  else if (historyAuto) historyAuto.push(e.text);
   events.push(e);
   if (events.length > EVENT_MAX + 1000) events = events.slice(-EVENT_MAX);
   try {
@@ -267,7 +269,8 @@ function changesText(before, after, skip = ['id', 'updatedAt', 'createdAt']) {
   const out = [];
   for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])]) {
     if (JSON.stringify(a[k]) === JSON.stringify(b[k])) continue;
-    out.push(SECRET_KEY.test(k) ? `${name(k)} changed` : `${name(k)}: ${show(a[k])} → ${show(b[k])}`);
+    if (SECRET_KEY.test(k)) out.push(`${name(k)} changed`);
+    else if (show(a[k]) !== show(b[k])) out.push(`${name(k)}: ${show(a[k])} → ${show(b[k])}`); // an empty field that became a group shows as its parts
   }
   return out.join('; ');
 }
@@ -465,8 +468,7 @@ function newDevice(fields) {
   return { id: crypto.randomUUID(), name: 'Device', kind: 'other', location: 'none', u: null, height: 1, estimateW: null, unifi: null, discovered: false, hidden: false, ...fields };
 }
 
-function loadConfig() {
-  const raw = readJson(CONFIG_FILE, {});
+function loadConfig(raw = readJson(CONFIG_FILE, {})) {
   config = {
     version: 2,
     settings: deepMerge(DEFAULT_SETTINGS, raw.settings),
@@ -570,6 +572,228 @@ function migrateToDevices(raw) {
 
 function saveConfig() {
   writeJsonAtomic(CONFIG_FILE, config);
+  configSaved();
+}
+
+// --- Configuration history: every change made in Admin as a version that can be undone ---
+// Kept in config-history.json: `last` is the whole tracked configuration as it was last saved,
+// `versions` hold only what each save changed (before and after, per device, service, settings
+// section, ...). Passwords stay as they are stored (encrypted) and never leave the server; only
+// the description of a change does. Left out on purpose: the admin account and passkeys (other
+// files), the web server's ports and addresses, uploaded images, and the backup run log.
+const CONFIG_HISTORY_FILE = path.join(DATA_DIR, 'config-history.json');
+const CONFIG_HISTORY_DAYS = 90;
+const CONFIG_HISTORY_MAX = 500;
+const CONFIG_HISTORY_BYTES = 20e6;
+const HISTORY_LISTS = ['devices', 'hosts', 'services', 'checkins', 'maintenance', 'agents'];
+const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout'];
+let configHistory = { last: null, versions: [] };
+let historyAuto = null; // texts of a change made outside a request, recorded right after
+
+// The configuration as separate parts: "devices/<id>", "settings/power", "rack", ...
+function configParts(c) {
+  const parts = {};
+  for (const list of HISTORY_LISTS) (c[list] || []).forEach((x, i) => (parts[`${list}/${x.id}`] = { value: x, pos: i }));
+  (c.alerts?.channels || []).forEach((x, i) => (parts[`channels/${x.id}`] = { value: x, pos: i }));
+  if (c.alerts) parts.alerts = { value: { rules: c.alerts.rules, settings: c.alerts.settings } };
+  for (const s of ['dashboard', 'power', 'appearance']) parts[`settings/${s}`] = { value: c.settings?.[s] ?? null };
+  for (const s of HISTORY_SECTIONS) parts[s] = { value: c[s] ?? null };
+  if (c.backup) {
+    const { history, lastAutoDate, ...rest } = c.backup;
+    parts.backup = { value: rest };
+  }
+  return JSON.parse(JSON.stringify(parts));
+}
+
+// equal whatever order the fields are in
+const canonical = (v) => JSON.stringify(v ?? null, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((y) => [y, x[y]])) : x));
+const samePart = (a, b) => canonical(a) === canonical(b);
+
+function cleanConfigHistory(h) {
+  const versions = (Array.isArray(h?.versions) ? h.versions : []).filter((x) => Number.isInteger(x?.v) && Number.isFinite(x.at) && Array.isArray(x.changes))
+    .map((x) => ({
+      v: x.v, at: x.at, by: typeof x.by === 'string' ? x.by.slice(0, 64) : null,
+      texts: (Array.isArray(x.texts) ? x.texts : []).filter((t) => typeof t === 'string').slice(0, 20).map((t) => t.slice(0, 400)),
+      ...(Number.isInteger(x.undoOf) ? { undoOf: x.undoOf } : {}), ...(Number.isInteger(x.restoreTo) ? { restoreTo: x.restoreTo } : {}),
+      changes: x.changes.filter((ch) => typeof ch?.k === 'string').map((ch) => ({ k: ch.k, b: ch.b ?? null, a: ch.a ?? null, ...(Number.isInteger(ch.bp) ? { bp: ch.bp } : {}) })),
+    }));
+  return { last: h?.last && typeof h.last === 'object' ? h.last : null, versions };
+}
+
+function saveConfigHistory() {
+  const cutoff = Date.now() - CONFIG_HISTORY_DAYS * 864e5;
+  let vs = configHistory.versions.filter((x) => x.at >= cutoff).slice(-CONFIG_HISTORY_MAX);
+  let text = JSON.stringify({ last: configHistory.last, versions: vs });
+  while (text.length > CONFIG_HISTORY_BYTES && vs.length > 1) {
+    vs = vs.slice(Math.ceil(vs.length / 10));
+    text = JSON.stringify({ last: configHistory.last, versions: vs });
+  }
+  configHistory.versions = vs;
+  writeJsonAtomic(CONFIG_HISTORY_FILE, configHistory);
+}
+
+// What changed since the last version; adds a version when anything did
+function recordConfigVersion({ by = null, texts = [], undoOf, restoreTo } = {}) {
+  const now = configParts(config);
+  const last = configHistory.last || now;
+  const changes = [];
+  for (const k of new Set([...Object.keys(last), ...Object.keys(now)])) {
+    if (samePart(last[k]?.value, now[k]?.value)) continue;
+    changes.push({ k, b: last[k]?.value ?? null, a: now[k]?.value ?? null, ...(Number.isInteger(last[k]?.pos) ? { bp: last[k].pos } : {}) });
+  }
+  configHistory.last = now;
+  if (changes.length) {
+    const v = (configHistory.versions.at(-1)?.v || 0) + 1;
+    configHistory.versions.push({ v, at: Date.now(), by, texts: [...new Set(texts)].slice(0, 20), ...(undoOf ? { undoOf } : {}), ...(restoreTo ? { restoreTo } : {}), changes });
+  }
+  saveConfigHistory();
+}
+
+// Called on every save: in a request, the version is made when it ends (with what it logged);
+// otherwise (UniFi found a device, a browser turned push off) right after
+function configSaved() {
+  const ctx = requestCtx.getStore();
+  if (ctx && !ctx.done) {
+    ctx.configSaved = true;
+    return;
+  }
+  if (historyAuto) return;
+  historyAuto = [];
+  setImmediate(() => {
+    const texts = historyAuto;
+    historyAuto = null;
+    recordConfigVersion({ texts });
+  });
+}
+
+function loadConfigHistory() {
+  configHistory = cleanConfigHistory(readJson(CONFIG_HISTORY_FILE, null));
+  if (!configHistory.last) {
+    configHistory.last = configParts(config);
+    saveConfigHistory();
+  } else recordConfigVersion({ texts: ['Changed outside the dashboard (config.json edited, or an update added settings)'] });
+}
+
+// What a part is, for people: "Device atlas", "Power settings"
+const PART_NAMES = { devices: 'Device', hosts: 'Connection', services: 'Service', checkins: 'Check-in', maintenance: 'Maintenance window', agents: 'Agent', channels: 'Alert channel' };
+const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings' };
+function partLabel(k, value) {
+  const [list] = k.split('/');
+  if (!PART_NAMES[list]) return SECTION_NAMES[k] || k;
+  const name = value?.name || value?.label || '';
+  return `${PART_NAMES[list]} ${name}${list === 'hosts' && value?.type ? ` (${value.type})` : ''}`.trim();
+}
+// For people: ids become the names of what they point to (a rule's channels, a check-in's device),
+// and push subscriptions the browsers' names, never their keys
+function historyShown(v, names) {
+  const walk = (x) => {
+    if (typeof x === 'string') return UUID.test(x) ? names.get(x) || '(removed)' : x;
+    if (Array.isArray(x)) return x.every((y) => typeof y === 'string' && UUID.test(y)) ? x.map(walk).join(', ') : x.map(walk);
+    if (!x || typeof x !== 'object') return x;
+    return Object.fromEntries(Object.entries(x).map(([k, y]) => [k, k === 'subs' && Array.isArray(y) ? y.map((z) => z?.label || 'browser').join(', ') : walk(y)]));
+  };
+  return walk(v);
+}
+function historyNames() {
+  const names = new Map();
+  for (const list of [config.devices, config.hosts, config.services, config.checkins, config.maintenance, config.agents, config.alerts.channels]) for (const x of list) if (x?.id && x.name) names.set(x.id, x.name);
+  // and what has been removed since, by the name it last had
+  for (let i = configHistory.versions.length - 1; i >= 0; i--) {
+    for (const ch of configHistory.versions[i].changes) for (const x of [ch.a, ch.b]) if (x?.id && typeof x.name === 'string' && !names.has(x.id)) names.set(x.id, x.name);
+  }
+  return names;
+}
+function partChange(ch, names = historyNames()) {
+  const label = partLabel(ch.k, ch.a || ch.b);
+  if (ch.b === null) return { label, kind: 'added' };
+  if (ch.a === null) return { label, kind: 'removed' };
+  if (Array.isArray(ch.a) || Array.isArray(ch.b)) return { label, kind: 'changed', detail: `${(ch.b || []).length} → ${(ch.a || []).length} items` };
+  const skip = ['id', 'updatedAt', 'createdAt', 'secretHost', 'design'];
+  const detail = changesText(historyShown(ch.b, names), historyShown(ch.a, names), skip);
+  return { label, kind: 'changed', detail: detail.length > 1500 ? `${detail.slice(0, 1497)}…` : detail };
+}
+
+function publicVersion(x, names = historyNames()) {
+  return {
+    v: x.v, at: x.at, by: x.by, texts: x.texts, undoOf: x.undoOf ?? null, restoreTo: x.restoreTo ?? null,
+    changes: x.changes.slice(0, 50).map((ch) => partChange(ch, names)), more: Math.max(0, x.changes.length - 50),
+  };
+}
+
+// Puts parts back into a copy of the configuration and loads it like at start; nothing is changed
+// when it doesn't check out. `parts`: key -> { value (null = gone), pos }
+function applyConfigParts(parts) {
+  const raw = structuredClone(config);
+  for (const [k, { value, pos }] of Object.entries(parts)) {
+    const [list, id] = k.split('/');
+    const arr = HISTORY_LISTS.includes(list) ? raw[list] : list === 'channels' ? raw.alerts.channels : null;
+    if (arr && id) {
+      const i = arr.findIndex((x) => x.id === id);
+      if (value === null) {
+        if (i >= 0) arr.splice(i, 1);
+      } else if (i >= 0) arr[i] = value;
+      else arr.splice(Math.min(Number.isInteger(pos) ? pos : arr.length, arr.length), 0, value);
+    } else if (k === 'alerts') Object.assign(raw.alerts, value || {});
+    else if (list === 'settings') raw.settings[id] = value;
+    else if (k === 'backup') raw.backup = { ...(value || {}), history: raw.backup.history, lastAutoDate: raw.backup.lastAutoDate };
+    else if (HISTORY_SECTIONS.includes(k)) raw[k] = value;
+  }
+  const keep = config;
+  try {
+    loadConfig(JSON.parse(JSON.stringify(raw)));
+    // settings put back are checked like in Admin (an image that was deleted since, ...)
+    const st = config.settings;
+    const check = { dashboard: validateDashboard, power: validatePower, appearance: validateAppearance };
+    for (const sec of Object.keys(check)) if (parts[`settings/${sec}`]) st[sec] = check[sec](st[sec]);
+  } catch (e) {
+    config = keep;
+    throw new UserError(`It can't be put back as it was: ${e instanceof UserError ? e.message : 'the configuration did not check out'}`);
+  }
+  if (samePart(configParts(config), configParts(keep))) {
+    config = keep;
+    throw new UserError('Nothing to change: it is already like that');
+  }
+  saveConfig();
+  configReplaced();
+}
+
+// After the configuration was replaced (a restore, an undo): connections start over
+function configReplaced() {
+  results.clear();
+  serviceResults.clear();
+  lastSample.clear();
+  unifiSessions.clear();
+  svcSessions.clear();
+  schedulePolling();
+}
+
+// Undo one version: its parts as they were before it. A part changed again since is a conflict,
+// which is only overwritten when asked to (`force`).
+function undoConfigVersion(v, force) {
+  const x = configHistory.versions.find((y) => y.v === v);
+  if (!x) throw new UserError('That version is no longer kept');
+  const now = configParts(config);
+  const touched = x.changes.filter((ch) => !samePart(now[ch.k]?.value, ch.a));
+  if (touched.length && !force) {
+    const later = configHistory.versions.filter((y) => y.v > v && y.changes.some((ch) => touched.some((t) => t.k === ch.k)));
+    return { conflict: true, parts: touched.map((ch) => partLabel(ch.k, now[ch.k]?.value || ch.a || ch.b)), later: later.map((y) => ({ v: y.v, at: y.at, text: y.texts[0] || '' })) };
+  }
+  applyConfigParts(Object.fromEntries(x.changes.map((ch) => [ch.k, { value: ch.b, pos: ch.bp }])));
+  const text = (x.texts[0] || x.changes.map((ch) => partLabel(ch.k, ch.a || ch.b)).join(', ')).replace(/^(Undid|Redid) a change: /, '');
+  return { conflict: false, text, redo: Boolean(x.undoOf) };
+}
+
+// Everything as it was right after version v: the versions since are undone, newest first
+function restoreConfigTo(v) {
+  const x = configHistory.versions.find((y) => y.v === v);
+  if (!x) throw new UserError('That version is no longer kept');
+  const parts = {};
+  for (const y of configHistory.versions.filter((z) => z.v > v).reverse()) for (const ch of y.changes) parts[ch.k] = { value: ch.b, pos: ch.bp };
+  const now = configParts(config);
+  for (const k of Object.keys(parts)) if (samePart(now[k]?.value, parts[k].value)) delete parts[k];
+  if (!Object.keys(parts).length) throw new UserError('Nothing has changed since then');
+  applyConfigParts(parts);
+  return x;
 }
 
 // Only these fields ever leave the server for a host. `secret` never does.
@@ -5756,7 +5980,7 @@ function needsStepUp(p, m) {
   return p === '/api/admin/server' || p === '/api/admin/backup/settings' || p === '/api/admin/backup/download'
     || p === '/api/admin/backup/restore' || p === '/api/admin/backup/restore-local'
     || p.startsWith('/api/admin/backup/destinations') || p.startsWith('/api/admin/backup/local/') || p.startsWith('/api/admin/alerts/channels')
-    || p.startsWith('/api/admin/passkeys');
+    || p.startsWith('/api/admin/passkeys') || p.startsWith('/api/admin/config-history/');
 }
 
 function stepUpRequired(res) {
@@ -8141,6 +8365,34 @@ async function handleApi(req, res, url, session, viewer = null) {
     return sendJson(res, 200, { incident: publicIncident(x) });
   }
 
+  // --- Configuration history ---
+  if (p === '/api/admin/config-history' && m === 'GET') {
+    const before = parseInt(url.searchParams.get('before'), 10);
+    const list = configHistory.versions.filter((x) => !(before > 0) || x.v < before);
+    const page = list.slice(-50).reverse();
+    const names = historyNames();
+    return sendJson(res, 200, { versions: page.map((x) => publicVersion(x, names)), more: list.length > page.length, latest: configHistory.versions.at(-1)?.v ?? null, keepDays: CONFIG_HISTORY_DAYS, keepMax: CONFIG_HISTORY_MAX, total: configHistory.versions.length });
+  }
+  const chm = p.match(/^\/api\/admin\/config-history\/(\d{1,9})\/(undo|restore)$/);
+  if (chm && m === 'POST') {
+    const v = parseInt(chm[1], 10);
+    const ctx = requestCtx.getStore();
+    if (chm[2] === 'undo') {
+      const r = undoConfigVersion(v, (await readBody(req, 1024)).force === true);
+      if (r.conflict) {
+        ctx.logged = true; // nothing changed yet: the page asks, then tries again with force
+        return sendJson(res, 200, r);
+      }
+      ctx.history = { undoOf: v };
+      event('settings', `${r.redo ? 'Redid' : 'Undid'} a change: ${r.text}`);
+    } else {
+      const x = restoreConfigTo(v);
+      ctx.history = { restoreTo: v };
+      event('settings', `Configuration restored to how it was on ${new Date(x.at).toISOString().slice(0, 16).replace('T', ' ')} UTC`, x.texts[0] || null);
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
   // --- Check-ins ---
   if (p === '/api/admin/checkins' && m === 'GET') return sendJson(res, 200, checkinsPayload());
   if (p === '/api/admin/checkins' && m === 'POST') {
@@ -8653,11 +8905,17 @@ async function handle(req, res) {
   try {
     if (p.startsWith('/api/')) {
       const ctx = { user: session?.user || null, logged: false };
-      await requestCtx.run(ctx, () => handleApi(req, res, url, session, viewer));
-      // a change no route described itself still goes in the change log
-      if (session && req.method !== 'GET' && res.statusCode < 400 && !ctx.logged) {
-        const c = changeName(p, req.method);
-        if (c) requestCtx.run(ctx, () => event(c.cat, c.text));
+      try {
+        await requestCtx.run(ctx, () => handleApi(req, res, url, session, viewer));
+        // a change no route described itself still goes in the change log
+        if (session && req.method !== 'GET' && res.statusCode < 400 && !ctx.logged) {
+          const c = changeName(p, req.method);
+          if (c) requestCtx.run(ctx, () => event(c.cat, c.text));
+        }
+      } finally {
+        // what the request saved becomes a version; a save from work it left running gets its own
+        ctx.done = true;
+        if (ctx.configSaved) recordConfigVersion({ by: ctx.user, texts: ctx.texts || [], ...ctx.history });
       }
       return;
     }
@@ -10594,12 +10852,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     sessions.clear(); // so did every sign-in, this one too: sign in with the restored password
     saveSessions();
   }
-  results.clear();
-  serviceResults.clear();
-  lastSample.clear();
-  unifiSessions.clear();
-  svcSessions.clear();
-  schedulePolling();
+  configReplaced();
 }
 
 // --- destinations ---
@@ -11641,6 +11894,7 @@ async function main() {
   loadUpdates();
   loadDocs();
   loadDocsHistory();
+  loadConfigHistory();
   loadRemembered();
   loadSessions();
   loadStatic();

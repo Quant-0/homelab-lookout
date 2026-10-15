@@ -34,6 +34,7 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 - **Check-ins** for backups and cron jobs, **maintenance windows**
 - A storage **forecast** that warns before a disk is full
 - A **monthly report** of uptime, problems and cost
+- **Undo** any change in Admin, or go back to how it was
 
 </td>
 </tr>
@@ -67,8 +68,8 @@ Read-only accounts are enough everywhere, and passwords are stored encrypted and
 On a Debian or Ubuntu machine with a private address:
 
 ```sh
-git clone https://github.com/<you>/lookout-homelab.git
-cd lookout-homelab
+git clone https://github.com/<you>/homelab-lookout.git
+cd homelab-lookout
 sudo sh deploy/install.sh --host 192.168.1.20
 ```
 
@@ -90,7 +91,7 @@ The installer sets up Node.js, a dedicated system user, an encryption key, a loc
 | | [Check-ins and maintenance](docs/features/checkins-and-maintenance.md) | |
 | | [Power and energy](docs/features/energy.md) | |
 | | [History and the monthly report](docs/features/history-and-reports.md) | |
-| | [Docs, Updates and Log](docs/features/docs-updates-log.md) | |
+| | [Docs, Updates, Log and undo](docs/features/docs-updates-log.md) | |
 
 There is also an illustrated **user guide (PDF)** with every page explained, served by the dashboard at `/guide.pdf` (source in [docs/guide](docs/guide)).
 

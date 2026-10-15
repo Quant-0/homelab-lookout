@@ -11,6 +11,8 @@
 
 How it is protected: secrets are decrypted with the server key and travel inside the passphrase-encrypted file (scrypt + AES-256-GCM). A backup therefore restores on a fresh install with a new server key, and the server key itself never leaves the server. A restored file is checked again as if everything were entered now: what doesn't pass is left out.
 
+The [configuration history](../features/docs-updates-log.md#configuration-history-and-undo) stays on the server and is not in the file. A restore shows up in it as one change, so **Undo** there puts the configuration back as it was before the restore.
+
 ## Automatic backups
 
 A daily time, how many copies to keep, and a passphrase. Copies are kept on the server, and also go to each **destination**:

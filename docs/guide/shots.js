@@ -168,6 +168,8 @@ http.createServer((q, res) => {
   await shot('report', () => full('report'));
   await p.goto(B + '/log#incidents'); await sleep(2000);
   await shot('incidents', () => top('incidents', 620));
+  await p.goto(B + '/log#history'); await p.reload(); await sleep(2000); // only the hash changed: load it again
+  await shot('config-history', () => top('config-history', 700));
 
   // VMs and containers
   await p.goto(B + '/vms'); await sleep(2500);

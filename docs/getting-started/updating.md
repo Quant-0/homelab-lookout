@@ -5,7 +5,7 @@
 Pull the new code and run the installer again; it keeps your data:
 
 ```sh
-cd lookout-homelab
+cd homelab-lookout
 git pull
 sudo sh deploy/install.sh --host 192.168.1.20
 ```

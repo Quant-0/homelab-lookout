@@ -36,3 +36,20 @@ Everything that happens, newest first, grouped by day: every change in Admin and
 Filter by category, search, and **Download CSV**. Entries are kept for a year and go into backups. Passwords and keys are never written to it; at most it says that one was changed.
 
 **Incidents** at the top of the Log: see [Alerts and incidents](alerts.md#incidents).
+
+## Configuration history and undo
+
+![Log → History](../guide/img/config-history.png)
+
+**History** at the top of the Log lists every change to the configuration, newest first: who made it, and what it changed, with before → after (*Device atlas changed: Name: atlas → atlas-2*). Each change has two buttons:
+
+- **Undo** puts back only what that change touched, and leaves everything changed since alone. A deleted device comes back with its connections and their stored passwords. If something it touched was changed again later, it says what and when, and asks before overwriting it.
+- **Go back to here** puts the whole configuration back as it was right after that change, by undoing every change made since.
+
+An undo is a change of its own, so it can be undone too (undoing an undo is listed as *Redid*). Both ask for your password if you haven't typed it in the last 15 minutes.
+
+What is in it: devices and their connections, services, alert rules and channels, check-ins, maintenance windows, agents, the rack and patch cables, the Home and wall layouts, and the dashboard, look, power and backup settings. Changes the dashboard makes itself (a device found by UniFi, a browser that turned push off) are there too, *by the dashboard*, and so are changes made to `config.json` while it wasn't running.
+
+What is left out on purpose: the admin password, passkeys and sign-ins, the web server's ports and addresses (rolling those back could lock you out), uploaded images and the backup run log.
+
+Versions are kept for 90 days (at most 500) in `config-history.json` in the data folder. Stored passwords stay encrypted in it, as in `config.json`, and are never shown or sent to the browser; at most it says a password changed. The history stays on the server and is not part of backups; restoring a backup is itself a version you can undo.

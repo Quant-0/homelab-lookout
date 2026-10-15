@@ -353,6 +353,9 @@ h2, h3 { break-after: avoid; }
   <h2>Incidents</h2>
   <figure class="crop"><div class="frame" style="max-height:62mm"><img src="img/incidents.png" alt=""></div><figcaption><b>Incidents:</b> each problem from start to end, who acknowledged it, and the totals for the last 30 days.</figcaption></figure>
   <p><span class="ui">Incidents</span> at the top of the Log lists every problem from when it appeared to when it cleared: how long it lasted, who acknowledged it and when, and whether it was behind another outage or during maintenance. <b>Open only</b> shows the ones still going on, each with an <b>Acknowledge</b> button. Incidents are kept for a year.</p>
+  <h2>Configuration history</h2>
+  <figure class="crop"><div class="frame" style="max-height:70mm"><img src="img/config-history.png" alt=""></div><figcaption><b>History:</b> every change to the configuration, with what it changed and buttons to undo it.</figcaption></figure>
+  <p><span class="ui">History</span> at the top of the Log lists every change made in Admin, with who made it and what it changed. <b>Undo</b> puts back only what that change touched; a deleted device comes back with its connections and stored passwords. If something was changed again since, it says what and asks first. <b>Go back to here</b> puts the whole configuration back as it was right after that change. An undo can be undone too, and both ask for your password if you haven't typed it in the last 15 minutes. The admin password, passkeys and the web server's ports are never part of it, so an undo can't lock you out. Versions are kept for 90 days on the server.</p>
 </section>
 
 <!-- ============ 9 ============ -->

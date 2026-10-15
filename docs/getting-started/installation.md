@@ -12,8 +12,8 @@ There are no npm packages to install and no build step.
 ## Install
 
 ```sh
-git clone https://github.com/<you>/lookout-homelab.git
-cd lookout-homelab
+git clone https://github.com/<you>/homelab-lookout.git
+cd homelab-lookout
 sudo sh deploy/install.sh --host 192.168.1.20
 ```
 

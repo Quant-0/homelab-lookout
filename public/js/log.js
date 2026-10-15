@@ -88,7 +88,7 @@ function render(d) {
 
 // --- Incidents: each problem from start to end, with who acknowledged it ---
 
-let view = location.hash === '#incidents' ? 'incidents' : 'log';
+let view = ['#incidents', '#history'].includes(location.hash) ? location.hash.slice(1) : 'log';
 let incOpenOnly = false;
 const dur = (ms) => {
   const m = Math.round(ms / 60e3);
@@ -99,20 +99,23 @@ const dur = (ms) => {
 };
 const clock = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
+const VIEWS = [['log', 'Changes', 'Log'], ['incidents', 'Incidents', 'Incidents'], ['history', 'History', 'Configuration history']];
 function renderView() {
-  $('log-view').replaceChildren(...[['log', 'Changes'], ['incidents', 'Incidents']].map(([k, t]) => el('button', {
+  $('log-view').replaceChildren(...VIEWS.map(([k, t]) => el('button', {
     type: 'button', text: t, 'aria-pressed': String(view === k),
     onclick: () => {
       view = k;
-      history.replaceState(null, '', k === 'incidents' ? '#incidents' : location.pathname);
+      history.replaceState(null, '', k === 'log' ? location.pathname : `#${k}`);
       renderView();
       if (k === 'incidents') loadIncidents();
+      if (k === 'history') loadVersions();
     },
   })));
-  const inc = view === 'incidents';
-  $('inc-card').classList.toggle('hidden', !inc);
-  for (const sel of ['.log-filters', '.log-list:not(#inc-card)', '#log-foot', '#log-csv']) for (const n of document.querySelectorAll(sel)) n.classList.toggle('hidden', inc);
-  document.querySelector('.page-title').textContent = inc ? 'Incidents' : 'Log';
+  const other = view !== 'log';
+  $('inc-card').classList.toggle('hidden', view !== 'incidents');
+  $('ver-card').classList.toggle('hidden', view !== 'history');
+  for (const sel of ['.log-filters', '.log-list:not(#inc-card):not(#ver-card)', '#log-foot', '#log-csv']) for (const n of document.querySelectorAll(sel)) n.classList.toggle('hidden', other);
+  document.querySelector('.page-title').textContent = VIEWS.find(([k]) => k === view)[2];
 }
 
 let incData = null;
@@ -174,6 +177,89 @@ function renderIncidents() {
   el('p', { class: 'hint', text: `Each problem from when it appeared to when it cleared, kept for ${incData.keepDays} days. Those behind another outage or in maintenance are muted and left out of the totals.` }));
 }
 
+// --- Configuration history: each change made in Admin, to undo on its own or go back to ---
+
+const KIND_ICONS = { added: 'plus', removed: 'trash', changed: 'pencil' };
+const KIND_TEXT = { added: 'added', removed: 'removed', changed: 'changed' };
+let verList = [];
+let verMore = false;
+let verLatest = null;
+const when = (t) => `${new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${clock(t)}`;
+
+async function loadVersions(older = false) {
+  try {
+    const d = await api('GET', `/api/admin/config-history${older && verList.length ? `?before=${verList[verList.length - 1].v}` : ''}`);
+    verList = older ? [...verList, ...d.versions] : d.versions;
+    verMore = d.more;
+    verLatest = d.latest;
+    renderVersions();
+    $('ver-foot').textContent = `Every change made in Admin, kept for ${d.keepDays} days (at most ${d.keepMax}; ${d.total} now). The admin password, passkeys, the web server's ports and uploaded images are not in it. Stored passwords are put back as they were, and never shown.`;
+  } catch (e) {
+    $('ver-days').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+  }
+}
+
+function verMsg(text, error = false) {
+  $('ver-msg').replaceChildren(text ? el('p', { class: `msg ${error ? 'error' : 'ok'}`, role: error ? 'alert' : 'status', text }) : '');
+}
+
+async function verAction(x, how) {
+  verMsg('');
+  const title = x.texts[0] || x.changes.map((c) => c.label).join(', ');
+  try {
+    if (how === 'restore') {
+      const later = verList.filter((y) => y.v > x.v).length;
+      if (!confirm(`Put the whole configuration back as it was right after this change (${when(x.at)})?\n\n${later === 1 ? 'The one change' : `The ${later} changes`} made since ${later === 1 ? 'is' : 'are'} undone. You can undo this as well.`)) return;
+      await api('POST', `/api/admin/config-history/${x.v}/restore`);
+      verMsg(`The configuration is back as it was on ${when(x.at)}.`);
+    } else {
+      if (!confirm(`Undo this change?\n\n${title}`)) return;
+      let r = await api('POST', `/api/admin/config-history/${x.v}/undo`, {});
+      if (r.conflict) {
+        const later = r.later.slice(-5).map((y) => `• ${when(y.at)}: ${y.text || 'a change'}`).join('\n');
+        if (!confirm(`${r.parts.join(', ')} ${r.parts.length === 1 ? 'was' : 'were'} changed again since:\n${later}${r.later.length > 5 ? `\n… and ${r.later.length - 5} more` : ''}\n\nUndo anyway? ${r.parts.length === 1 ? 'It goes' : 'They go'} back to how ${r.parts.length === 1 ? 'it was' : 'they were'} before this change, and those later changes to ${r.parts.length === 1 ? 'it' : 'them'} are lost (they stay in the history).`)) return;
+        r = await api('POST', `/api/admin/config-history/${x.v}/undo`, { force: true });
+      }
+      verMsg(`Undone: ${title}`);
+    }
+  } catch (e) {
+    verMsg(e.message, true);
+  }
+  loadVersions();
+}
+
+function verEntry(x) {
+  const title = x.texts[0] || (x.by ? 'Changed' : 'Changed by the dashboard itself');
+  const changes = el('ul', { class: 'ver-changes' }, x.changes.map((c) => el('li', { class: `ver-change ${c.kind}` },
+    HD.icon(KIND_ICONS[c.kind]),
+    el('span', null, el('strong', { text: c.label }), ` ${KIND_TEXT[c.kind]}`, c.detail ? el('span', { class: 'log-detail', text: `: ${c.detail.replace(/; /g, '\n')}` }) : null))),
+  x.more ? el('li', { class: 'small muted', text: `… and ${x.more} more` }) : null);
+  return el('li', { class: `log-entry ver${x.undoOf || x.restoreTo ? ' undo' : ''}` },
+    el('time', { class: 'num', datetime: new Date(x.at).toISOString(), text: new Date(x.at).toLocaleTimeString('en-GB') }),
+    el('span', { class: 'log-cat cat-settings' }, HD.icon(x.undoOf || x.restoreTo ? 'undo-2' : 'sliders-horizontal')),
+    el('div', { class: 'log-body' },
+      el('div', { class: 'log-text' }, el('span', { text: title }), x.by ? el('span', { class: 'log-by', text: x.by }) : el('span', { class: 'log-by auto', text: 'the dashboard' })),
+      x.texts.length > 1 ? el('div', { class: 'small muted', text: x.texts.slice(1).join(' · ') }) : null,
+      changes),
+    el('div', { class: 'ver-actions' },
+      el('button', { type: 'button', class: 'small', onclick: () => verAction(x, 'undo') }, HD.icon('undo-2'), 'Undo'),
+      x.v !== verLatest ? el('button', { type: 'button', class: 'small', title: 'Put everything back as it was right after this change', onclick: () => verAction(x, 'restore') }, HD.icon('rotate-ccw'), 'Go back to here') : null));
+}
+
+function renderVersions() {
+  const days = new Map();
+  for (const x of verList) {
+    const k = dayKey(x.at);
+    if (!days.has(k)) days.set(k, []);
+    days.get(k).push(x);
+  }
+  $('ver-days').replaceChildren(...(verList.length
+    ? [...days].map(([, xs]) => el('section', { class: 'log-day' }, el('h2', { text: dayName(xs[0].at) }), el('ol', { class: 'log-entries' }, xs.map(verEntry))))
+    : [el('p', { class: 'muted log-empty', text: 'No changes yet. Each change you make in Admin will show up here, ready to undo.' })]));
+  $('ver-more').hidden = !verMore;
+}
+$('ver-more').addEventListener('click', () => loadVersions(true));
+
 let timer = null;
 $('log-q').addEventListener('input', (e) => {
   clearTimeout(timer);
@@ -188,6 +274,7 @@ HD.shell({ active: 'log', admin: true });
 renderView();
 load();
 if (view === 'incidents') loadIncidents();
+if (view === 'history') loadVersions();
 // new entries every 30 s, while the top of the list is in view and no older pages are open
 setInterval(() => {
   if (!document.hidden && window.scrollY < 200 && shown.length <= 200) load();
