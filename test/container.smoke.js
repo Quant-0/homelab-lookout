@@ -31,7 +31,8 @@ function start(name, data, key, extra = []) {
     '-e', 'LOOKOUT_HOST=127.0.0.1', '-e', 'LOOKOUT_HTTPS_PORT=18443', '-e', 'LOOKOUT_HTTP_PORT=18080', ...extra,
     '-v', `${data}:/data`, '-v', `${key}:/key`,
     '--read-only', '--tmpfs', '/tmp:size=16m,mode=1777',
-    '--cap-drop', 'ALL', '--cap-add', 'CHOWN,FOWNER,DAC_OVERRIDE,SETUID,SETGID,NET_RAW', '--security-opt', 'no-new-privileges',
+    // one --cap-add each: Docker doesn't take a comma-separated list (Podman does)
+    '--cap-drop', 'ALL', ...['CHOWN', 'FOWNER', 'DAC_OVERRIDE', 'SETUID', 'SETGID', 'NET_RAW'].flatMap((c) => ['--cap-add', c]), '--security-opt', 'no-new-privileges',
     IMAGE);
 }
 async function healthy(name) {
