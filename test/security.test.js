@@ -60,6 +60,7 @@ const patterned = {
   destinations: [['PUT', `/api/admin/backup/destinations/${U}`], ['DELETE', `/api/admin/backup/destinations/${U}`], ['POST', `/api/admin/backup/destinations/${U}/test`], ['POST', `/api/admin/backup/destinations/${U}/sshkey`]],
   incidents: [['POST', '/api/admin/incidents/00000000000000aa/ack']],
   configHistory: [['POST', '/api/admin/config-history/1/undo'], ['POST', '/api/admin/config-history/1/restore']],
+  metricsTokens: [['PUT', `/api/admin/metrics-tokens/${U}`], ['DELETE', `/api/admin/metrics-tokens/${U}`]],
   pushSubs: [['POST', `/api/admin/alerts/channels/${U}/subscriptions`], ['DELETE', `/api/admin/alerts/channels/${U}/subscriptions/00000000000000aa`]],
   passkeys: [['DELETE', '/api/admin/passkeys/AAAAAAAAAAAAAAAAAAAAAA']],
   portainerConn: [['POST', `/api/admin/services/${U}/portainer-connection`]],

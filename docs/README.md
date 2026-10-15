@@ -19,6 +19,7 @@ Start with **Getting started**, then read about the features you use. Every page
 - [Check-ins and maintenance](features/checkins-and-maintenance.md)
 - [Power and energy](features/energy.md): power sources, prices, the energy report
 - [History and the monthly report](features/history-and-reports.md): graphs, the report, the storage forecast
+- [Metrics for Prometheus, Grafana and Home Assistant](features/metrics.md): tokens, the Prometheus config, Home Assistant sensors, every metric
 - [Docs, Updates, Log and undo](features/docs-updates-log.md): docs pages, update checks, the change log, and the configuration history with undo
 
 ## Configuration

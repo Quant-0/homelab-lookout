@@ -604,6 +604,8 @@ h2, h3 { break-after: avoid; }
     <li><b>Reverse proxies:</b> the IP of Nginx Proxy Manager, Caddy, Traefik or another proxy in front of the dashboard. Only these may report the visitor's real address and https, so the lockout and the Log see real addresses.</li>
     <li><b>This connection</b> shows what the server sees of your visit and what doesn't add up. <b>Setting up a proxy</b> has copy-ready instructions for each proxy, filled in with your address.</li>
   </ul>
+  <h3>Metrics for Prometheus &amp; Home Assistant</h3>
+  <p>Grafana (through Prometheus) and Home Assistant can read what the dashboard measures: power and energy, temperatures, storage and when it will be full, UPSes, VMs, containers, services, problems and agents. Make a token for each program with the address of the machine it runs on. The token is shown once, with a ready Prometheus config and Home Assistant sensors. It only reads <code>/metrics</code> and <code>/metrics.json</code>, only from those addresses, and never shows addresses or passwords. The list shows when each token was last used, with <b>Change</b> and <b>Remove</b>.</p>
 </section>
 
 <!-- ============ 16 ============ -->

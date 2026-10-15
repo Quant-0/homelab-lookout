@@ -53,6 +53,7 @@ Passwords, tokens and keys are entered only here, stored encrypted and never sho
 - **This server**: the running version, Node.js and when its security fixes end, where the history is stored.
 - **Web server**: HTTPS and HTTP ports; keep HTTP on *Redirect to HTTPS*. **Certificate** shows the names it covers, when it expires and the CA fingerprint, with **Download CA certificate**. Ports below 1024 need `install.sh --low-ports`.
 - **Address & reverse proxy**: the dashboard's domain name, your reverse proxies, what the server sees of your connection, and setup instructions for each proxy. See [Reverse proxy](../getting-started/reverse-proxy.md).
+- **Metrics for Prometheus & Home Assistant**: read-only tokens, each working only from the addresses you give it, with a ready Prometheus config and Home Assistant sensors. See [Metrics](../features/metrics.md).
 - **Install as an app**: the steps for phones and PCs.
 
 Risky changes on these tabs ask for the password again if it wasn't typed in the last 15 minutes.

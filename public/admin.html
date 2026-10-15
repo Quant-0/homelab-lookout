@@ -562,6 +562,20 @@
         <div class="seg proxy-pick" id="proxy-pick" role="group" aria-label="Proxy"></div>
         <div id="proxy-howto"></div>
       </section>
+      <section class="card" id="metrics-card">
+        <h3>Metrics for Prometheus &amp; Home Assistant</h3>
+        <p class="hint">Grafana (through Prometheus) and Home Assistant can read what the dashboard measures: devices, power and energy, storage, UPSes, services, problems and agents. Names only, never addresses or passwords. Each reader gets its own token, which works only from the addresses you give it and can only read.</p>
+        <div id="metrics-list"></div>
+        <form id="metrics-form">
+          <h4 id="metrics-form-title">New token</h4>
+          <div class="form-grid">
+            <label><span>Name</span><input name="name" maxlength="48" placeholder="e.g. Prometheus" required autocomplete="off"></label>
+            <label class="wide"><span>Used from</span><input name="allow" maxlength="600" placeholder="e.g. 192.168.1.30 (or a range like 192.168.1.0/24)" required autocomplete="off" spellcheck="false"><span class="hint">The address of the machine running Prometheus or Home Assistant. From anywhere else the token doesn't work. Separate several with commas.</span></label>
+          </div>
+          <div class="form-actions"><button type="submit" class="primary" id="metrics-submit">Make token</button><button type="button" id="metrics-cancel" hidden>Cancel</button><span class="msg" id="metrics-msg" role="status"></span></div>
+        </form>
+        <div id="metrics-new"></div>
+      </section>
       <section class="card" id="app-card">
         <h3>Install as an app</h3>
         <p class="hint">The dashboard can be installed on a phone or PC and then opens in its own window with its own icon. The device has to trust the certificate above first (import the CA once), otherwise the browser doesn't offer to install it.</p>
