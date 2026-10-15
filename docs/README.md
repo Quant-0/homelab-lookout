@@ -3,7 +3,9 @@
 Start with **Getting started**, then read about the features you use. Every page uses sample names and addresses (`192.168.1.x`, `lookout.example.com`, servers called *atlas* and *vault*); use your own.
 
 ## Getting started
-- [Installation](getting-started/installation.md): requirements, the installer and its options, where things live
+- [Installation](getting-started/installation.md): Docker or directly on Linux, side by side
+- [Install with Docker](getting-started/install-docker.md): Portainer stacks, the image, settings, folders and permissions, updates, security
+- [Install directly on Linux](getting-started/install-linux.md): the installer and its options, where things live, environment
 - [First steps](getting-started/first-steps.md): signing in, trusting the certificate, installing the app, passkeys
 - [Reverse proxy and a domain name](getting-started/reverse-proxy.md): Nginx Proxy Manager, Caddy, Traefik, nginx, Tailscale, Cloudflare Tunnel
 - [Updating](getting-started/updating.md): new versions, Node.js, packages

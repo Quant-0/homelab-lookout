@@ -24,14 +24,14 @@
 
 ## Useful commands
 
-| Task | Command |
-|---|---|
-| The log, live | `journalctl -u homelab-dashboard -f` |
-| Past deploys | `journalctl -t homelab-dashboard-deploy` |
-| Which version runs | `cat /opt/homelab-dashboard/VERSION` |
-| Restart | `sudo systemctl restart homelab-dashboard` (sign-ins survive) |
-| Forgot the admin password | `sudo sh deploy/install.sh --reset-admin` |
-| Locked out after changing ports | `sudo sh deploy/install.sh --reset-network` |
-| Renew the certificate | It renews itself 30 days before; or `sudo sh deploy/install.sh --renew-cert` |
+| Task | Directly on Linux | Docker |
+|---|---|---|
+| The log, live | `journalctl -u homelab-dashboard -f` | `docker logs -f lookout` (Portainer: the container → Logs) |
+| Past deploys | `journalctl -t homelab-dashboard-deploy` | Not needed: each image is one commit |
+| Which version runs | `cat /opt/homelab-dashboard/VERSION`, or Admin → Server | Admin → Server |
+| Restart (sign-ins survive) | `sudo systemctl restart homelab-dashboard` | `docker restart lookout` |
+| Forgot the admin password | `sudo sh deploy/install.sh --reset-admin` | `docker exec -it -u 10001 lookout node /app/server.js set-admin admin`, then restart |
+| Locked out after changing ports | `sudo sh deploy/install.sh --reset-network` | Start once with `LOOKOUT_RESET_NETWORK: "1"` |
+| Renew the certificate | Renewed 30 days before by the installer; or `sudo sh deploy/install.sh --renew-cert` | Renewed on start when 30 days are left |
 
 Every problem, change and sign-in is in the **Log**, and every problem's start and end under **Incidents**: often the quickest way to find out what happened and when.

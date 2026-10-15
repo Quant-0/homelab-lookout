@@ -1,0 +1,52 @@
+# Homelab Lookout with Docker Compose, or as a Portainer stack (Stacks → Add stack → paste this).
+# Read docs/getting-started/install-docker.md first: the image is private, so the server needs a
+# login to ghcr.io once.
+#
+# After the first start, the container's log shows the address and a setup code; open the address
+# and create the admin account with it.
+
+services:
+  lookout:
+    image: ghcr.io/quant-0/homelab-lookout:latest
+    container_name: lookout
+    restart: unless-stopped
+
+    # The host's network: finding devices, ping, SNMP and the visitor's real address need it.
+    # Lookout listens only on the address below, never on all of the host's network cards.
+    network_mode: host
+
+    environment:
+      # This server's LAN address. Empty: the first private address of the host is used.
+      LOOKOUT_HOST: ""
+      # More names for the dashboard's own certificate, e.g. lookout.home.arpa (comma-separated).
+      # Set them before the first start: they go into the local CA.
+      LOOKOUT_NAMES: ""
+      # Ports on the first start; change them later in Admin → Server.
+      LOOKOUT_HTTPS_PORT: "8443"
+      LOOKOUT_HTTP_PORT: "8080"
+
+    volumes:
+      # Everything Lookout keeps: settings, history, the Log, docs, uploaded images, backups.
+      - /opt/lookout/data:/data
+      # The encryption key and the certificates. Keep it apart from the data: a copy of the data
+      # folder alone can't decrypt the passwords stored in it.
+      - /opt/lookout/key:/key
+      # Optional: a folder (e.g. a mounted NAS share) for Admin → Backups → Folder.
+      # - /mnt/nas/lookout-backups:/backups
+
+    # Hardening: nothing in the image can be changed, and only what the first start needs. It
+    # drops to its own user (uid 10001) right after, keeping only NET_RAW for ping.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN        # give /data and /key to the app user
+      - FOWNER       # set their permissions
+      - DAC_OVERRIDE # read existing files there, whoever owns them
+      - SETUID       # switch to the app user
+      - SETGID
+      - NET_RAW      # ping
+    security_opt:
+      - no-new-privileges:true

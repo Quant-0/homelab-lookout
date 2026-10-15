@@ -16,6 +16,7 @@
 //   TLS_CERT_FILE / TLS_KEY_FILE / TLS_CA_FILE   certificate when not using systemd LoadCredential
 //                   (tls_cert, tls_key, ca_cert), e.g. for development
 //   COOKIE_SECURE   1/0 override for the Secure cookie flag (default: on for HTTPS requests)
+//   LOOKOUT_CONTAINER  1 in the Docker image (set by it): advice and Admin speak of Docker
 //
 //   node server.js reset-network   reset HTTP/HTTPS ports to the defaults (service stopped)
 
@@ -35,6 +36,7 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || '/var/lib/homelab-dashboard');
 const HOST = (process.env.HOST || '127.0.0.1').trim();
+const CONTAINER = process.env.LOOKOUT_CONTAINER === '1';
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const TZ = 'Europe/Oslo';
 
@@ -4984,6 +4986,7 @@ function runtimeInfo() {
     nodeEnd: end,
     nodeSupported: !end || Date.now() <= Date.parse(end),
     history: histDb ? 'sqlite' : 'json',
+    install: CONTAINER ? 'docker' : 'service',
     version: /^[0-9a-f]{40}$/.test(commit || '') ? { commit: commit.slice(0, 7), deployedAt: Date.parse(deployedAt) || null } : null,
   };
 }
@@ -6494,7 +6497,7 @@ function csrfOk(req, session) {
 
 // Static files are loaded once into memory from an explicit allow-list.
 const STATIC = {};
-const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/common.js', '/static/js/look.js', '/static/favicon.svg', '/static/js/offline.js',
+const PUBLIC_ASSETS = new Set(['/static/css/style.css', '/static/js/login.js', '/static/js/setup.js', '/static/js/common.js', '/static/js/look.js', '/static/favicon.svg', '/static/js/offline.js',
   '/static/js/icons.js', '/static/fonts/inter-5.3.0.woff2', '/static/licenses/Inter-OFL.txt', '/static/licenses/Lucide-LICENSE.txt',
   '/static/icons/icon-192.png', '/static/icons/icon-512.png', '/static/icons/maskable-512.png', '/static/icons/apple-touch-icon.png']);
 const DASHBOARD_ASSETS = new Set(['/static/js/vms.js', '/static/js/dashboard.js', '/static/js/wall.js', '/static/js/rack.js', '/static/js/models.js', '/static/js/services.js', '/static/js/energy.js']);
@@ -6502,6 +6505,8 @@ function loadStatic() {
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
   const files = {
     'login.html': 'login.html',
+    'setup.html': 'setup.html',
+    '/static/js/setup.js': 'js/setup.js',
     'dashboard.html': 'dashboard.html',
     'admin.html': 'admin.html',
     'services.html': 'services.html',
@@ -7321,6 +7326,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   const sees = Boolean(session || viewer || config.settings.dashboard.public);
 
   if (p === '/api/login' && m === 'POST') return handleLogin(req, res);
+  if (p === '/api/setup' && m === 'POST') return handleSetup(req, res);
 
   // Passkey sign-in: whether it works here, a challenge, and the answer (locked out like the password)
   if (p === '/api/passkey' && m === 'GET') {
@@ -8745,7 +8751,7 @@ async function handleApi(req, res, url, session, viewer = null) {
       try {
         if (old.type === 'folder') {
           const dir = path.join(BACKUP_BASE, old.folder || '');
-          if (!fs.existsSync(BACKUP_BASE)) throw new UserError(`${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
+          if (!fs.existsSync(BACKUP_BASE)) throw new UserError(CONTAINER ? `${BACKUP_BASE} is not mounted: add a folder for it to the container's volumes` : `${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
           fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
           const probe = path.join(dir, `.write-test-${crypto.randomBytes(4).toString('hex')}`);
           fs.writeFileSync(probe, 'ok');
@@ -8959,7 +8965,9 @@ async function handle(req, res) {
     }
     if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
 
+    if (p === '/setup') return readAdmin() ? redirect(res, '/login') : sendPage(res, 'setup.html', null, (h) => h.replace(`id="where-${CONTAINER ? 'service' : 'docker'}"`, `id="where-${CONTAINER ? 'service' : 'docker'}" hidden`));
     if (p === '/login') {
+      if (!readAdmin()) return redirect(res, '/setup');
       if (session) return redirect(res, '/');
       // A remembered device comes here when something needs the password; it's already remembered
       return sendPage(res, 'login.html', seer, viewer ? (h) => h.replace('id="reauth" hidden', 'id="reauth"').replace('id="remember-row"', 'id="remember-row" hidden') : undefined);
@@ -10256,7 +10264,7 @@ function addressWarning(link) {
   const name = u.hostname.replace(/^\[|\]$/g, '');
   const x = new crypto.X509Certificate(tlsInfo.cert);
   const covered = net.isIP(name) ? x.checkIP(name) : x.checkHost(name);
-  return covered ? null : `The certificate does not cover ${name}, so browsers will warn on that address. Add it to the certificate (deploy/install.sh makes a new one with the names in TLS_NAMES).`;
+  return covered ? null : `The certificate does not cover ${name}, so browsers will warn on that address. For a domain name, put a reverse proxy with its own certificate in front (see Setting up a proxy below)${CONTAINER ? ', or add the name to LOOKOUT_NAMES in the compose file and make a new CA' : ''}.`;
 }
 
 // Where links in messages point: the address set in Admin, or this server's own
@@ -11090,7 +11098,7 @@ async function sendToDestination(d, file, data, keep) {
   if (d.type === 'folder') {
     const dir = path.join(BACKUP_BASE, d.folder || '');
     if (!isInside(dir, BACKUP_BASE)) throw new UserError('Invalid folder');
-    if (!fs.existsSync(BACKUP_BASE)) throw new UserError(`${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
+    if (!fs.existsSync(BACKUP_BASE)) throw new UserError(CONTAINER ? `${BACKUP_BASE} is not mounted: add a folder for it to the container's volumes` : `${BACKUP_BASE} does not exist (re-run the installer, then mount your share there)`);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(dir, file), data, { mode: 0o600 });
     keepNewest(dir, keep);
@@ -11175,6 +11183,7 @@ function backupStatus() {
     local,
     folderBase: BACKUP_BASE,
     folderBaseExists: fs.existsSync(BACKUP_BASE),
+    docker: CONTAINER,
     types: BACKUP_TYPES,
     running: backupRunning,
   };
@@ -11897,6 +11906,51 @@ function readPasswordFromTty(prompt) {
   });
 }
 
+// The first admin account, made in the browser: only with the one-time code from the server's log,
+// which changes on every start and is gone once the account exists
+let setupCode = null;
+function newSetupCode() {
+  const abc = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+  const c = Array.from(crypto.randomBytes(10), (b) => abc[b % abc.length]).join('');
+  return `${c.slice(0, 5)}-${c.slice(5)}`;
+}
+const setupNorm = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 40);
+
+async function handleSetup(req, res) {
+  if (readAdmin() || !setupCode) return sendError(res, 404, 'The admin account already exists: sign in instead');
+  const ip = clientIp(req) || '?';
+  const wait = Math.max(lockRemaining('ip:' + ip), lockRemaining('global'));
+  if (wait) {
+    res.setHeader('Retry-After', String(wait));
+    return sendError(res, 429, `Too many failed attempts. Try again in ${wait} s.`);
+  }
+  const body = await readBody(req);
+  const given = crypto.createHash('sha256').update(setupNorm(body.code)).digest();
+  if (!crypto.timingSafeEqual(given, crypto.createHash('sha256').update(setupNorm(setupCode)).digest())) {
+    registerFailure('ip:' + ip, 5);
+    registerFailure('global', 20);
+    event('sign-in', `Wrong setup code from ${ip}`);
+    await new Promise((r) => setTimeout(r, 400 + crypto.randomInt(400)));
+    return sendError(res, 401, CONTAINER ? 'Wrong setup code. It is in the container\'s log (Portainer: the container → Logs; or docker logs lookout) and changes on every restart.' : 'Wrong setup code. It is in the service\'s log (journalctl -u homelab-dashboard) and changes on every restart.');
+  }
+  const username = String(body.username ?? '').trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) throw new UserError('User name: letters, digits, . _ and - only');
+  const pw = typeof body.password === 'string' ? body.password : '';
+  const problem = passwordProblem(pw);
+  if (problem) throw new UserError(problem);
+  if (body.password2 !== pw) throw new UserError('The passwords do not match');
+  const hash = await hashPassword(pw);
+  if (readAdmin() || !setupCode) return sendError(res, 409, 'The admin account was just made elsewhere: sign in instead');
+  writeJsonAtomic(ADMIN_FILE, { username, hash, changedAt: Date.now() });
+  setupCode = null;
+  loginFailures.delete('ip:' + ip);
+  createSession(req, res, username, { keep: false });
+  const ctx = requestCtx.getStore();
+  if (ctx) ctx.user = username;
+  event('sign-in', `Admin account "${username}" made on the setup page from ${ip}`);
+  return sendJson(res, 200, { ok: true });
+}
+
 async function cliSetAdmin(username) {
   ensureDataDir();
   username = (username || 'admin').trim();
@@ -12289,7 +12343,6 @@ async function main() {
   loadStatic();
   initAllowedHosts();
   DUMMY_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
-  if (!readAdmin()) log('WARNING: no admin account yet. Run: node server.js set-admin <username>');
 
   tlsInfo = loadTls();
   if (!tlsInfo && config.settings.server.https.enabled) log('No TLS certificate found: serving plain HTTP only');
@@ -12299,6 +12352,11 @@ async function main() {
     fatal(`${e.message}. To go back to the default ports: node server.js reset-network`);
   }
   const urls = serverUrls();
+  if (!readAdmin()) {
+    setupCode = newSetupCode();
+    const where = `${urls.https || urls.http}/setup`;
+    log(`\n\n  No admin account yet. Open ${where}\n  and enter this setup code: ${setupCode}\n  (it changes on every restart${CONTAINER ? '' : '; or run: node server.js set-admin <username>'})\n`);
+  }
   log(`Listening on ${[urls.https, urls.http && `${urls.http}${effectiveServer(config.settings.server).http.mode === 'redirect' ? ' (redirects to HTTPS)' : ''}`].filter(Boolean).join(' and ')}`);
 
   event('system', 'Dashboard started');

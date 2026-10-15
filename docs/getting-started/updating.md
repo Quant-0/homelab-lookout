@@ -1,6 +1,15 @@
 # Updating
 
-## A new version
+## With Docker
+
+The image is rebuilt on every change and tagged `:latest` (and `:sha-<commit>`). Your data stays in the host folders.
+
+- **Portainer:** *Stacks → lookout → Editor → Update the stack*, with **Re-pull image and redeploy** on.
+- **Docker Compose:** `docker compose pull && docker compose up -d`.
+
+**Admin → Server** shows the commit and build time of the running image. Node.js is part of the image, so it is updated by the same pull. More in [Install with Docker](install-docker.md#updating).
+
+## Directly on Linux: a new version
 
 Pull the new code and run the installer again; it keeps your data:
 
@@ -12,7 +21,7 @@ sudo sh deploy/install.sh --host 192.168.1.20
 
 Look at what changed first (`git log -p`): the installed code runs with access to your device passwords.
 
-## Deploying without the installer
+## Directly on Linux: deploying without the installer
 
 If someone (a second account, or an assistant working as that user) deploys new versions for you, give that user one narrow permission instead of full sudo:
 
@@ -30,7 +39,7 @@ The deploy command:
 
 It never touches the systemd unit, the key or the certificates; it says when the installer is needed. Remember what the permission means: whoever can deploy can change the code that holds your passwords. Turn it off when you don't need it: `sudo sh deploy/install.sh --no-allow-deploy`.
 
-## Node.js
+## Directly on Linux: Node.js
 
 **Admin → Server** shows the Node.js version and when its security fixes end. The installer uses Node.js 24 LTS. To move an existing install to a newer Node.js by hand:
 
@@ -42,7 +51,7 @@ sudo apt update && sudo apt install nodejs
 sudo systemctl restart homelab-dashboard
 ```
 
-## Packages without full sudo
+## Directly on Linux: packages without full sudo
 
 `deploy/allow-packages.sh USER` lets the deploying user keep the server's packages current without full sudo. It installs `/usr/local/sbin/homelab-pkg` and one sudoers line that allows only:
 
