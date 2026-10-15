@@ -73,7 +73,6 @@ async function run() {
   ok(lines.length >= 2 && lines.every((l) => /^10001 0000000000002000 1 /.test(l)), `tini and node run as uid 10001 with only NET_RAW and no-new-privs\n${procs}`);
   ok(/Read-only file system/.test(shOk('exec', '--user', '10001', 'lookout-smoke', 'touch', '/app/x')), 'the app cannot change the image');
   ok(/Permission denied/.test(shOk('exec', '--user', '10001', 'lookout-smoke', 'cat', '/key/tls/ca.key')), 'nor read the CA key');
-  ok(/1 received/.test(shOk('exec', '--user', '10001', 'lookout-smoke', 'ping', '-c1', '-W2', '127.0.0.1')), 'ping works for the app');
   const perms = hostCmd('stat', '-c', '%u %a %n', data, key, path.join(key, 'secret.key'), path.join(key, 'tls', 'ca.key'), path.join(key, 'tls', 'server.key'));
   ok(/^10001 700 .*data$/m.test(perms) && /^0 750 .*key$/m.test(perms) && /^10001 600 .*secret\.key$/m.test(perms) && /^0 600 .*ca\.key$/m.test(perms) && /^10001 600 .*server\.key$/m.test(perms), `folders and keys have the right owners and modes\n${perms}`);
 
@@ -93,6 +92,9 @@ async function run() {
   r = await req('POST', '/api/setup', { code, username: 'evil', password: 'correct horse battery', password2: 'correct horse battery' });
   ok(r.status === 404, 'the setup page is gone once the admin exists');
   ok((await req('GET', '/setup')).location === '/login', 'and /setup sends to sign-in');
+  // ping from the app itself (its NET_RAW); `docker exec` gets no capabilities, so not that way
+  r = await req('POST', '/api/admin/test-connection', { type: 'ping', address: '127.0.0.1' });
+  ok(r.json?.ok === true, `the app can ping (${r.json?.info || r.json?.error || r.text.slice(0, 80)})`);
   r = await req('GET', '/api/admin/config');
   ok(r.json?.runtime?.install === 'docker' && /^[0-9a-f]{7}$/.test(r.json.runtime.version?.commit || ''), `Admin knows it runs in Docker, and the version (${r.json?.runtime?.version?.commit})`);
 
