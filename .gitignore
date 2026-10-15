@@ -3,3 +3,5 @@ data/
 *.key
 *.pem
 .env
+.claude/
+*.log
