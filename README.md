@@ -70,7 +70,7 @@ Two ways, same program and features. [Which one?](docs/getting-started/installat
 
 ### With Docker (or Portainer)
 
-The image is private on `ghcr.io`: you need access to this repository and a [login to ghcr.io](docs/getting-started/install-docker.md#1-get-access-to-the-image) once. Then deploy [`docker-compose.yml`](docker-compose.yml) as a Portainer stack, or:
+The image is public on `ghcr.io/quant-0/homelab-lookout`, for PCs and Raspberry Pi, with no login needed. Deploy [`docker-compose.yml`](docker-compose.yml) as a Portainer stack, or:
 
 ```sh
 docker compose up -d     # in a folder with docker-compose.yml
@@ -86,7 +86,7 @@ Open the address, enter the setup code and create your admin account. Your data 
 A hardened systemd service on Debian or Ubuntu (a VM, an LXC container or a Raspberry Pi):
 
 ```sh
-git clone https://github.com/<you>/homelab-lookout.git
+git clone https://github.com/Quant-0/homelab-lookout.git
 cd homelab-lookout
 sudo sh deploy/install.sh --host 192.168.1.20
 ```

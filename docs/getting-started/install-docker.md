@@ -8,27 +8,20 @@ Homelab Lookout as a container: with Docker Compose, or as a **Portainer stack**
 - About 150 MB of memory and 300 MB of disk, plus what history and backups grow to.
 - Lookout uses the **host's network** (see [Why the host network](#why-the-host-network)). That works on Linux, including Synology's Container Manager and Unraid. It doesn't work in Docker Desktop on Mac or Windows.
 
-## 1. Get access to the image
+## 1. The image
 
-The image is private on GitHub's container registry, `ghcr.io/quant-0/homelab-lookout`. To pull it you need:
+The image is public on GitHub's container registry: `ghcr.io/quant-0/homelab-lookout`. Docker, Portainer and Podman pull it without any login or token.
 
-1. **Access to the repository.** The owner adds your GitHub account under the repository's *Settings → Collaborators*. Accept the invitation in the e-mail.
-2. **A token that can only read packages.** On GitHub: your picture → *Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)*.
-   - Tick only **`read:packages`**.
-   - Choose an expiry date, and copy the token.
-   - GitHub's registry still needs a *classic* token for this; fine-grained tokens don't work with it.
-3. **A login on the server, once:**
-   - **Portainer:** *Registries → Add registry → Custom registry*:
-     - Name: `GitHub`
-     - Registry URL: `ghcr.io`
-     - *Authentication* on
-     - your GitHub user name, and the token as the password
-   - **Docker on the command line:**
-     ```sh
-     docker login ghcr.io -u YOUR-GITHUB-NAME   # paste the token as the password
-     ```
+| Tag | What |
+|---|---|
+| `:latest` | The newest version, rebuilt on every change to `main` |
+| `:sha-<commit>` | One exact version, to stay on it |
 
-The token can only read the packages you have access to; it can't change anything. When it expires, make a new one and update the registry in Portainer (or log in again).
+Each image is built by GitHub Actions from this repository, and comes with a signed build attestation. With the GitHub CLI you can check that an image really was built here, from this repository's code:
+
+```sh
+gh attestation verify oci://ghcr.io/quant-0/homelab-lookout:latest -R Quant-0/homelab-lookout
+```
 
 ## 2. Deploy it
 
@@ -156,7 +149,7 @@ The image is rebuilt on every change to `main` and tagged `:latest` and `:sha-<c
 
 Your data and settings are kept. A new image never changes the folders, apart from fixing their owners.
 
-Watchtower can update it automatically, if it is given the ghcr.io login (its `REPO_USER` and `REPO_PASS`, or the host's Docker `config.json`). Updating by hand lets you read what changed first.
+Watchtower can update it automatically. Updating by hand lets you read what changed first.
 
 ## Everyday tasks
 
@@ -177,7 +170,7 @@ Watchtower can update it automatically, if it is given the ghcr.io login (its `R
 | `HOST … is not a loopback/private address` | `LOOKOUT_HOST` must be a private address (10.x, 172.16–31.x, 192.168.x, 100.64–127.x for Tailscale) |
 | `EADDRINUSE` in the log | Another program uses 8443 or 8080: change `LOOKOUT_HTTPS_PORT` / `LOOKOUT_HTTP_PORT` before the first start, or in Admin later |
 | `… is not writable for uid …` | With `user:` set, the host folders must belong to that user (`chown -R 1000:1000 /opt/lookout`) |
-| `pull access denied` / `unauthorized` | The registry login is missing or its token expired; see [step 1](#1-get-access-to-the-image) |
+| `pull access denied` / `manifest unknown` | Check the image name: `ghcr.io/quant-0/homelab-lookout:latest` (all lowercase) |
 | Ping checks always fail | The container needs `NET_RAW` (in `cap_add`) |
 | The container is *unhealthy* | Its health check calls the dashboard on its own address; look at the log for why it isn't answering |
 

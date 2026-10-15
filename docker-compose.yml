@@ -1,6 +1,5 @@
 # Homelab Lookout with Docker Compose, or as a Portainer stack (Stacks → Add stack → paste this).
-# Read docs/getting-started/install-docker.md first: the image is private, so the server needs a
-# login to ghcr.io once.
+# More in docs/getting-started/install-docker.md (settings, folders and permissions, updating).
 #
 # After the first start, the container's log shows the address and a setup code; open the address
 # and create the admin account with it.
