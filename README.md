@@ -4,9 +4,9 @@
 
 Homelab Lookout reads your equipment and shows how it is doing: hardware health from the management controllers, Proxmox VMs and containers, NAS pools, the network, UPSes, smart plugs, your self-hosted apps, and what it all costs in power. It alerts you when something needs you, keeps a history, and never changes anything on a device.
 
-![Home: the problems first, then power, internet and every device drawn as it looks](docs/guide/img/home-top.png)
+![A tour of the sample lab: Home with what needs you, power and the internet, a device's details, the rack with its lights, services and VMs](docs/guide/img/demo.gif)
 
-It is one Node.js file and a folder of static pages, with **no npm dependencies**. It runs on a small VM or a Raspberry Pi.
+It is one Node.js file and a folder of static pages, with **no npm dependencies**. It runs as a Docker container (or Portainer stack), or directly on a small VM or a Raspberry Pi.
 
 > All names, addresses and numbers in this repository and its screenshots are sample data.
 
@@ -70,12 +70,18 @@ Two ways, same program and features. [Which one?](docs/getting-started/installat
 
 ### With Docker (or Portainer)
 
-The image is public on `ghcr.io/quant-0/homelab-lookout`, for PCs and Raspberry Pi, with no login needed. Deploy [`docker-compose.yml`](docker-compose.yml) as a Portainer stack, or:
+The image is public on `ghcr.io/quant-0/homelab-lookout`, for PCs and Raspberry Pi (amd64 and arm64), with no login needed.
+
+**Portainer:** *Stacks → Add stack*, paste [`docker-compose.yml`](docker-compose.yml), and deploy. **Docker Compose:**
 
 ```sh
-docker compose up -d     # in a folder with docker-compose.yml
+mkdir -p /opt/lookout && cd /opt/lookout
+curl -fsSLO https://raw.githubusercontent.com/Quant-0/homelab-lookout/main/docker-compose.yml
+docker compose up -d
 docker logs lookout      # shows the address and a one-time setup code
 ```
+
+If the server has more than one network, set `LOOKOUT_HOST` in the file to its LAN address first.
 
 Open the address, enter the setup code and create your admin account. Your data stays in two host folders, `/opt/lookout/data` and `/opt/lookout/key`. The container runs as its own user, with a read-only image and only the permission that ping needs.
 
@@ -88,7 +94,7 @@ A hardened systemd service on Debian or Ubuntu (a VM, an LXC container or a Rasp
 ```sh
 git clone https://github.com/Quant-0/homelab-lookout.git
 cd homelab-lookout
-sudo sh deploy/install.sh --host 192.168.1.20
+sudo sh deploy/install.sh --host YOUR-SERVER-IP    # e.g. 192.168.1.20
 ```
 
 The installer sets up Node.js, a dedicated system user, an encryption key, a local certificate authority and the service, and asks for the admin password.
@@ -97,7 +103,7 @@ The installer sets up Node.js, a dedicated system user, an encryption key, a loc
 
 ### Then
 
-Open **https://192.168.1.20:8443**, trust the certificate (the page explains how), and add your first device under **Admin → Devices**, or let **Find devices** look for them. See [First steps](docs/getting-started/first-steps.md).
+Open **https://YOUR-SERVER-IP:8443** (the log or the installer shows the exact address), trust the certificate (the page explains how), and add your first device under **Admin → Devices**, or let **Find devices** look for them. See [First steps](docs/getting-started/first-steps.md).
 
 ## Documentation
 
@@ -123,7 +129,8 @@ There is also an illustrated **user guide (PDF)** with every page explained, ser
 - Login for everything (an optional public dashboard and status page show no addresses or secrets); passkeys and *keep me signed in* are optional.
 - Secrets are encrypted at rest (AES-256-GCM, key outside the app) and write-only in the browser.
 - Self-signed device certificates are pinned and checked before any password is sent.
-- Strict CSP, CSRF tokens, same-origin checks, lockouts, and a sandboxed systemd unit running as its own user.
+- Strict CSP, CSRF tokens, same-origin checks, lockouts.
+- Runs as its own user: a sandboxed systemd unit, or a container with a read-only image and no capabilities but ping's.
 - It never changes a device, never installs updates, and the agent never runs commands.
 
 → [The full security model](docs/configuration/security.md)
@@ -143,4 +150,6 @@ test/                end-to-end suites with mock devices and services
 
 ## License
 
-Private project. Third-party licences for the bundled font and icons are in [`public/licenses/`](public/licenses).
+[MIT](LICENSE). Third-party licences for the bundled font and icons are in [`public/licenses/`](public/licenses).
+
+Found a security problem? Please report it privately, as described in [SECURITY.md](SECURITY.md).

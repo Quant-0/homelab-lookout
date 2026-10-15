@@ -1,9 +1,9 @@
 # The Docker image: tested on every pull request to main, published to ghcr.io on every merge.
 # Pull requests build it for amd64 and arm64 and start the amd64 image the way docker-compose.yml
 # does (test/container.smoke.js); a merge to main pushes both to
-# ghcr.io/quant-0/homelab-lookout (:latest and :sha-<commit>). While the repository is public, a
-# signed build attestation goes with it, so `gh attestation verify` can show the image was built
-# here (GitHub offers attestations for private repositories only on Enterprise Cloud).
+# ghcr.io/quant-0/homelab-lookout (:latest and :sha-<commit>) with a signed build attestation, so
+# `gh attestation verify` can show the image was built here (made only while the repository is
+# public: GitHub offers attestations for private repositories only on Enterprise Cloud).
 #
 # Actions are pinned to commits (the version is in the comment), so a moved tag can't change
 # what runs here.

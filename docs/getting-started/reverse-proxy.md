@@ -1,6 +1,6 @@
 # Reverse proxy and a domain name
 
-The dashboard works on its own address (`https://192.168.1.20:8443`). Putting it behind a reverse proxy with a domain name, like `https://lookout.example.com`, gives you:
+The dashboard works on its own address (in the examples here `https://192.168.1.20:8443`: use yours; Admin shows the instructions filled in with it). Putting it behind a reverse proxy with a domain name, like `https://lookout.example.com`, gives you:
 
 - a **public certificate** (Let's Encrypt): no local CA to import on every phone;
 - **passkeys**, which need a domain name;

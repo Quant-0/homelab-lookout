@@ -63,6 +63,8 @@ node docs/guide/pdf.js "$PWD/docs/guide/guide.html" public/guide/homelab-lookout
 
 Both need Playwright with Chromium. The screenshots come from a lab of mock devices and sample names, never real data.
 
+The README's animated tour is recorded from the same lab: `node docs/guide/demo.js /tmp/demo` records it, and `sh docs/guide/demo-gif.sh /tmp/demo` makes `docs/guide/img/demo.gif` (ffmpeg and gifsicle run from container images).
+
 ## Sample data
 
 Everything in this repository uses sample names and addresses: `192.168.1.x` and `192.168.2.x`, `example.com`, servers called *atlas*, *vault*, *titan* and *orion*. Keep it that way.

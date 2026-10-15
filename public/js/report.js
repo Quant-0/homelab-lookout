@@ -55,11 +55,11 @@ function render() {
 
   const s = d.summary;
   const e = d.energy;
-  $('rp-tiles').replaceChildren(
+  $('rp-tiles').replaceChildren(...[
     tile('Service uptime', pct(s.uptime), 'average of all services', delta(s.uptime, s.prevUptime, { better: 'higher', unit: ' pp', digits: 2 })),
     tile('Problems', String(s.incidents.total), `${s.incidents.critical} critical · ${s.incidents.acknowledged} acknowledged`, delta(s.incidents.total, s.prevIncidents.total)),
     tile('Time with problems', mins(s.incidents.minutes), s.incidents.meanClearMin != null ? `cleared in ${mins(s.incidents.meanClearMin)} on average` : 'none cleared yet', delta(s.incidents.minutes, s.prevIncidents.minutes, { unit: ' min' })),
-    e ? tile('Energy', `${fmt.n(e.kwh, 0)} kWh`, `${fmt.kr(e.cost, 0)}`, e.previous?.kwh ? delta(e.kwh, e.previous.kwh, { unit: ' kWh' }) : null) : null);
+    e ? tile('Energy', `${fmt.n(e.kwh, 0)} kWh`, `${fmt.kr(e.cost, 0)}`, e.previous?.kwh ? delta(e.kwh, e.previous.kwh, { unit: ' kWh' }) : null) : null].filter(Boolean));
 
   $('rp-services').replaceChildren(table(['Service', 'Uptime', '', 'Down', 'Problems'], d.services.map((x) => el('tr', null,
     el('td', null, el('strong', { text: x.name }), el('div', { class: 'small muted', text: x.group })),
