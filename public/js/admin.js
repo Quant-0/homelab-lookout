@@ -128,14 +128,16 @@ function renderRuntime(rt) {
   if (!rt) return;
   const v = rt.version;
   const rows = [
-    ['Homelab Lookout', v ? `${v.commit}${v.deployedAt ? `, deployed ${new Date(v.deployedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}` : 'Not deployed with the deploy script'],
+    ['Homelab Lookout', v ? `${v.commit}${v.deployedAt ? `, ${rt.install === 'docker' ? 'built' : 'deployed'} ${new Date(v.deployedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}` : 'Not deployed with the deploy script'],
+    ['Runs as', rt.install === 'docker' ? 'Docker container (update: pull the new image and recreate it)' : 'systemd service (homelab-dashboard)'],
     ['Node.js', `${rt.node}${rt.nodeEnd ? ` · security fixes ${rt.nodeSupported ? 'until' : 'ended'} ${rt.nodeEnd}` : ''}`],
     ['Graph history', rt.history === 'sqlite' ? 'SQLite database (history.db)' : 'history.json (Node.js 22.5 or newer stores it in a database instead)'],
   ];
+  if (rt.install === 'docker') $('ports-hint').textContent = 'In Docker, use ports from 1024 up (e.g. 8443), or a reverse proxy on 443. Locked out? Set LOOKOUT_RESET_NETWORK=1 on the container, start it once, then remove it again.';
   $('runtime').replaceChildren(
     el('div', { class: 'kv' }, rows.map(([k, val]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: val })))),
     rt.nodeSupported ? null : el('p', { class: 'banner', role: 'alert' },
-      `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`));
+      rt.install === 'docker' ? `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Pull the newest image and recreate the container.` : `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`));
 }
 
 // ---------------------------------------------------------------------------
@@ -2823,7 +2825,12 @@ function openDestination(d) {
   const extra = [];
   if (d.type === 'folder') {
     input('folder', 'Subfolder', { placeholder: 'e.g. lookout' }, `Saved under ${bk.folderBase}/…`);
-    extra.push(el('details', { class: 'small' }, el('summary', { text: 'How to mount a share from the DS418 there' }),
+    if (bk.docker) extra.push(el('details', { class: 'small' }, el('summary', { text: 'How to give the container a folder (e.g. a NAS share)' }),
+      el('p', { text: bk.folderBaseExists ? `${bk.folderBase} is there.` : `${bk.folderBase} is not mounted yet.` }),
+      el('p', { text: 'Mount the share on the host (in /etc/fstab, as below but with your own path), then add it to the volumes in the compose file or Portainer stack and redeploy:' }),
+      el('pre', { text: '    volumes:\n      - /mnt/nas/lookout-backups:/backups' }),
+      el('p', { text: 'The container\'s user (uid 10001) must be able to write there: for NFS, give the folder to that uid on the NAS; for SMB, mount it with uid=10001,gid=10001.' })));
+    else extra.push(el('details', { class: 'small' }, el('summary', { text: 'How to mount a NAS share there' }),
       el('p', { text: bk.folderBaseExists ? `${bk.folderBase} exists.` : `${bk.folderBase} does not exist yet: re-run the installer.` }),
       el('pre', { text: [
         '# NFS (DSM: Control Panel → Shared Folder → Edit → NFS Permissions → allow this VM)',

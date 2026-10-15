@@ -1,0 +1,102 @@
+# The Docker image: tested on every pull request to main, published to ghcr.io on every merge.
+# Pull requests build it for amd64 and arm64 and start the amd64 image the way docker-compose.yml
+# does (test/container.smoke.js); a merge to main pushes both to
+# ghcr.io/quant-0/homelab-lookout (:latest and :sha-<commit>). While the repository is public, a
+# signed build attestation goes with it, so `gh attestation verify` can show the image was built
+# here (GitHub offers attestations for private repositories only on Enterprise Cloud).
+#
+# Actions are pinned to commits (the version is in the comment), so a moved tag can't change
+# what runs here.
+name: Docker image
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/quant-0/homelab-lookout
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build for amd64 (to test)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: lookout:test
+          build-args: |
+            LOOKOUT_COMMIT=${{ github.event.pull_request.head.sha }}
+      - name: Build for arm64 (Raspberry Pi), to check it builds
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Start it like docker-compose.yml and check it
+        run: sudo env PATH="$PATH" ENGINE=docker node test/container.smoke.js lookout:test
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: When this commit was made (the image's build time)
+        id: when
+        run: echo "built=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+      - name: Build and push (amd64 and arm64)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Homelab Lookout
+          build-args: |
+            LOOKOUT_COMMIT=${{ github.sha }}
+            LOOKOUT_BUILT=${{ steps.when.outputs.built }}
+      - name: Attest where it was built
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

@@ -72,7 +72,7 @@ function which(bin) {
 
 // Fresh data dir + admin account; or reuse the current one (fresh = false)
 let dataDir = null;
-async function startServer(fresh, extraEnv = {}, seed = null) {
+async function startServer(fresh, extraEnv = {}, seed = null, noAdmin = false) {
   if (server) {
     server.kill();
     await new Promise((r) => server.once('exit', r));
@@ -80,11 +80,12 @@ async function startServer(fresh, extraEnv = {}, seed = null) {
   if (fresh || !dataDir) {
     dataDir = fs.mkdtempSync(path.join(tmp, 'data-'));
     fs.chmodSync(dataDir, 0o700);
-    execFileSync(process.execPath, ['server.js', 'set-admin', 'admin'], { cwd: ROOT, env: { ...process.env, DATA_DIR: dataDir }, input: `${ADMIN_PW}\n${ADMIN_PW}\n`, stdio: ['pipe', 'ignore', 'inherit'] });
+    if (!noAdmin) execFileSync(process.execPath, ['server.js', 'set-admin', 'admin'], { cwd: ROOT, env: { ...process.env, DATA_DIR: dataDir }, input: `${ADMIN_PW}\n${ADMIN_PW}\n`, stdio: ['pipe', 'ignore', 'inherit'] });
   }
   if (seed) seed(dataDir);
   server = start(process.execPath, ['server.js'], { DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(PORT), ...extraEnv }, 'server');
   await waitFor(`${BASE_URL}/login`);
+  await sleep(300); // the setup code is logged right after the server listens
 }
 
 function runSuite(file, env) {
@@ -170,6 +171,7 @@ async function main() {
     { file: 'test/updates.test.js', fresh: true },
     { file: 'test/docs-history.test.js', fresh: true, seed: require('./docs-history.test.js').seed },
     { file: 'test/metrics.test.js', fresh: true },
+    { file: 'test/setup.test.js', fresh: true, noAdmin: true },
     { file: 'test/config-history.test.js', fresh: true, seed: require('./config-history.test.js').seed, env: { STEP_UP_S: '4' } },
     { file: 'test/energy.test.js', fresh: true, seed: require('./energy.test.js').seed },
     { file: 'test/remember.test.js', fresh: true, seed: require('./remember.test.js').seed },
@@ -186,7 +188,7 @@ async function main() {
     }
     const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed, 'energy.ui.js': require('./energy.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
-      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' } }[f], skip: !playwright && 'Playwright not installed' });
+      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' } }[f], noAdmin: f === 'setup.ui.js', skip: !playwright && 'Playwright not installed' });
   }
 
   let passed = 0;
@@ -198,9 +200,11 @@ async function main() {
       console.log(`SKIP  ${s.file}: ${s.skip}`);
       continue;
     }
-    await startServer(s.fresh, s.env, s.seed);
+    await startServer(s.fresh, s.env, s.seed, s.noAdmin);
     console.log(`RUN   ${s.file}`);
-    const r = await runSuite(s.file, { ...env, ...s.env, DATA_DIR: dataDir });
+    // what the server logged so far (a suite may need the setup code from it)
+    fs.writeFileSync(path.join(tmp, 'server.log'), server.output);
+    const r = await runSuite(s.file, { ...env, ...s.env, DATA_DIR: dataDir, SERVER_LOG: path.join(tmp, 'server.log') });
     passed += r.passed;
     failed += r.failed;
     if (r.code !== 0 && !r.failed) broken++;

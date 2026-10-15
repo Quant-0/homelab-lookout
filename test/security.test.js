@@ -69,7 +69,7 @@ const patterned = {
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
 const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
 // open to everyone: signing in (password or passkey) and the status page
-const OPEN = new Set(['/api/login', '/api/status', '/api/passkey', '/api/passkey/options', '/api/passkey/login']);
+const OPEN = new Set(['/api/login', '/api/setup', '/api/status', '/api/passkey', '/api/passkey/options', '/api/passkey/login']);
 const bodyFor = (m) => (m === 'GET' ? undefined : {});
 
 async function run() {
@@ -93,7 +93,7 @@ async function run() {
     const r = await call('GET', p);
     ok(r.status === 303 && r.headers.get('location') === `/login${next}`, `stranger: ${p} sends to the login page`);
   }
-  const PUBLIC = new Set(['css/style.css', 'js/login.js', 'js/common.js', 'favicon.svg', 'js/offline.js', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
+  const PUBLIC = new Set(['css/style.css', 'js/login.js', 'js/setup.js', 'js/common.js', 'favicon.svg', 'js/offline.js', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
     'js/icons.js', 'js/look.js', 'fonts/inter-5.3.0.woff2', 'licenses/Inter-OFL.txt', 'licenses/Lucide-LICENSE.txt']);
   const files = [];
   const walk = (dir) => { for (const f of fs.readdirSync(dir, { withFileTypes: true })) f.isDirectory() ? walk(path.join(dir, f.name)) : files.push(path.relative(path.join(ROOT, 'public'), path.join(dir, f.name))); };

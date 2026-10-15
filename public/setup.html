@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Set up · Homelab Lookout</title>
+  <link rel="icon" href="/logo">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/appearance.css">
+  <script src="/static/js/look.js"></script>
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <div class="login-wrap">
+    <form class="card login" id="setup-form" autocomplete="off">
+      <h1><img src="/logo" alt=""> Homelab Lookout</h1>
+      <p><b>Welcome.</b> Create the admin account to get started.</p>
+      <p class="small muted">The setup code is in the server's log, so only someone who can see the server can do this. It changes on every restart.</p>
+      <p class="small muted" id="where-docker">In Portainer: the container → <b>Logs</b>. Or on the server: <code>docker logs lookout</code></p>
+      <p class="small muted" id="where-service">On the server: <code>sudo journalctl -u homelab-dashboard</code></p>
+      <label><span>Setup code</span><input id="code" name="code" required autofocus autocomplete="one-time-code" spellcheck="false" placeholder="XXXXX-XXXXX" maxlength="40"></label>
+      <label><span>User name</span><input id="username" name="username" autocomplete="username" required value="admin" maxlength="64" pattern="[A-Za-z0-9._\-]+"></label>
+      <label><span>Password</span><input id="password" name="password" type="password" autocomplete="new-password" required minlength="12"><span class="hint">At least 12 characters. A long passphrase is best.</span></label>
+      <label><span>Repeat the password</span><input id="password2" name="password2" type="password" autocomplete="new-password" required minlength="12"></label>
+      <button class="primary" type="submit">Create the admin account</button>
+      <p class="msg error" id="setup-error" role="alert"></p>
+    </form>
+  </div>
+  <script src="/static/js/setup.js"></script>
+</body>
+</html>

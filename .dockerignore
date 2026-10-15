@@ -1,0 +1,6 @@
+# Only server.js, public/ and deploy/docker/ go into the image
+*
+!server.js
+!public
+!deploy/docker
+public/guide/*.tmp

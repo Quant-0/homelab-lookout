@@ -30,6 +30,8 @@ Homelab Lookout holds passwords to your servers, NAS and network, so it is built
 | **Linux agents** | Own token per machine (hash stored), report-only, never runs what it receives, never updates itself |
 | **Uploads and backups** | Images must really be JPEG/PNG/WebP (metadata stripped); SVG logos without scripts or links; a restored backup is checked like input |
 | **Docs** | Markdown rendered without `innerHTML`; only http(s) and mailto links |
+| **The container** | Runs as uid 10001 after a short root start (folders, key, certificate), with `no-new-privileges`, a read-only image and no capabilities but `NET_RAW`; the CA key stays root's; no secrets in the compose file; the key in its own folder, apart from the data. See [Install with Docker](../getting-started/install-docker.md#how-it-is-protected) |
+| **First admin** | Without an admin account, the setup page needs a one-time code from the server's log (new on every start, locked out like sign-in, gone once the account exists) |
 | **The service** | Runs as `homelab-dash` (no shell) from root-owned, read-only code, data in a 0700 folder, sandboxed (`ProtectSystem=strict`, `ProtectHome`, no capabilities, syscall filter) |
 
 It never changes a device: there is no button that restarts, switches off or updates hardware, and updates are never installed.

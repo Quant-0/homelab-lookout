@@ -64,9 +64,26 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 
 Read-only accounts are enough everywhere, and passwords are stored encrypted and never sent back to the browser.
 
-## Quick start
+## Install
 
-On a Debian or Ubuntu machine with a private address:
+Two ways, same program and features. [Which one?](docs/getting-started/installation.md)
+
+### With Docker (or Portainer)
+
+The image is private on `ghcr.io`: you need access to this repository and a [login to ghcr.io](docs/getting-started/install-docker.md#1-get-access-to-the-image) once. Then deploy [`docker-compose.yml`](docker-compose.yml) as a Portainer stack, or:
+
+```sh
+docker compose up -d     # in a folder with docker-compose.yml
+docker logs lookout      # shows the address and a one-time setup code
+```
+
+Open the address, enter the setup code and create your admin account. Your data stays in two host folders, `/opt/lookout/data` and `/opt/lookout/key`. The container runs as its own user, with a read-only image and only the permission that ping needs.
+
+→ [Install with Docker in detail](docs/getting-started/install-docker.md): Portainer, settings, folders and permissions, updates, security
+
+### Directly on Linux
+
+A hardened systemd service on Debian or Ubuntu (a VM, an LXC container or a Raspberry Pi):
 
 ```sh
 git clone https://github.com/<you>/homelab-lookout.git
@@ -74,20 +91,24 @@ cd homelab-lookout
 sudo sh deploy/install.sh --host 192.168.1.20
 ```
 
-The installer sets up Node.js, a dedicated system user, an encryption key, a local certificate authority and a systemd service, and asks for the admin password. Then open **https://192.168.1.20:8443**, trust the certificate (the page explains how), and add your first device under **Admin → Devices**, or let **Find devices** look for them.
+The installer sets up Node.js, a dedicated system user, an encryption key, a local certificate authority and the service, and asks for the admin password.
 
-→ [Installation in detail](docs/getting-started/installation.md)
+→ [Install directly on Linux in detail](docs/getting-started/install-linux.md): options, where things live, environment
+
+### Then
+
+Open **https://192.168.1.20:8443**, trust the certificate (the page explains how), and add your first device under **Admin → Devices**, or let **Find devices** look for them. See [First steps](docs/getting-started/first-steps.md).
 
 ## Documentation
 
 | Getting started | Features | Configuration |
 |---|---|---|
-| [Installation](docs/getting-started/installation.md) | [Home, rack and wall display](docs/features/home-and-wall.md) | [Admin overview](docs/configuration/admin.md) |
-| [First steps: sign in, certificate, app](docs/getting-started/first-steps.md) | [Devices and connections](docs/features/devices.md) | [Backups](docs/configuration/backups.md) |
-| [Reverse proxy and a domain name](docs/getting-started/reverse-proxy.md) | [Find devices](docs/features/find-devices.md) | [Security](docs/configuration/security.md) |
-| [Updating](docs/getting-started/updating.md) | [Services and the status page](docs/features/services.md) | [Troubleshooting](docs/troubleshooting.md) |
-| | [VMs and containers](docs/features/vms-and-containers.md) | [Development and tests](docs/development.md) |
-| | [Linux agents](docs/features/linux-agents.md) | |
+| [Installation: Docker or Linux](docs/getting-started/installation.md) | [Home, rack and wall display](docs/features/home-and-wall.md) | [Admin overview](docs/configuration/admin.md) |
+| [Install with Docker](docs/getting-started/install-docker.md) | [Devices and connections](docs/features/devices.md) | [Backups](docs/configuration/backups.md) |
+| [Install directly on Linux](docs/getting-started/install-linux.md) | [Find devices](docs/features/find-devices.md) | [Security](docs/configuration/security.md) |
+| [First steps: sign in, certificate, app](docs/getting-started/first-steps.md) | [Services and the status page](docs/features/services.md) | [Troubleshooting](docs/troubleshooting.md) |
+| [Reverse proxy and a domain name](docs/getting-started/reverse-proxy.md) | [VMs and containers](docs/features/vms-and-containers.md) | [Development and tests](docs/development.md) |
+| [Updating](docs/getting-started/updating.md) | [Linux agents](docs/features/linux-agents.md) | |
 | | [Alerts and incidents](docs/features/alerts.md) | |
 | | [Check-ins and maintenance](docs/features/checkins-and-maintenance.md) | |
 | | [Power and energy](docs/features/energy.md) | |
@@ -113,6 +134,9 @@ There is also an illustrated **user guide (PDF)** with every page explained, ser
 server.js            the whole server: collectors, alerts, history, API, pages
 public/              pages, styles and scripts (no build step), the agent's scripts
 deploy/              installer, deploy command, systemd unit, package helper
+deploy/docker/       the container's start script and health check
+Dockerfile           the image (built by .github/workflows/docker.yml)
+docker-compose.yml   the compose file, also for a Portainer stack
 docs/                this documentation and the PDF guide's source
 test/                end-to-end suites with mock devices and services
 ```
