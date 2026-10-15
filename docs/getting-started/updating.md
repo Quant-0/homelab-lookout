@@ -16,7 +16,7 @@ Pull the new code and run the installer again; it keeps your data:
 ```sh
 cd homelab-lookout
 git pull
-sudo sh deploy/install.sh --host 192.168.1.20
+sudo sh deploy/install.sh --host YOUR-SERVER-IP
 ```
 
 Look at what changed first (`git log -p`): the installed code runs with access to your device passwords.
@@ -26,7 +26,7 @@ Look at what changed first (`git log -p`): the installed code runs with access t
 If someone (a second account, or an assistant working as that user) deploys new versions for you, give that user one narrow permission instead of full sudo:
 
 ```sh
-sudo sh deploy/install.sh --host 192.168.1.20 --allow-deploy deployer   # once, as you
+sudo sh deploy/install.sh --host YOUR-SERVER-IP --allow-deploy deployer   # once, as you
 sudo -n /usr/local/sbin/homelab-dashboard-deploy                        # then, as deployer
 ```
 

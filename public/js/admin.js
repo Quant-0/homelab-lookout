@@ -134,10 +134,11 @@ function renderRuntime(rt) {
     ['Graph history', rt.history === 'sqlite' ? 'SQLite database (history.db)' : 'history.json (Node.js 22.5 or newer stores it in a database instead)'],
   ];
   if (rt.install === 'docker') $('ports-hint').textContent = 'In Docker, use ports from 1024 up (e.g. 8443), or a reverse proxy on 443. Locked out? Set LOOKOUT_RESET_NETWORK=1 on the container, start it once, then remove it again.';
-  $('runtime').replaceChildren(
+  $('runtime').replaceChildren(...[
     el('div', { class: 'kv' }, rows.map(([k, val]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: val })))),
     rt.nodeSupported ? null : el('p', { class: 'banner', role: 'alert' },
-      rt.install === 'docker' ? `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Pull the newest image and recreate the container.` : `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`));
+      rt.install === 'docker' ? `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Pull the newest image and recreate the container.` : `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`),
+  ].filter(Boolean)); // replaceChildren would write a null out as "null"
 }
 
 // ---------------------------------------------------------------------------
@@ -973,9 +974,9 @@ function openFinder() {
           f.known.hosts.length ? el('div', { class: 'small muted', text: `On ${[...new Set(f.known.hosts.map((h) => h.device))].join(', ')}` }) : null,
           !f.what.some((w) => w.kind === 'device') && !f.known.hosts.length ? el('button', { type: 'button', class: 'link-button small', text: 'Add as a device that answers ping', onclick: () => addDevice(f, { type: 'ping', label: f.name || f.ip, address: f.ip }) }) : null));
     };
-    list.replaceChildren(
+    list.replaceChildren(...[
       useful.length ? el('h4', { text: 'Recognised' }) : null, useful.length ? el('ul', null, useful.map(row)) : null,
-      rest.length ? el('details', { class: 'finder-rest' }, el('summary', { text: `${rest.length} other address${rest.length === 1 ? '' : 'es'} answered` }), el('ul', null, rest.map(row))) : null);
+      rest.length ? el('details', { class: 'finder-rest' }, el('summary', { text: `${rest.length} other address${rest.length === 1 ? '' : 'es'} answered` }), el('ul', null, rest.map(row))) : null].filter(Boolean));
   };
   const poll = async () => {
     clearTimeout(timer);
@@ -1938,7 +1939,7 @@ function renderCert() {
   const t = web.tls;
   if (!t) return $('web-cert').replaceChildren(el('p', { class: 'small muted', text: 'No certificate installed.' }));
   const days = Math.round((t.validTo - Date.now()) / 86400000);
-  $('web-cert').replaceChildren(
+  $('web-cert').replaceChildren(...[
     el('table', { class: 'facts' }, el('tbody', null,
       el('tr', null, el('th', { text: 'Names' }), el('td', { text: (t.names || '').replace(/IP Address:/g, '').replace(/DNS:/g, '') })),
       el('tr', null, el('th', { text: 'Valid until' }), el('td', null, `${fmt.time(t.validTo)} `, days < 30 ? HD.status(`${days} days left: re-run the installer to renew`, 'warning') : el('span', { class: 'small muted', text: `(${days} days)` }))),
@@ -1952,7 +1953,7 @@ function renderCert() {
         el('li', { text: 'Windows: double-click → Install Certificate → Local Machine → "Trusted Root Certification Authorities".' }),
         el('li', { text: 'macOS: double-click → Keychain Access (System) → open the certificate → Trust → "Always Trust".' }),
         el('li', { text: 'Linux: copy to /usr/local/share/ca-certificates/ and run sudo update-ca-certificates (Firefox: Settings → Certificates → Import).' }),
-        el('li', { text: 'The CA can only vouch for this server (its network and host names), so importing it does not let it impersonate other websites.' })))) : null);
+        el('li', { text: 'The CA can only vouch for this server (its network and host names), so importing it does not let it impersonate other websites.' })))) : null].filter(Boolean));
 }
 
 $('web-form').addEventListener('change', syncWeb);
@@ -3362,7 +3363,7 @@ async function loadPasskeys() {
       : !r.here ? `Open the dashboard at ${r.site.url} to add or use a passkey.`
         : !HD.passkeySupported() ? 'This browser cannot use passkeys.' : null;
     const others = r.site ? r.passkeys.filter((x) => x.rpId !== r.site.rpId) : r.passkeys;
-    $('passkeys').replaceChildren(
+    $('passkeys').replaceChildren(...[
       note ? el('p', { class: 'small muted', text: note }) : null,
       r.passkeys.length ? el('div', { class: 'table-wrap' }, el('table', null,
         el('thead', null, el('tr', null, el('th', { text: 'Passkey' }), el('th', { text: 'Added' }), el('th', { text: 'Last used' }), el('th'))),
@@ -3370,7 +3371,7 @@ async function loadPasskeys() {
           el('td', null, el('div', { text: x.name }), others.includes(x) ? el('div', { class: 'small muted', text: `For ${x.rpId}, not the current address` }) : null),
           el('td', { class: 'small num', text: fmt.time(x.created) }),
           el('td', { class: 'small num', text: x.lastUsed ? fmt.time(x.lastUsed) : 'Never' }),
-          el('td', { class: 'r' }, el('button', { type: 'button', text: 'Remove', onclick: () => removePasskey(x) }))))))) : el('p', { class: 'small muted', text: 'No passkeys yet.' }));
+          el('td', { class: 'r' }, el('button', { type: 'button', text: 'Remove', onclick: () => removePasskey(x) }))))))) : el('p', { class: 'small muted', text: 'No passkeys yet.' })].filter(Boolean));
   } catch (e) {
     $('passkeys').replaceChildren(el('p', { class: 'msg error', text: e.message }));
   }

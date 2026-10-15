@@ -1,11 +1,16 @@
 # First steps
 
+After [installing](installation.md):
+
+- **Directly on Linux:** the installer asked for the admin account; sign in with it.
+- **With Docker:** the first page is **Create the admin account**. It asks for the setup code from the container's log (Portainer: the container → *Logs*, or `docker logs lookout`). See [the first start](install-docker.md#3-the-first-start).
+
 ## Trust the certificate (once per device)
 
 The dashboard uses its own small certificate authority. Until a device trusts it, the browser warns, and phones won't offer to install the app.
 
-1. Download the CA from `https://192.168.1.20:8443/ca.crt`, or **Admin → Server → Download CA certificate**.
-2. Check its fingerprint against the one the installer printed, or the one under **Admin → Server → Certificate** on a device you already trust.
+1. Download the CA from `https://YOUR-SERVER-IP:8443/ca.crt`, or **Admin → Server → Download CA certificate**.
+2. Check its fingerprint against the one the installer printed (with Docker: the one in the container's log), or the one under **Admin → Server → Certificate** on a device you already trust.
 3. Import it:
 
 | Device | How |

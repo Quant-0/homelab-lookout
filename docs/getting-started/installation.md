@@ -6,7 +6,7 @@ Homelab Lookout runs in one of two ways. Both run the same program, with the sam
 |---|---|---|
 | Good when | You already run containers, or manage the server with Portainer | You want a small VM, an LXC container or a Raspberry Pi just for Lookout |
 | Runs on | Any Linux with Docker 24+ or Podman, amd64 or arm64 (Raspberry Pi 4/5) | Debian 12/13 or Ubuntu 22.04+ with systemd |
-| Install | Paste the compose file into Portainer, or `docker compose up -d` | `sudo sh deploy/install.sh --host 192.168.1.20` from the repository |
+| Install | Paste the compose file into Portainer, or `docker compose up -d` | `sudo sh deploy/install.sh --host YOUR-SERVER-IP` from the repository |
 | First admin account | The setup page, with a code from the container's log | The installer asks for it |
 | Updates | Pull the new image and recreate (Portainer: *Pull and redeploy*) | `git pull` and run the installer again, or the deploy command |
 | Your data | Two host folders: `/opt/lookout/data` and `/opt/lookout/key` | `/var/lib/homelab-dashboard`, and the key in `/etc/homelab-dashboard` |

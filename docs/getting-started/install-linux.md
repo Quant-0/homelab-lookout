@@ -16,7 +16,7 @@ There are no npm packages to install and no build step.
 ```sh
 git clone https://github.com/Quant-0/homelab-lookout.git
 cd homelab-lookout
-sudo sh deploy/install.sh --host 192.168.1.20
+sudo sh deploy/install.sh --host YOUR-SERVER-IP    # this machine's LAN address, e.g. 192.168.1.20
 ```
 
 The installer:
@@ -29,7 +29,7 @@ The installer:
 6. asks for the admin user name and a password (at least 12 characters);
 7. installs and starts `homelab-dashboard.service`.
 
-It prints the address and the CA's fingerprint. Open `https://192.168.1.20:8443` and go on with [First steps](first-steps.md).
+It prints the address and the CA's fingerprint. Open `https://YOUR-SERVER-IP:8443` and go on with [First steps](first-steps.md).
 
 If no admin account was made (the installer was run without a terminal, for example), the first page you open is **Create the admin account**. It asks for a one-time setup code, which the service writes to its log: `sudo journalctl -u homelab-dashboard | grep "setup code"`. The code changes on every restart and stops working once the account exists. `node server.js set-admin` works too.
 

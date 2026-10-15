@@ -49,3 +49,11 @@ services:
       - NET_RAW      # ping
     security_opt:
       - no-new-privileges:true
+
+    # Also in the image; repeated here for Podman, which ignores the image's own
+    healthcheck:
+      test: ["CMD", "node", "/app/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3

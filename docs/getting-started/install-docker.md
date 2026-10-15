@@ -28,7 +28,12 @@ gh attestation verify oci://ghcr.io/quant-0/homelab-lookout:latest -R Quant-0/ho
 The compose file is [`docker-compose.yml`](../../docker-compose.yml) in the repository. The same file works both ways:
 
 - **Portainer:** *Stacks → Add stack*. Name it `lookout`, choose *Web editor*, paste the file, and **Deploy the stack**.
-- **Docker Compose:** put the file in a folder (e.g. `/opt/lookout`) and run `docker compose up -d` there.
+- **Docker Compose:** download it into a folder of its own, and start it there:
+  ```sh
+  mkdir -p /opt/lookout && cd /opt/lookout
+  curl -fsSLO https://raw.githubusercontent.com/Quant-0/homelab-lookout/main/docker-compose.yml
+  docker compose up -d
+  ```
 
 The parts you may want to change before the first start:
 
