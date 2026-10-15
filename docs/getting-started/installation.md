@@ -11,7 +11,7 @@ Homelab Lookout runs in one of two ways. Both run the same program, with the sam
 | Updates | Pull the new image and recreate (Portainer: *Pull and redeploy*) | `git pull` and run the installer again, or the deploy command |
 | Your data | Two host folders: `/opt/lookout/data` and `/opt/lookout/key` | `/var/lib/homelab-dashboard`, and the key in `/etc/homelab-dashboard` |
 | Hardening | Its own user (uid 10001), read-only image, all capabilities dropped but ping's | Its own system user, read-only code, a sandboxed systemd unit with a syscall filter |
-| The image | Private: you need access to the repository and a login to ghcr.io | No image: you need access to the repository |
+| Where it comes from | The public image `ghcr.io/quant-0/homelab-lookout`, built from this repository | A clone of this repository |
 
 Some things are the same either way:
 
