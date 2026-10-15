@@ -169,6 +169,7 @@ async function main() {
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },
     { file: 'test/updates.test.js', fresh: true },
     { file: 'test/docs-history.test.js', fresh: true, seed: require('./docs-history.test.js').seed },
+    { file: 'test/config-history.test.js', fresh: true, seed: require('./config-history.test.js').seed, env: { STEP_UP_S: '4' } },
     { file: 'test/energy.test.js', fresh: true, seed: require('./energy.test.js').seed },
     { file: 'test/remember.test.js', fresh: true, seed: require('./remember.test.js').seed },
     { file: 'test/security.test.js', fresh: true },

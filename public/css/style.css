@@ -2267,6 +2267,26 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
   .log-entry.inc > button { grid-column: 3; grid-row: 1 / span 2; }
 }
 .log-entry.inc.quiet { opacity: 0.6; }
+/* Log → History: what each version changed, and undo */
+.log-entry.ver { grid-template-columns: 5.2em 28px minmax(0, 1fr) auto; }
+.ver-changes { margin: 2px 0 0; padding: 0; list-style: none; display: grid; gap: 3px; }
+.ver-change { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px; align-items: start; font-size: 13px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+.ver-change > .icon { width: 13px; height: 13px; margin-top: 3px; color: var(--muted); }
+.ver-change.added > .icon { color: var(--good); }
+.ver-change.removed > .icon { color: var(--critical); }
+.ver-change strong { font-weight: 600; color: var(--text); }
+.ver-change .log-detail { display: inline; }
+.ver-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.ver-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.ver-actions .icon { width: 14px; height: 14px; }
+.log-by.auto::before { content: ""; }
+@media (max-width: 720px) {
+  .log-entry.ver { grid-template-columns: 28px minmax(0, 1fr); }
+  .log-entry.ver .log-cat { grid-column: 1; grid-row: 1 / span 2; }
+  .log-entry.ver .log-body { grid-column: 2; grid-row: 1; }
+  .log-entry.ver time { grid-column: 2; grid-row: 2; padding: 0; }
+  .log-entry.ver .ver-actions { grid-column: 2; grid-row: 3; justify-content: flex-start; }
+}
 .ack-page h2 { font-size: 18px; margin-top: 4px; }
 .ack-page form { margin-top: 6px; }
 

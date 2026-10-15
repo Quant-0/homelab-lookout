@@ -14,7 +14,8 @@ Homelab Lookout holds passwords to your servers, NAS and network, so it is built
 | **Passwords** | scrypt (N=2^15, r=8, p=1); unknown user names take as long as known ones |
 | **Brute force** | Per-address lockout after 5 failures and a global one after 20, growing to an hour; shared by the sign-in, password confirmation and passkeys |
 | **Sessions** | A random 256-bit token; only its SHA-256 is stored (`sessions.json`, 0600). `HttpOnly; SameSite=Strict`, plus `Secure` and `__Host-` over HTTPS; a session only works on the protocol it was made on. Normal: 2 h idle, 12 h at most. *Keep me signed in*: 7 days idle, 30 at most. A new password signs everyone else out |
-| **Step-up** | Risky changes (web server, backups, alert channels, the dashboard address and proxies, making things public, passkeys) need the password or a passkey in the last 15 minutes |
+| **Step-up** | Risky changes (web server, backups, alert channels, the dashboard address and proxies, making things public, passkeys, undoing a change or going back in the configuration history) need the password or a passkey in the last 15 minutes |
+| **Configuration history** | `config-history.json` (0600) keeps secrets as stored (encrypted); the browser only gets descriptions of changes. The admin account, passkeys, sessions and the web server's ports are not in it, so undo can't lock you out |
 | **Passkeys** | WebAuthn on the Dashboard address's domain only; user verification required; one-use, two-minute challenges tied to their purpose and used up before anything else is checked; the origin, the RP ID hash and the sign counter are checked |
 | **Remembered devices** | Opt-in, view-only, 30 days; a separate token (only its hash stored, left out of backups), signed out by a new password |
 | **CSRF** | A per-session token on every change; `Origin` and `Sec-Fetch-Site` are checked; request bodies must be JSON |
