@@ -20,10 +20,12 @@ COPY public /app/public
 COPY deploy/docker/entrypoint.sh /usr/local/bin/lookout-entrypoint
 COPY deploy/docker/healthcheck.js /app/healthcheck.js
 
-# What Admin → Server shows: the commit this was built from, and when
+# What Admin → Server shows, and what the update check compares with GitHub's releases: the
+# commit this was built from, when, and the release version (empty for builds from main)
 ARG LOOKOUT_COMMIT=0000000000000000000000000000000000000000
 ARG LOOKOUT_BUILT=
-RUN printf '%s\n%s\n' "$LOOKOUT_COMMIT" "${LOOKOUT_BUILT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > /app/VERSION \
+ARG LOOKOUT_VERSION=
+RUN printf '%s\n%s\n%s\n' "$LOOKOUT_COMMIT" "${LOOKOUT_BUILT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" "$LOOKOUT_VERSION" > /app/VERSION \
  && chmod 0755 /usr/local/bin/lookout-entrypoint \
  && chmod -R a+rX,go-w /app
 

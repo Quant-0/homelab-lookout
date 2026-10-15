@@ -100,6 +100,8 @@ function s3Handle(req, res, body) {
 }
 
 let wanIp = '203.0.113.45';
+let ghReleased = true;
+const ghRequests = [];
 const server = https.createServer(opts, (req, res) => {
   if (req.url.startsWith(`/${S3.bucket}/`) || req.url === '/__s3') {
     if (req.url === '/__s3') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ keys: [...S3.objects.keys()], requests: S3.requests })); }
@@ -113,6 +115,28 @@ const server = https.createServer(opts, (req, res) => {
   if (u === '/__stats') { res.end(R({ requests, seenAuth, unifiLogins, omadaLogins })); return; }
   // the public IP the console reports, changed by the tests
   if (u.startsWith('/__wan?ip=')) { wanIp = decodeURIComponent(u.slice(10)); return res.end('{}'); }
+  // GitHub's release API, for Homelab Lookout's own update check. The running commit says how it
+  // compares with the latest release: a… is older, b… is the release, c… is newer, d… is unknown.
+  // /__gh?release=0 makes it as if nothing was released yet.
+  if (u.startsWith('/__gh?release=')) { ghReleased = u.endsWith('=1'); return res.end('{}'); }
+  if (u.startsWith('/gh/')) {
+    ghRequests.push({ url: u, agent: req.headers['user-agent'] || '' });
+    res.setHeader('Content-Type', 'application/json');
+    if (u === '/gh/__requests') return res.end(R(ghRequests));
+    if (u === '/gh/repos/Quant-0/homelab-lookout/releases/latest') {
+      if (!ghReleased) { res.writeHead(404); return res.end(R({ message: 'Not Found' })); }
+      return res.end(R({ tag_name: 'v1.2.0', name: 'v1.2.0', html_url: 'https://github.com/Quant-0/homelab-lookout/releases/tag/v1.2.0', published_at: '2026-10-14T12:00:00Z', body: "## What's new\r\n- Metrics for Prometheus\r\n- Undo in Admin" }));
+    }
+    const cm = /^\/gh\/repos\/Quant-0\/homelab-lookout\/compare\/([0-9a-f]{40})\.\.\.v1\.2\.0$/.exec(u);
+    if (cm) {
+      const kind = cm[1][0];
+      if (kind === 'a') return res.end(R({ status: 'ahead', ahead_by: 3, behind_by: 0 }));
+      if (kind === 'b') return res.end(R({ status: 'identical', ahead_by: 0, behind_by: 0 }));
+      if (kind === 'c') return res.end(R({ status: 'behind', ahead_by: 0, behind_by: 2 }));
+    }
+    res.writeHead(404);
+    return res.end(R({ message: 'Not Found' }));
+  }
   // a registry record (RDAP) for the public IP and a logo image to fetch (provider logo tests)
   if (u.startsWith('/rdap/ip/')) {
     res.setHeader('Content-Type', 'application/rdap+json');

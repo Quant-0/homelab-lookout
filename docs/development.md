@@ -35,6 +35,16 @@ node test/run.js --verbose    # print every check
 
 The runner makes a throwaway certificate, starts mock devices (Redfish, Proxmox, TrueNAS, UniFi OS, Omada, NUT) and mock service APIs (all integrations), and runs each suite against its own fresh server and data folder. The SNMPv3 suite runs against a real `snmpd` if installed (`SNMPD=/path/to/snmpd`), and the rsync suite needs `rsync` and `sshd`. About 1,500 checks in all.
 
+### Releases
+
+A release is what friends' dashboards are told about (Updates) and what `:latest` points to:
+
+1. Merge what should go out into `main`.
+2. On GitHub: **Releases → Draft a new release → Choose a tag**: type a new one like `v1.2.0` (always `vMAJOR.MINOR.PATCH`), *Create new tag on publish*, target `main`.
+3. **Generate release notes**, edit them into a short *What's new* (it is shown in the dashboard), and **Publish release**.
+
+The workflow then builds the image as `:1.2.0`, `:1.2` and `:latest`. A tag that doesn't look like `v1.2.3` stops the build. Every merge to `main` in between is published as `:edge`.
+
 ### The container image
 
 ```sh

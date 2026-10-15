@@ -14,8 +14,10 @@ The image is public on GitHub's container registry: `ghcr.io/quant-0/homelab-loo
 
 | Tag | What |
 |---|---|
-| `:latest` | The newest version, rebuilt on every change to `main` |
-| `:sha-<commit>` | One exact version, to stay on it |
+| `:latest` | The newest **release** (what the compose file uses) |
+| `:1.2.3`, `:1.2` | One release, or the newest of its 1.2 line |
+| `:edge` | The newest change on `main`, before it is released: for trying things out |
+| `:sha-<commit>` | One exact build |
 
 Each image is built by GitHub Actions from this repository, and comes with a signed build attestation. With the GitHub CLI you can check that an image really was built here, from this repository's code:
 
@@ -146,11 +148,11 @@ The first start makes a **local CA**, valid 10 years, and a server certificate, 
 
 ## Updating
 
-The image is rebuilt on every change to `main` and tagged `:latest` and `:sha-<commit>`.
+A new **release** is published as `:latest` (and `:1.2.3`). **Updates** in the dashboard says when there is one, with what's new and these steps:
 
 - **Portainer:** *Stacks → lookout → Editor → Update the stack*, with **Re-pull image and redeploy** on.
 - **Docker Compose:** `docker compose pull && docker compose up -d` in the compose file's folder.
-- **To stay on a version,** use `image: ghcr.io/quant-0/homelab-lookout:sha-<commit>` instead of `:latest`. **Admin → Server** shows the commit and build time of the running image.
+- **To stay on a version,** use `image: ghcr.io/quant-0/homelab-lookout:1.2.3` instead of `:latest`. **Admin → Server** shows the version, commit and build time of the running image.
 
 Your data and settings are kept. A new image never changes the folders, apart from fixing their owners.
 

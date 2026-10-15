@@ -2,7 +2,7 @@
 
 ## With Docker
 
-The image is rebuilt on every change and tagged `:latest` (and `:sha-<commit>`). Your data stays in the host folders.
+Each release is published as the image's `:latest` tag (and `:1.2.3`). **Updates** in the dashboard tells you when a new release is out, with what's new. Your data stays in the host folders.
 
 - **Portainer:** *Stacks → lookout → Editor → Update the stack*, with **Re-pull image and redeploy** on.
 - **Docker Compose:** `docker compose pull && docker compose up -d`.
@@ -11,7 +11,7 @@ The image is rebuilt on every change and tagged `:latest` (and `:sha-<commit>`).
 
 ## Directly on Linux: a new version
 
-Pull the new code and run the installer again; it keeps your data:
+**Updates** in the dashboard tells you when a new release is out. Pull the new code and run the installer again; it keeps your data:
 
 ```sh
 cd homelab-lookout

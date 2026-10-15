@@ -128,14 +128,29 @@ function renderRuntime(rt) {
   if (!rt) return;
   const v = rt.version;
   const rows = [
-    ['Homelab Lookout', v ? `${v.commit}${v.deployedAt ? `, ${rt.install === 'docker' ? 'built' : 'deployed'} ${new Date(v.deployedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}` : 'Not deployed with the deploy script'],
+    ['Homelab Lookout', v ? `${v.release ? `${v.release} · ` : ''}${v.commit}${v.deployedAt ? `, ${rt.install === 'docker' ? 'built' : 'deployed'} ${new Date(v.deployedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}` : 'Not deployed with the deploy script'],
     ['Runs as', rt.install === 'docker' ? 'Docker container (update: pull the new image and recreate it)' : 'systemd service (homelab-dashboard)'],
     ['Node.js', `${rt.node}${rt.nodeEnd ? ` · security fixes ${rt.nodeSupported ? 'until' : 'ended'} ${rt.nodeEnd}` : ''}`],
     ['Graph history', rt.history === 'sqlite' ? 'SQLite database (history.db)' : 'history.json (Node.js 22.5 or newer stores it in a database instead)'],
   ];
   if (rt.install === 'docker') $('ports-hint').textContent = 'In Docker, use ports from 1024 up (e.g. 8443), or a reverse proxy on 443. Locked out? Set LOOKOUT_RESET_NETWORK=1 on the container, start it once, then remove it again.';
+  // asking GitHub for new releases (the Updates page shows them); off: nothing is sent
+  const updatesBox = el('input', { type: 'checkbox', checked: state?.settings?.dashboard?.lookoutUpdates !== false });
+  updatesBox.addEventListener('change', async () => {
+    try {
+      const r = await api('PUT', '/api/admin/settings', { dashboard: { ...state.settings.dashboard, lookoutUpdates: updatesBox.checked } });
+      state.settings = r.settings;
+      showMsg('runtime-msg', updatesBox.checked ? 'Checked with the other updates, tonight or with Check now on the Updates page' : 'Off: GitHub is not asked', true);
+    } catch (e) {
+      updatesBox.checked = !updatesBox.checked;
+      showMsg('runtime-msg', e.message, false);
+    }
+  });
   $('runtime').replaceChildren(...[
     el('div', { class: 'kv' }, rows.map(([k, val]) => el('div', null, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: val })))),
+    el('div', { class: 'form-actions' },
+      el('label', { class: 'check' }, updatesBox, ` Check for new versions on GitHub (${rt.repo}) once a day, shown under Updates. GitHub then sees this server's public address.`),
+      el('span', { class: 'msg', id: 'runtime-msg', role: 'status' })),
     rt.nodeSupported ? null : el('p', { class: 'banner', role: 'alert' },
       rt.install === 'docker' ? `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Pull the newest image and recreate the container.` : `Node.js ${parseInt(rt.node, 10)} no longer gets security updates. Install Node.js 24 LTS on this server (see "Updating Node.js" in the README), then restart the service.`),
   ].filter(Boolean)); // replaceChildren would write a null out as "null"
