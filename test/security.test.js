@@ -62,6 +62,7 @@ const patterned = {
   pushSubs: [['POST', `/api/admin/alerts/channels/${U}/subscriptions`], ['DELETE', `/api/admin/alerts/channels/${U}/subscriptions/00000000000000aa`]],
   passkeys: [['DELETE', '/api/admin/passkeys/AAAAAAAAAAAAAAAAAAAAAA']],
   portainerConn: [['POST', `/api/admin/services/${U}/portainer-connection`]],
+  agents: [['PUT', `/api/admin/agents/${U}`], ['DELETE', `/api/admin/agents/${U}`], ['POST', `/api/admin/agents/${U}/token`]],
 };
 const ROUTES = [...fixed, ...Object.values(patterned).flat()];
 const VIEWER_OK = new Set(['GET /api/dashboard', 'GET /api/services', 'GET /api/vms', 'GET /api/energy/report', 'GET /api/report', 'GET /api/energy/export', 'GET /api/history', 'GET /api/session', 'GET /api/docs', 'GET /api/updates', 'POST /api/logout']);
@@ -98,8 +99,9 @@ async function run() {
   leaks = [];
   for (const f of files.filter((x) => !x.endsWith('.html') && x !== 'sw.js')) {
     const r = await call('GET', `/static/${f}`);
-    // the guide is only served at /guide.pdf (checked above), never under /static/
-    if (f.startsWith('guide/') ? r.status !== 404 : PUBLIC.has(f) ? r.status !== 200 : r.status !== 401) leaks.push(`${f} → ${r.status}`);
+    // the guide is only served at /guide.pdf (checked above), and the agent's scripts at /agent/ (public,
+    // nothing secret in them), never under /static/
+    if (f.startsWith('guide/') || f.startsWith('agent/') ? r.status !== 404 : PUBLIC.has(f) ? r.status !== 200 : r.status !== 401) leaks.push(`${f} → ${r.status}`);
   }
   ok(!leaks.length, `stranger: only the login page's and the app shell's files are public${leaks.length ? `: ${leaks.join(', ')}` : ''}`);
   for (const p of ['/static/../server.js', '/static/%2e%2e/server.js', '/static/js/../../server.js', '/media/bg/../../config.json', '/..%2fconfig.json']) {

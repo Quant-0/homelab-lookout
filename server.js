@@ -489,6 +489,7 @@ function loadConfig() {
     alerts: normalizeAlerts(raw.alerts),
     checkins: Array.isArray(raw.checkins) ? raw.checkins : [], // [{ id, name, token, everyMin, graceMin, deviceId, createdAt }]
     maintenance: Array.isArray(raw.maintenance) ? raw.maintenance : [], // [{ id, name, targets, schedule }]
+    agents: Array.isArray(raw.agents) ? raw.agents : [], // [{ id, name, tokenHash, deviceId, guest, watch, updates, interval, createdAt }]
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
@@ -4327,6 +4328,11 @@ function vmsPayload(visitor = false, admin = false) {
         rxBps: g.rxBps ?? null, txBps: g.txBps ?? null, readBps: g.readBps ?? null, writeBps: g.writeBps ?? null,
         agent: g.agent ? (g.agent.running ? { running: true, ips: visitor ? [] : g.agent.ips, os: visitor ? null : g.agent.os, fs: g.agent.fs } : { running: false }) : null,
         backup: g.backup, // undefined: not read yet; null: couldn't be read; { last: null }: none found
+        // the Lookout agent inside it, if any: memory as Linux counts it, services, updates…
+        lookout: (() => {
+          const la = !visitor && config.agents.find((x) => x.guest === `${h.id}:${g.vmid}`);
+          return la ? agentSummary(la) : null;
+        })(),
         proxmoxUrl: admin ? `https://${h.address}/#v1:0:=${g.type}%2F${g.vmid}` : null,
       });
     }
@@ -4641,7 +4647,7 @@ const HIST_TIERS = [
 ];
 const HIST_STORED = ['m', 'q', 'h', 'd', 'dmin', 'dmax']; // what is kept per series (dmin/dmax come with d)
 const HIST_KEEP = { dmin: 731 * 86400e3, dmax: 731 * 86400e3 };
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem)|disk:[0-9a-f-]{36}:[\w.:/-]{1,160}|uphost:[0-9a-f-]{36})$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem)|disk:[0-9a-f-]{36}:[\w.:/-]{1,160}|uphost:[0-9a-f-]{36}|agent:[0-9a-f-]{36}:(cpu|mem|load))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -4756,9 +4762,9 @@ function runtimeInfo() {
     version: /^[0-9a-f]{40}$/.test(commit || '') ? { commit: commit.slice(0, 7), deployedAt: Date.parse(deployedAt) || null } : null,
   };
 }
-function readText(file) {
+function readText(file, max = 200) {
   try {
-    return fs.readFileSync(file, 'utf8').slice(0, 200);
+    return fs.readFileSync(file, 'utf8').slice(0, max);
   } catch {
     return null;
   }
@@ -4929,6 +4935,7 @@ function storagesOf(h, d) {
   } else if (h.type === 'truenas') for (const p of d.pools || []) add(p.name, `pool ${p.name}`, p.allocated, p.size);
   else if (h.type === 'synology') for (const v of d.volumes || []) add(v.name, v.name.replace('/', ''), v.used, v.size);
   else if (h.type === 'snmp') for (const v of d.volumes || []) add(v.name, v.name, v.used, v.size);
+  else if (h.type === 'agent') for (const f of d.fs || []) add(f.mount, f.mount, f.used, f.size);
   return out;
 }
 
@@ -5040,6 +5047,12 @@ function reportPayload(period) {
       const pts = histDays(`disk:${h.id}:${st.key}`, from, to);
       const f = storageForecast(h.id, st);
       storage.push({ device: name, label: st.label, pct: round2(st.pct), size: st.size, first: pts[0]?.[1] ?? null, last: pts.at(-1)?.[1] ?? null, change: pts.length >= 2 ? round2(pts.at(-1)[1] - pts[0][1]) : null, forecast: f });
+    }
+  }
+  for (const a of config.agents) {
+    for (const st of storagesOf({ type: 'agent', id: a.id }, agentState(a).data)) {
+      const pts = histDays(`disk:${a.id}:${st.key}`, from, to);
+      storage.push({ device: a.name, label: st.label, pct: round2(st.pct), size: st.size, first: pts[0]?.[1] ?? null, last: pts.at(-1)?.[1] ?? null, change: pts.length >= 2 ? round2(pts.at(-1)[1] - pts[0][1]) : null, forecast: storageForecast(a.id, st) });
     }
   }
   storage.sort((a, b) => (a.forecast?.days ?? 1e9) - (b.forecast?.days ?? 1e9) || b.pct - a.pct);
@@ -6830,7 +6843,7 @@ function sendPage(res, key, session, edit = (html) => html) {
 // software versions, which tell an attacker what to try. Names and status stay.
 function forVisitors(payload) {
   payload.notices = []; // they carry the public IP
-  payload.devices = payload.devices.map((d) => ({ ...d, alerts: null }));
+  payload.devices = payload.devices.map((d) => ({ ...d, alerts: null, lookout: [] }));
   payload.attention = payload.attention.map((a) => ({ ...a, incidentId: null, ack: a.ack ? { at: a.ack.at } : null })); // not who
   payload.unifi = payload.unifi.map((h) => (h.data ? {
     ...h,
@@ -6869,7 +6882,8 @@ function attentionList() {
     const deviceId = c.device || host?.deviceId || null;
     const dev = deviceId && config.devices.find((d) => d.id === deviceId);
     const svc = c.type === 'service' ? config.services.find((x) => x.id === c.owner) : null;
-    const subject = dev?.name || svc?.name || chk?.name || null;
+    const agent = config.agents.find((x) => x.id === c.owner); // a VM's agent: named after the VM, not its server
+    const subject = agent?.name || dev?.name || svc?.name || chk?.name || null;
     // titles read "titan: PS2 failed"; the subject is shown separately
     const text = subject && c.title.startsWith(`${subject}: `) ? c.title.slice(subject.length + 2) : c.title;
     // a TrueNAS alert's own text says more than "TrueNAS critical"
@@ -6974,8 +6988,10 @@ function dashboardPayload() {
       parent: d.parent || null, // a device id, 'none', or null = automatic (UniFi uplink)
       reachedThrough: parentOf(d)?.id || null,
       alerts: d.alerts || null, // muted, own limits (signed in only)
+      // Lookout agents running on the machine itself (a VM's agent shows with the VM)
+      lookout: config.agents.filter((a) => a.deviceId === d.id && !a.guest).map(agentSummary),
       // storage that is filling up, and when it will be full at that pace
-      growing: deviceHosts(d).flatMap((h) => storagesOf(h, results.get(h.id)?.data).map((st) => ({ label: st.label, pct: round2(st.pct), forecast: storageForecast(h.id, st) })))
+      growing: [...deviceHosts(d), ...config.agents.filter((a) => a.deviceId === d.id).map((a) => ({ type: 'agent', id: a.id, name: a.name }))].flatMap((h) => storagesOf(h, h.type === 'agent' ? agentState(config.agents.find((a) => a.id === h.id)).data : results.get(h.id)?.data).map((st) => ({ label: h.type === 'agent' ? `${h.name} ${st.label}` : st.label, pct: round2(st.pct), forecast: storageForecast(h.id, st) })))
         .filter((x) => x.forecast?.perMonth > 0).sort((a, b) => (a.forecast.days ?? 1e9) - (b.forecast.days ?? 1e9)).slice(0, 12),
       front: d.front || null,
       model: d.model || null,
@@ -7482,6 +7498,61 @@ async function handleApi(req, res, url, session, viewer = null) {
 
   if (p === '/api/admin/server' && m === 'GET') return sendJson(res, 200, { ...serverStatus(), current: secureRequest(req) ? 'https' : 'http' });
   if (p === '/api/admin/access' && m === 'GET') return sendJson(res, 200, accessCheck(req));
+  // Linux agents
+  if (p === '/api/admin/agents' && m === 'GET') {
+    const guests = config.hosts.filter((h) => h.type === 'proxmox').flatMap((h) => (results.get(h.id)?.data?.guests || []).map((g) => ({ attach: `guest:${h.id}:${g.vmid}`, name: g.name, vmid: g.vmid, type: g.type, server: config.devices.find((d) => d.id === h.deviceId)?.name || h.name, running: g.status === 'running' })));
+    return sendJson(res, 200, {
+      agents: config.agents.map((a) => ({ ...agentSummary(a), attach: a.guest ? `guest:${a.guest}` : `device:${a.deviceId}`, watch: a.watch, updates: a.updates, interval: a.interval, createdAt: a.createdAt, removedAt: a.removedAt || null, device: config.devices.find((d) => d.id === a.deviceId)?.name || null, commands: agentCommands(a) })),
+      guests: guests.sort((x, y) => x.vmid - y.vmid),
+      devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+      latest: AGENT_VERSION,
+      target: agentTarget(),
+    });
+  }
+  if (p === '/api/admin/agents' && m === 'POST') {
+    if (config.agents.length >= MAX_AGENTS) throw new UserError(`At most ${MAX_AGENTS} agents`);
+    const b = await readBody(req);
+    const fields = validateAgent(b);
+    if (!fields.deviceId) {
+      const dev = newDevice({ name: fields.name, kind: 'server' });
+      config.devices.push(dev);
+      fields.deviceId = dev.id;
+    }
+    const a = { id: crypto.randomUUID(), ...fields, tokenHash: null, createdAt: Date.now() };
+    const token = newAgentToken(a);
+    config.agents.push(a);
+    saveConfig();
+    event('devices', `Agent added: ${a.name}`);
+    return sendJson(res, 201, { agent: { id: a.id, name: a.name }, token, commands: agentCommands(a, token) });
+  }
+  const ag = p.match(/^\/api\/admin\/agents\/([0-9a-f-]{36})(\/token)?$/);
+  if (ag) {
+    const a = config.agents.find((x) => x.id === ag[1]);
+    if (!a) return sendError(res, 404, 'Not found');
+    if (ag[2] && m === 'POST') {
+      const token = newAgentToken(a);
+      saveConfig();
+      event('devices', `Agent ${a.name}: new token (the old one stopped working)`);
+      return sendJson(res, 200, { token, commands: agentCommands(a, token) });
+    }
+    if (!ag[2] && m === 'PUT') {
+      const b = await readBody(req);
+      const fields = validateAgent({ ...b, attach: b.attach === 'new' ? `device:${a.deviceId}` : b.attach });
+      Object.assign(a, fields);
+      saveConfig();
+      recheckAlerts();
+      event('devices', `Agent updated: ${a.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (!ag[2] && m === 'DELETE') {
+      config.agents = config.agents.filter((x) => x !== a);
+      agentReports.delete(a.id);
+      saveConfig();
+      recheckAlerts();
+      event('devices', `Agent removed: ${a.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
   // Find devices: start a scan, and its progress and results
   if (p === '/api/admin/discover' && m === 'GET') return sendJson(res, 200, { ...discovery, defaults: defaultScanRanges(), found: discovery.found.map((f) => ({ ...f, known: knownAt(f.ip) })) });
   if (p === '/api/admin/discover' && m === 'POST') {
@@ -8556,6 +8627,20 @@ async function handle(req, res) {
   if ((p.startsWith('/ping/') || p === '/status' || p === '/api/status' || p === '/guide.pdf') && !openLimitOk(req, res)) return;
   const pm = p.match(/^\/ping\/([A-Za-z0-9_-]{32})(?:\/(start|fail))?\/?$/);
   if (pm) return handlePing(req, res, pm[1], pm[2]);
+  // the Linux agent: its scripts (nothing secret in them) and its reports, from other machines
+  if (p.startsWith('/agent/')) {
+    if (!openLimitOk(req, res)) return;
+    if ((p === '/agent/report' || p === '/agent/bye') && req.method === 'POST') return handleAgentReport(req, res, p === '/agent/bye');
+    if ((p === '/agent/install.sh' || p === '/agent/lookout-agent.sh') && req.method === 'GET') {
+      // the install script gets this dashboard's address, as the machine reached it
+      let text = fs.readFileSync(p === '/agent/install.sh' ? AGENT_INSTALL : AGENT_SCRIPT, 'utf8');
+      if (p === '/agent/install.sh') text = text.replaceAll('__URL__', `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`);
+      const body = Buffer.from(text);
+      res.writeHead(200, { 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+      return res.end(body);
+    }
+    return sendError(res, 404, 'Not found');
+  }
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
   // the acknowledge link from an alert message: no login, the token in the link is the permission
   const am = p.match(/^\/ack\/([0-9a-f]{16})$/);
@@ -8710,6 +8795,7 @@ const ALERT_TYPES = {
   space: { label: 'Storage almost full', hint: 'A pool, volume or Proxmox storage is fuller than the limit, or a disk inside a container or VM (with the guest agent).', delay: 0, params: { pct: { label: 'Full at', unit: '%', min: 50, max: 99, def: 90 } } },
   nas: { label: 'TrueNAS alerts', hint: 'New critical alerts reported by TrueNAS.', delay: 0, params: { warnings: { label: 'Warnings too', type: 'bool', def: false } } },
   power: { label: 'High power draw', hint: 'The total measured draw stays above the limit.', delay: 10, off: true, params: { watts: { label: 'Above', unit: 'W', min: 10, max: 50000, def: 600 } } },
+  agent: { label: 'Linux machine (agent)', hint: 'From the Lookout agent: a systemd service failed or a watched one stopped, security updates are waiting, or the machine needs a reboot.', delay: 5 },
   container: { label: 'Container problem', hint: 'A Docker container keeps restarting, stopped although its restart policy says it should run, or fails its health check. Label a container lookout.ignore=true to leave it out.', delay: 2 },
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
   backup: {
@@ -9608,6 +9694,33 @@ function alertConditions(all = false) {
       }
     }
   }
+  // Linux agents: not reporting, full filesystems, hot sensors, services, updates, a reboot
+  for (const a of config.agents) {
+    if (a.removedAt) continue;
+    const guest = agentGuest(a);
+    if (a.guest && guest && guest.status !== 'running') continue; // a stopped VM is Proxmox's to report
+    const st = agentState(a);
+    const name = a.name;
+    const own = a.id;
+    const dev = a.deviceId;
+    if (!st.ok) {
+      add('offline', `agent:${a.id}`, 'warning', `${name}: the agent is not reporting`, st.never ? 'Not installed yet, or it cannot reach the dashboard (run: lookout-agent test)' : `Last report ${osloText(st.at)}`, own, false, dev);
+      continue;
+    }
+    const d = st.data;
+    const lim = limitsFor(dev);
+    for (const f of d.fs) {
+      const pct = (100 * f.used) / f.size;
+      if (over('space', `${a.id}:${f.mount}`, pct, lim.pct, 2)) add('space', `${a.id}:${f.mount}`, 'warning', `${name}: ${f.mount} is ${Math.round(pct)} % full`, `Limit ${lim.pct} %`, own, true, dev);
+      if (f.inodes != null && f.inodes >= 95) add('space', `${a.id}:${f.mount}:inodes`, 'warning', `${name}: ${f.mount} is out of inodes (${f.inodes} %)`, 'Too many small files', own, true, dev);
+    }
+    const hot = d.temps.filter((x) => x.c >= lim.otherC).sort((x, y) => y.c - x.c)[0];
+    if (hot && over('temperature', `${a.id}:temp`, hot.c, lim.otherC, 3)) add('temperature', `${a.id}:temp`, 'warning', `${name}: ${hot.name.trim()} at ${hot.c} °C`, `Limit ${lim.otherC} °C`, own, true, dev);
+    for (const u of d.failed) add('agent', `${a.id}:failed:${u}`, 'warning', `${name}: ${u} failed`, 'systemctl status for why', own, true, dev);
+    for (const w of d.watched.filter((x) => x.state !== 'active' && !d.failed.includes(x.unit))) add('agent', `${a.id}:watch:${w.unit}`, 'critical', `${name}: ${w.unit} is not running`, `It is ${w.state}`, own, true, dev);
+    if (d.updates?.security) add('agent', `${a.id}:security`, 'warning', `${name}: ${d.updates.security} security update${d.updates.security === 1 ? '' : 's'} waiting`, `${d.updates.count} update${d.updates.count === 1 ? '' : 's'} in all`, own, true, dev);
+    if (d.updates?.reboot) add('agent', `${a.id}:reboot`, 'warning', `${name}: needs a reboot`, 'After updates (the kernel or system libraries)', own, true, dev);
+  }
   // storage that will be full within 30 days at its current growth: an early "storage almost full"
   for (const h of config.hosts) {
     const r = results.get(h.id);
@@ -9618,6 +9731,16 @@ function alertConditions(all = false) {
       if (st.pct >= lim.pct) continue; // already over the limit: that alert says enough
       const f = storageForecast(h.id, st);
       if (f?.days != null && f.days <= 30) add('space', `${h.id}:${st.key}:soon`, 'warning', `${name}: ${st.label} will be full in about ${f.days} day${f.days === 1 ? '' : 's'}`, `${Math.round(st.pct)} % now, growing ${f.perMonth} percentage points a month`, h.id);
+    }
+  }
+  for (const a of config.agents) {
+    const st = agentState(a);
+    if (!st.ok) continue;
+    const lim = limitsFor(a.deviceId);
+    for (const x of storagesOf({ type: 'agent', id: a.id }, st.data)) {
+      if (x.pct >= lim.pct) continue;
+      const f = storageForecast(a.id, x);
+      if (f?.days != null && f.days <= 30) add('space', `${a.id}:${x.key}:soon`, 'warning', `${a.name}: ${x.label} will be full in about ${f.days} day${f.days === 1 ? '' : 's'}`, `${Math.round(x.pct)} % now, growing ${f.perMonth} percentage points a month`, a.id, true, a.deviceId);
     }
   }
   for (const svc of config.services) {
@@ -9671,9 +9794,11 @@ async function evaluateAlertsNow(now) {
     for (const [key, a] of Object.entries(alertState.active)) {
       if (cond.has(key)) continue;
       // deleted (or hidden) things go away quietly instead of "resolving"
-      const exists = (!a.owner || config.hosts.some((h) => h.id === a.owner) || config.services.some((s) => s.id === a.owner) || config.checkins.some((x) => x.id === a.owner))
+      const exists = (!a.owner || config.hosts.some((h) => h.id === a.owner) || config.services.some((s) => s.id === a.owner) || config.checkins.some((x) => x.id === a.owner) || config.agents.some((x) => x.id === a.owner))
         && !(a.device && config.devices.find((d) => d.id === a.device)?.hidden);
-      if (exists && rules[a.type]?.enabled && a.fromData && !results.get(a.owner)?.ok) continue; // no fresh data: unknown
+      const agent = config.agents.find((x) => x.id === a.owner);
+      const fresh = agent ? agentState(agent).ok : results.get(a.owner)?.ok;
+      if (exists && rules[a.type]?.enabled && a.fromData && !fresh) continue; // no fresh data: unknown
       delete alertState.active[key];
       alertsDirty = true;
       if (exists && a.firedAt && rules[a.type]?.enabled && settings.resolved) events.push({ ...a, key, event: 'resolved' });
@@ -10180,6 +10305,15 @@ function updatesPayload() {
     const s = r?.data?.system;
     if (s) rows.push({ key: `dsm:${h.id}`, source: 'synology', ownerType: 'device', owner: h.deviceId, name: devName(h.deviceId) || h.name, part: 'DSM', current: s.version || null, latest: null, available: Boolean(s.upgradeAvailable), url: RELEASE_NOTES.synology, checkedAt: r.updatedAt });
   }
+  // what the Linux agents found: package updates, security fixes, a reboot
+  for (const a of config.agents) {
+    const st = agentState(a);
+    const u = st.data?.updates;
+    if (!u) continue;
+    rows.push({ key: `agent:${a.id}`, source: 'agent', ownerType: 'device', owner: a.deviceId, name: a.name, part: st.data.os || 'Linux', current: st.data.kernel ? `kernel ${st.data.kernel}` : null, latest: null, available: u.count > 0 || u.reboot,
+      detail: [u.count ? `${u.count} package${u.count === 1 ? '' : 's'}` : null, u.security ? `${u.security} security` : null, u.reboot ? 'reboot needed' : null].filter(Boolean).join(' · '),
+      list: (st.data.updates.packages || []).map((x) => ({ name: `${x.name}${x.security ? ' (security)' : ''}`, current: null, latest: x.version })), checkedAt: st.at });
+  }
   for (const it of updates.items) {
     const svc = it.ownerType === 'service' ? config.services.find((x) => x.id === it.owner) : null;
     if (it.ownerType === 'service' && !svc) continue; // removed since the check
@@ -10384,6 +10518,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     alerts: normalizeAlerts(c.alerts, channels),
     checkins: [],
     maintenance: [],
+    agents: [],
   };
   // check-ins and windows are checked like in Admin, after the devices and services they name
   for (const x of arr(c.checkins)) {
@@ -10396,6 +10531,13 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   for (const x of arr(c.maintenance)) {
     try {
       if (UUID.test(x.id)) config.maintenance.push({ id: x.id, ...validateMaintenance(x, { restoring: true }) });
+    } catch {
+      /* dropped */
+    }
+  }
+  for (const x of arr(c.agents)) {
+    try {
+      if (UUID.test(x.id) && /^[0-9a-f]{64}$/.test(x.tokenHash)) config.agents.push({ id: x.id, ...validateAgent({ ...x, attach: x.guest ? `guest:${x.guest}` : `device:${x.deviceId}` }), tokenHash: x.tokenHash, createdAt: Number(x.createdAt) || Date.now() });
     } catch {
       /* dropped */
     }
@@ -10917,6 +11059,170 @@ function serverStatus() {
   };
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Linux agents (Admin → Devices → Linux agents): a small shell script on a VM, container or machine
+// that reports once a minute what Proxmox can't see from outside: real memory, load, every
+// filesystem, systemd services, pending updates, temperatures. It pushes (no open port on the
+// machine), with its own token (only its hash is kept); it never runs anything the dashboard sends.
+// Updating the agent itself is always done by hand (`sudo lookout-agent update`).
+
+const AGENT_SCRIPT = path.join(PUBLIC_DIR, 'agent', 'lookout-agent.sh');
+const AGENT_INSTALL = path.join(PUBLIC_DIR, 'agent', 'install.sh');
+const AGENT_VERSION = (/^VERSION=([0-9.]+)$/m.exec(readText(AGENT_SCRIPT, 4096) || '') || [])[1] || null;
+const UNIT_RE = /^[A-Za-z0-9@._:-]{1,100}$/;
+const MAX_AGENTS = 200;
+const agentReports = new Map(); // id -> { at, data, ip, startedAt }
+const agentStart = Date.now();
+
+// attach: "guest:<proxmox host>:<vmid>", "device:<id>" or "new"
+function validateAgent(b) {
+  const name = str(b.name, 48, 'Name', { required: true });
+  let deviceId = null;
+  let guest = null;
+  const attach = String(b.attach || '');
+  const g = /^guest:([0-9a-f-]{36}):(\d{1,9})$/.exec(attach);
+  if (g) {
+    const h = config.hosts.find((x) => x.id === g[1] && x.type === 'proxmox');
+    if (!h) throw new UserError('Choose a VM or container from a Proxmox server');
+    guest = `${g[1]}:${g[2]}`;
+    deviceId = h.deviceId;
+  } else if (attach.startsWith('device:')) {
+    deviceId = attach.slice(7);
+    if (!config.devices.some((d) => d.id === deviceId)) throw new UserError('Choose a device');
+  } else if (attach !== 'new') throw new UserError('Choose what the agent runs on');
+  const watch = [...new Set((Array.isArray(b.watch) ? b.watch : String(b.watch || '').split(/[\s,]+/)).map((x) => String(x).trim()).filter(Boolean))];
+  if (watch.length > 30) throw new UserError('At most 30 services to watch');
+  for (const u of watch) if (!UNIT_RE.test(u)) throw new UserError(`${u.slice(0, 40)}: a systemd unit name, like nginx or docker.service`);
+  return { name, deviceId, guest, watch, updates: b.updates !== false, interval: num(b.interval ?? 60, 30, 3600, 'Interval (seconds)', { int: true }) };
+}
+
+const agentTokenHash = (t) => crypto.createHash('sha256').update(t).digest('hex');
+function newAgentToken(a) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  a.tokenHash = agentTokenHash(token);
+  return token;
+}
+
+// The dashboard address an agent reaches, and the CA fingerprint when that is this server's own
+// certificate (not a proxy with a public one)
+function agentTarget() {
+  const base = linkBase();
+  const u = new URL(base);
+  let ca = null;
+  if (u.protocol === 'https:' && tlsInfo?.ca) {
+    const x = new crypto.X509Certificate(tlsInfo.cert);
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    const ours = net.isIP(host) ? x.checkIP(host) : x.checkHost(host);
+    if (ours) ca = crypto.createHash('sha256').update(new crypto.X509Certificate(tlsInfo.ca).raw).digest('hex');
+  }
+  return { base, ca };
+}
+
+function agentCommands(a, token) {
+  const { base, ca } = agentTarget();
+  const args = `--id ${a.id} --token ${token || '<token>'}`;
+  const install = ca
+    ? `curl -fsSk ${base}/ca.crt -o /tmp/lookout-ca.crt && [ "$(sed '/-----/d' /tmp/lookout-ca.crt | base64 -d | sha256sum | cut -c1-64)" = "${ca}" ] && curl -fsS --cacert /tmp/lookout-ca.crt ${base}/agent/install.sh | sudo sh -s -- ${args} --ca /tmp/lookout-ca.crt`
+    : `curl -fsS ${base}/agent/install.sh | sudo sh -s -- ${args}`;
+  return { install, update: 'sudo lookout-agent update', uninstall: 'sudo lookout-agent uninstall', status: 'sudo lookout-agent status', watch: 'sudo lookout-agent watch add nginx', caChecked: Boolean(ca) };
+}
+
+// A report, checked field by field: numbers are numbers, text is short, lists are bounded
+function cleanAgentReport(j) {
+  const n = (v, max = 1e18) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
+  const t = (v, len = 120) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').slice(0, len) : null);
+  const arr = (v, max) => (Array.isArray(v) ? v.slice(0, max) : []);
+  const unit = (u) => (typeof u === 'string' && UNIT_RE.test(u) ? u : null);
+  return {
+    agent: t(j.agent, 20), hostname: t(j.hostname, 64), os: t(j.os, 80), kernel: t(j.kernel, 80), uptime: n(j.uptime), interval: n(j.interval, 86400),
+    ips: t(j.ips, 300)?.split(/\s+/).filter((x) => net.isIP(x)).slice(0, 10) || [],
+    cpu: j.cpu ? { cores: n(j.cpu.cores, 4096), usage: n(j.cpu.usage, 100), iowait: n(j.cpu.iowait, 100), steal: n(j.cpu.steal, 100), load: arr(j.cpu.load, 3).map((x) => n(x, 1e5)) } : null,
+    mem: j.mem ? { total: n(j.mem.total), available: n(j.mem.available), cache: n(j.mem.cache), swapTotal: n(j.mem.swapTotal), swapUsed: n(j.mem.swapUsed) } : null,
+    fs: arr(j.fs, 30).map((f) => ({ mount: t(f?.mount, 160), type: t(f?.type, 20), size: n(f?.size), used: n(f?.used), inodes: n(f?.inodes, 100) })).filter((f) => f.mount && f.size),
+    net: arr(j.net, 30).map((x) => ({ name: t(x?.name, 32), rx: n(x?.rx), tx: n(x?.tx) })).filter((x) => x.name),
+    temps: arr(j.temps, 24).map((x) => ({ name: t(x?.name, 60), c: typeof x?.c === 'number' && x.c > -40 && x.c < 200 ? x.c : null })).filter((x) => x.c != null),
+    failed: arr(j.failed, 30).map(unit).filter(Boolean),
+    watched: arr(j.watched, 60).map((x) => ({ unit: unit(x?.unit), state: t(x?.state, 20) })).filter((x) => x.unit),
+    updates: j.updates ? { count: n(j.updates.count, 1e5) ?? 0, security: n(j.updates.security, 1e5) ?? 0, reboot: j.updates.reboot === true, packages: arr(j.updates.packages, 60).map((x) => ({ name: t(x?.name, 80), version: t(x?.version, 60), security: x?.security === true })).filter((x) => x.name) } : null,
+    top: arr(j.top, 5).map((x) => ({ name: t(x?.name, 40), cpu: n(x?.cpu, 1e4), mem: n(x?.mem, 100) })).filter((x) => x.name),
+  };
+}
+
+// POST /agent/report (Authorization: Bearer <id>.<token>): the answer is the panel's settings as
+// key=value lines the shell script reads
+async function handleAgentReport(req, res, bye = false) {
+  const m = /^Bearer ([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization || ''));
+  const a = m && config.agents.find((x) => x.id === m[1]);
+  const ok = a && crypto.timingSafeEqual(Buffer.from(agentTokenHash(m[2]), 'hex'), Buffer.from(a.tokenHash, 'hex'));
+  if (!ok) {
+    await new Promise((r) => setTimeout(r, 300));
+    return sendError(res, 401, 'Unknown agent or wrong token');
+  }
+  if (bye) {
+    agentReports.delete(a.id);
+    a.removedAt = Date.now();
+    saveConfig();
+    event('devices', `The agent on ${a.name} was uninstalled there`);
+    return sendJson(res, 200, { ok: true });
+  }
+  const body = await readBody(req, 256 * 1024);
+  const data = cleanAgentReport(body);
+  const now = Date.now();
+  const prev = agentReports.get(a.id);
+  // traffic per second from the counters
+  if (prev?.data?.net && now > prev.at) {
+    const dt = (now - prev.at) / 1000;
+    for (const x of data.net) {
+      const o = prev.data.net.find((y) => y.name === x.name);
+      if (o && x.rx >= o.rx && x.tx >= o.tx) Object.assign(x, { rxBps: (x.rx - o.rx) / dt, txBps: (x.tx - o.tx) / dt });
+    }
+  }
+  if (a.removedAt) delete a.removedAt;
+  agentReports.set(a.id, { at: now, data, ip: clientIp(req) });
+  if (!prev) event('devices', `The agent on ${a.name} reports (${data.os || 'Linux'}, agent ${data.agent || '?'})`);
+  // history: CPU, memory as Linux counts it, load, and every filesystem (for the forecast)
+  if (data.cpu?.usage != null) histRecord(`agent:${a.id}:cpu`, data.cpu.usage, now);
+  if (data.mem?.total) histRecord(`agent:${a.id}:mem`, round2((100 * (data.mem.total - data.mem.available)) / data.mem.total), now);
+  if (data.cpu?.load?.[0] != null) histRecord(`agent:${a.id}:load`, data.cpu.load[0], now);
+  for (const st of storagesOf({ type: 'agent', id: a.id }, data)) histRecord(`disk:${a.id}:${st.key}`, round2(st.pct), now);
+  alertsSoon();
+  const lines = [`interval=${a.interval}`, `watch=${a.watch.join(' ')}`, `updates=${a.updates ? 'yes' : 'no'}`, `latest=${AGENT_VERSION || ''}`];
+  const text = Buffer.from(`${lines.join('\n')}\n`);
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': text.length });
+  return res.end(text);
+}
+
+// Reporting, or how long it has been quiet: quiet for three intervals (at least 2.5 minutes) is down
+function agentState(a) {
+  const r = agentReports.get(a.id);
+  const limit = Math.max(3 * a.interval * 1000, 150e3);
+  if (r && Date.now() - r.at <= limit) return { ok: true, at: r.at, data: r.data };
+  return { ok: false, at: r?.at || null, data: r?.data || null, quietSince: r?.at || Math.max(a.createdAt, agentStart), never: !r };
+}
+
+// The VM an agent belongs to, from Proxmox
+function agentGuest(a) {
+  if (!a.guest) return null;
+  const [hid, vmid] = a.guest.split(':');
+  return results.get(hid)?.data?.guests?.find((g) => String(g.vmid) === vmid) || null;
+}
+
+// For pages: what the agent says, short
+function agentSummary(a) {
+  const st = agentState(a);
+  const d = st.data;
+  const used = d?.mem?.total ? d.mem.total - d.mem.available : null;
+  return {
+    id: a.id, name: a.name, ok: st.ok, at: st.at, never: st.never, version: d?.agent || null, latest: AGENT_VERSION, guest: a.guest,
+    os: d?.os || null, kernel: d?.kernel || null, uptime: d?.uptime ?? null, ips: d?.ips || [],
+    cpu: d?.cpu || null, mem: d?.mem ? { ...d.mem, used } : null, fs: d?.fs || [], temps: d?.temps || [], top: d?.top || [],
+    net: (d?.net || []).map((x) => ({ name: x.name, rxBps: x.rxBps ?? null, txBps: x.txBps ?? null })),
+    failed: d?.failed || [], down: (d?.watched || []).filter((x) => x.state !== 'active'), watched: d?.watched || [],
+    updates: d?.updates ? { count: d.updates.count, security: d.updates.security, reboot: d.updates.reboot } : null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Find devices (Admin → Devices): a scan of private networks you choose, started by hand only.

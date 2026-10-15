@@ -265,6 +265,30 @@ More on devices:
   - A desktop NAS like the DS418 goes on a **shelf**: put the shelf at one U and the NAS in the units right above it (4 U for a DS418), with **Look** set to *Synology DiskStation*.
   - **Drive bays** on *Automatic* follow the drives the management controller reports. Change it if your server has a different backplane than the drives suggest.
 
+#### Linux agents
+
+A **Lookout agent** is a small shell script on a VM, a container or any Linux machine (a Raspberry Pi, a VPS) that reports what Proxmox can't see from outside, once a minute:
+- **memory as Linux counts it** (Proxmox counts the file cache as used, so a VM often looks fuller than it is), load, CPU waiting for disk, swap
+- **every filesystem**, with inodes, also inside containers
+- **systemd services**: any that **failed**, and the ones you list that must be running
+- **pending updates** (apt or dnf), how many are security fixes, and whether it needs a **reboot**
+- temperatures, the busiest processes, the kernel and OS
+
+It only reports; it never runs anything the dashboard sends.
+
+**Install:** Admin → Devices → **Linux agents** → **Add agent**. Choose what it runs on: a VM or container from Proxmox (its data then shows in that VM's details on the VMs page), a device, or a new device. Optionally list services that must be running. **Create** shows a command; run it on the machine (it needs curl and systemd, and sudo). It makes a system user `lookout-agent`, puts the agent in `/usr/local/bin/lookout-agent` and its settings in `/etc/lookout-agent/agent.conf`, and starts a systemd timer. The command holds the machine's own token, shown only once; **New token** gives a new command (the old token stops working). With the dashboard's own certificate, the command checks it by its fingerprint before trusting it.
+
+**On the machine:**
+- `sudo lookout-agent status`: when it last reported, and its settings
+- `sudo lookout-agent test`: report now and show the answer
+- `sudo lookout-agent watch add nginx` (and `watch remove`, `watch list`): services to watch, added to the ones set on the panel
+- `sudo lookout-agent update`: install the newest agent from the dashboard. Never done by itself, so the dashboard can't change what runs on your machines; the panel says when a newer one is available.
+- `sudo lookout-agent uninstall`: remove it all (and tell the dashboard)
+
+Settings on the panel (services to watch, how often it reports, whether it looks for updates) reach the agent with its next report.
+
+**What it raises:** a *Linux machine (agent)* alert (Admin → Alerts) for a failed service, a watched one that stopped, security updates waiting, or a needed reboot; *Storage almost full* for a full filesystem (and the 30-day early warning); *High temperature*; and *Device offline* when it hasn't reported for three intervals (unless its VM is stopped). Its updates are on the **Updates** page with the package list. A VM's memory on the VMs page then shows what Linux uses.
+
 #### Alerts for this device
 
 - **Mute** stops messages for the device, and for the services and check-ins that belong to it. Its problems still show on Home (marked *Alerts muted*), in the device's details and under Log → Incidents. Use it for a test machine or something you know is broken. For a planned job, use a [maintenance window](#maintenance) instead.

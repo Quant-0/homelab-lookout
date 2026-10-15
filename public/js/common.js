@@ -361,6 +361,39 @@ const HD = (() => {
     }
   }
 
+  // What a Lookout agent reports, for a VM's or a machine's details
+  function agentSection(a) {
+    const box = el('section', { class: 'agent-sect' });
+    const ago = a.at ? Math.round((Date.now() - a.at) / 60e3) : null;
+    box.append(el('h4', null, 'From the Lookout agent ', el('span', { class: `pill small ${a.ok ? 'good' : 'warning'}`, text: a.ok ? `reporting${ago ? ` · ${ago} min ago` : ''}` : a.never ? 'not installed yet' : 'not reporting' })));
+    if (!a.cpu && !a.mem) {
+      box.append(el('p', { class: 'small muted', text: a.never ? 'Install it with the command under Admin → Devices → Linux agents.' : 'No report lately.' }));
+      return box;
+    }
+    const pct = (x) => (x == null ? '–' : `${fmt.n(x, 0)} %`);
+    const kv = (k, v, sub) => el('div', { class: 'metric' }, el('span', { class: 'l', text: k }), el('span', { class: 'v num', text: v }), sub ? el('span', { class: 'small muted num', text: sub }) : null);
+    const m = a.mem;
+    box.append(el('div', { class: 'metrics' },
+      kv('CPU', a.cpu?.usage != null ? `${fmt.n(a.cpu.usage, 0)} %` : '–', [a.cpu?.cores && `${a.cpu.cores} cores`, a.cpu?.iowait >= 5 && `${fmt.n(a.cpu.iowait, 0)} % waiting for disk`, a.cpu?.steal >= 5 && `${fmt.n(a.cpu.steal, 0)} % steal`].filter(Boolean).join(' · ')),
+      kv('Load', a.cpu?.load?.length ? fmt.n(a.cpu.load[0], 2) : '–', a.cpu?.load?.length === 3 ? `5 min ${fmt.n(a.cpu.load[1], 2)} · 15 min ${fmt.n(a.cpu.load[2], 2)}` : null),
+      kv('Memory used', m ? fmt.bytes(m.used) : '–', m ? `of ${fmt.bytes(m.total)} · ${fmt.bytes(m.cache)} cache` : null),
+      m?.swapTotal ? kv('Swap', fmt.bytes(m.swapUsed), `of ${fmt.bytes(m.swapTotal)}`) : null,
+      kv('Up', a.uptime != null ? (a.uptime >= 86400 ? `${Math.floor(a.uptime / 86400)} days` : `${Math.floor(a.uptime / 3600)} h`) : '–')));
+    if (a.failed.length || a.down.length) box.append(el('div', { class: 'callout warning' }, el('b', { text: 'Services' }), ' ', [...a.failed.map((u) => `${u} failed`), ...a.down.filter((w) => !a.failed.includes(w.unit)).map((w) => `${w.unit} is ${w.state}`)].join(' · ')));
+    else if (a.watched.length) box.append(el('p', { class: 'small muted', text: `Watched services running: ${a.watched.map((w) => w.unit).join(', ')}` }));
+    if (a.updates) box.append(el('p', { class: 'small', text: a.updates.count ? `${a.updates.count} update${a.updates.count === 1 ? '' : 's'} waiting${a.updates.security ? `, ${a.updates.security} security` : ''}${a.updates.reboot ? ' · needs a reboot' : ''}` : `Up to date${a.updates.reboot ? ' · needs a reboot' : ''}` }));
+    if (a.fs.length) {
+      box.append(el('div', { class: 'table-wrap' }, el('table', { class: 'agent-fs' }, el('tbody', null, a.fs.map((f) => {
+        const share = f.used / f.size;
+        return el('tr', null, el('td', { text: f.mount }), el('td', { class: 'num small muted', text: `${fmt.bytes(f.used)} of ${fmt.bytes(f.size)}${f.inodes >= 80 ? ` · inodes ${f.inodes} %` : ''}` }), el('td', { class: 'num', text: pct(100 * share) }));
+      })))));
+    }
+    if (a.temps.length) box.append(el('p', { class: 'small muted', text: `Temperatures: ${a.temps.slice(0, 6).map((t) => `${t.name.trim()} ${fmt.n(t.c, 0)} °C`).join(' · ')}` }));
+    if (a.top.length) box.append(el('p', { class: 'small muted', text: `Busiest: ${a.top.slice(0, 3).map((t) => `${t.name} ${fmt.n(t.cpu, 0)} %`).join(' · ')}` }));
+    box.append(el('p', { class: 'small muted', text: [a.os, a.kernel && `kernel ${a.kernel}`, a.version && `agent ${a.version}${a.latest && a.latest !== a.version ? ` (newer: ${a.latest}, run sudo lookout-agent update)` : ''}`].filter(Boolean).join(' · ') }));
+    return box;
+  }
+
   // The avatar: who is signed in, and a menu with Admin, the look, the guide and Log out
   function userButton(st, admin) {
     const who = userName || (st.viewer ? 'This device' : 'Admin');
@@ -968,5 +1001,5 @@ const HD = (() => {
   // The installable app's service worker (offline screen only; see sw.js)
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-  return { passkeyCreate, passkeySupported, passkeyError, api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, checkText, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
+  return { agentSection, passkeyCreate, passkeySupported, passkeyError, api, upload, raw, saveBlob, session, el, svg, icon, fmt, status, statusClass, logout, shell, openLook, drawer, iconButton, statValue, checkText, letterIcon, sparkSlot, fillSparks, rangeTabs, dragMove, clampText, openSearch };
 })();

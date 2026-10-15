@@ -428,6 +428,8 @@ h2, h3 { break-after: avoid; }
 </section>
 
 <section class="page">
+  <h2>Linux agents</h2>
+  <p>A <b>Lookout agent</b> on a VM, container or Linux machine reports what Proxmox can't see: memory as Linux counts it, load, every filesystem, failed and watched <b>systemd services</b>, <b>pending updates</b> (and security fixes, and a needed reboot) and temperatures. In <span class="ui">Admin → Devices → Linux agents</span>, <span class="ui">Add agent</span>, choose what it runs on (a VM from Proxmox, a device or a new one), and run the command it shows on the machine. On the machine: <code>sudo lookout-agent status</code>, <code>test</code>, <code>watch add nginx</code>, <code>update</code> and <code>uninstall</code>. It only reports, and never updates itself.</p>
   <h2>Reached through</h2>
   <p>Each device has <b>Reached through</b>: the switch, gateway or host it depends on. <i>Automatic</i> uses what UniFi reports (an access point hangs off its switch); for servers, choose it yourself. When that device is down, everything behind it (devices, their services and check-ins) is grouped under it on Home as <i>Behind core-switch</i>, their tiles say <b>Unreachable</b>, and only one alert is sent, naming what is behind it.</p>
   <h2>Alerts for this device</h2>

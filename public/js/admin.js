@@ -990,6 +990,133 @@ function openFinder() {
 }
 $('device-find').addEventListener('click', openFinder);
 
+// --- Linux agents ---
+
+let agentsState = null;
+async function loadAgents() {
+  try {
+    agentsState = await api('GET', '/api/admin/agents');
+  } catch (e) {
+    $('agent-list').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+    return;
+  }
+  const s = agentsState;
+  const attachName = (a) => {
+    if (a.guest) {
+      const g = s.guests.find((x) => x.attach === `guest:${a.guest}`);
+      return g ? `${g.type === 'lxc' ? 'Container' : 'VM'} ${g.vmid} on ${g.server}` : 'A VM no longer reported';
+    }
+    return a.device || '–';
+  };
+  $('agent-list').replaceChildren(s.agents.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'agents-table' },
+    el('thead', null, el('tr', null, ['Agent', 'Runs on', 'Last report', 'Version', ''].map((t) => el('th', { text: t })))),
+    el('tbody', null, s.agents.map((a) => el('tr', null,
+      el('td', null, el('span', { class: `led ${a.removedAt ? 'off' : a.ok ? 'good' : a.never ? 'off' : 'critical'}` }), ' ', el('strong', { text: a.name }), a.os ? el('div', { class: 'small muted', text: a.os }) : null),
+      el('td', { class: 'small', text: attachName(a) }),
+      el('td', { class: 'small num', text: a.removedAt ? 'uninstalled there' : a.at ? fmt.time(a.at) : 'never yet' }),
+      el('td', { class: 'small num' }, a.version || '–', a.version && a.latest && a.version !== a.latest ? el('div', { class: 'small warning-text', text: `${a.latest} available` }) : null),
+      el('td', { class: 'r' }, el('button', { type: 'button', class: 'small', text: 'Edit', onclick: () => openAgent(a) }))))))) : el('p', { class: 'small muted', text: 'No agents yet.' }));
+}
+
+// the commands for a machine: install (with the token, right after creating it or a new token), and the rest
+function agentCommandsBox(cmd, token) {
+  const block = (label, text) => {
+    const pre = el('pre', { class: 'howto-code' }, el('code', { text }));
+    const copy = el('button', { type: 'button', class: 'small', text: 'Copy', onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copy.textContent = 'Copied';
+      } catch {
+        getSelection().selectAllChildren(pre);
+      }
+    } });
+    return el('div', null, el('div', { class: 'small muted', text: label }), el('div', { class: 'howto-block' }, pre, copy));
+  };
+  return el('div', { class: 'agent-cmds' },
+    token ? block('Install: run this on the machine (it needs curl and systemd; as a user with sudo)', cmd.install) : el('p', { class: 'small muted', text: 'The token is only shown once. To install again, press New token for a fresh install command (the old token stops working).' }),
+    token && cmd.caChecked ? el('p', { class: 'hint', text: 'The command checks the dashboard\'s own certificate authority by its fingerprint before trusting it.' }) : null,
+    block('Check it on the machine', cmd.status),
+    block('Watch a service there too (added to the list here)', cmd.watch),
+    block('Update the agent (when this page says a newer one is available)', cmd.update),
+    block('Remove it from the machine', cmd.uninstall));
+}
+
+function openAgent(a, created) {
+  const s = agentsState;
+  const box = $('agent-editor');
+  box.hidden = false;
+  const name = el('input', { value: a?.name || '', maxlength: 48, required: true });
+  const attach = el('select', null,
+    el('optgroup', { label: 'VMs and containers (Proxmox)' }, s.guests.map((g) => el('option', { value: g.attach, text: `${g.vmid} ${g.name} (${g.type === 'lxc' ? 'container' : 'VM'} on ${g.server})` }))),
+    el('optgroup', { label: 'Devices' }, s.devices.map((d) => el('option', { value: `device:${d.id}`, text: d.name }))),
+    el('option', { value: 'new', text: 'A new device (a Raspberry Pi, a VPS, another machine…)' }));
+  attach.value = a?.attach || (s.guests[0]?.attach ?? 'new');
+  // a VM's name suggests the agent's name
+  attach.addEventListener('change', () => {
+    const g = s.guests.find((x) => x.attach === attach.value);
+    if (g && !name.value) name.value = g.name;
+  });
+  if (!a && s.guests[0] && !name.value) name.value = s.guests[0].name;
+  const watch = el('input', { value: (a?.watch || []).join(' '), placeholder: 'nginx docker pihole-FTL', spellcheck: 'false' });
+  const updates = el('input', { type: 'checkbox', checked: a ? a.updates : true });
+  const interval = el('input', { type: 'number', min: 30, max: 3600, step: 1, value: a?.interval || 60 });
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const body = () => ({ name: name.value, attach: attach.value, watch: watch.value, updates: updates.checked, interval: Number(interval.value) });
+  const close = () => {
+    box.hidden = true;
+    box.replaceChildren();
+  };
+  const cmds = el('div');
+  if (created) cmds.replaceChildren(agentCommandsBox(created.commands, created.token));
+  else if (a) cmds.replaceChildren(agentCommandsBox(a.commands, null));
+  box.replaceChildren(
+    el('h4', { text: a ? `Edit ${a.name}` : 'New agent' }),
+    el('div', { class: 'form-grid' },
+      el('label', null, el('span', { text: 'Name' }), name),
+      el('label', null, el('span', { text: 'Runs on' }), attach),
+      el('label', { class: 'wide' }, el('span', { text: 'Services that must be running' }), watch, el('span', { class: 'hint', text: 'systemd units, separated by spaces. Any service that fails is reported anyway; these are also reported when they stop. More can be added on the machine (lookout-agent watch add).' })),
+      el('label', null, el('span', { text: 'Report every (seconds)' }), interval),
+      el('label', { class: 'check' }, updates, ' Look for pending updates (every 6 hours)')),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: a ? 'Save' : 'Create and show the install command', onclick: async () => {
+        try {
+          if (a) {
+            await api('PUT', `/api/admin/agents/${a.id}`, body());
+            msg.textContent = 'Saved: the agent picks it up with its next report';
+            msg.className = 'msg ok';
+            loadAgents();
+          } else {
+            const r = await api('POST', '/api/admin/agents', body());
+            await loadAgents();
+            openAgent(agentsState.agents.find((x) => x.id === r.agent.id), r);
+          }
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      a ? el('button', { type: 'button', text: 'New token', onclick: async () => {
+        if (!confirm('Make a new token? The agent stops reporting until it is installed again with the new command.')) return;
+        const r = await api('POST', `/api/admin/agents/${a.id}/token`, {});
+        cmds.replaceChildren(agentCommandsBox(r.commands, r.token));
+      } }) : null,
+      el('button', { type: 'button', text: 'Close', onclick: close }),
+      a ? el('button', { type: 'button', class: 'danger', text: 'Remove', onclick: async () => {
+        if (!confirm(`Remove the agent ${a.name}? Run "sudo lookout-agent uninstall" on the machine too.`)) return;
+        await api('DELETE', `/api/admin/agents/${a.id}`);
+        close();
+        loadAgents();
+      } }) : null,
+      msg),
+    cmds);
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  name.focus();
+}
+$('agent-new').addEventListener('click', async () => {
+  if (!agentsState) await loadAgents();
+  openAgent(null);
+});
+
 // --- Add device: start from the catalog ---
 const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', docker: 'Docker', portainer: 'Portainer', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
@@ -3058,6 +3185,7 @@ function showTab(name, focus) {
   if (focus) $(`tabbtn-${name}`).focus();
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
+  if (name === 'devices') loadAgents();
   if (name === 'services') loadServices();
   if (name === 'system') {
     loadWeb();

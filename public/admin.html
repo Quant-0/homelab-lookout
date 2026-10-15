@@ -153,6 +153,14 @@
           </section>
         </div>
       </div>
+      <section class="card" id="agents-card">
+        <div class="card-head">
+          <div class="title"><h3>Linux agents</h3><p class="hint">A small script on a VM, container or Linux machine that reports what Proxmox can't see: memory as Linux counts it, load, every filesystem, systemd services, pending updates and temperatures. It only reports; it never runs anything from here.</p></div>
+          <button type="button" class="primary" id="agent-new">Add agent</button>
+        </div>
+        <div id="agent-editor" class="agent-editor" hidden></div>
+        <div id="agent-list"></div>
+      </section>
       </div>
       <div class="tab-panel" role="tabpanel" id="tab-services" aria-labelledby="tabbtn-services" hidden>
       <section class="card service-editor" id="svc-editor" hidden>

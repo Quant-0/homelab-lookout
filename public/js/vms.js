@@ -97,7 +97,9 @@ function matches(g, q) {
 
 function row(g) {
   const on = running(g);
-  const memF = share(g.mem, g.maxmem);
+  // memory as Linux inside counts it, when the Lookout agent reports (Proxmox counts the file cache as used)
+  const lm = g.lookout?.ok && g.lookout.mem?.total ? g.lookout.mem : null;
+  const memF = lm ? share(lm.used, lm.total) : share(g.mem, g.maxmem);
   const dF = g.disk ? share(g.disk.used, g.disk.size) : null;
   const b = backupState(g, last.backupDays);
   const r = el('button', { type: 'button', class: `vm-row${on ? '' : ' stopped'}`, 'data-key': g.key, onclick: () => openVm(g.key) },
@@ -106,7 +108,7 @@ function row(g) {
       el('span', { class: 'vm-title' }, el('strong', { text: g.name }), el('small', { class: 'muted num', text: [g.vmid, g.node, g.agent?.ips?.[0]].filter(Boolean).join(' · ') }))),
     el('span', { class: 'vm-status' }, el('span', { class: `led ${on ? 'good' : 'off'}` }), g.status),
     el('span', { class: 'vm-cell', 'data-l': 'CPU' }, on ? bar(g.cpu, `${fmt.pct(g.cpu, 1)}`) : '–'),
-    el('span', { class: 'vm-cell', 'data-l': 'Memory' }, on ? bar(memF, fmt.bytes(g.mem)) : '–'),
+    el('span', { class: 'vm-cell', 'data-l': 'Memory', title: lm ? 'As Linux inside counts it (Lookout agent)' : null }, on ? bar(memF, fmt.bytes(lm ? lm.used : g.mem)) : '–'),
     el('span', { class: 'vm-cell', 'data-l': 'Disk' }, on && dF != null ? bar(dF, `${fmt.pct(dF)}${g.disk.mount !== '/' ? ` ${g.disk.mount}` : ''}`) : '–'),
     el('span', { class: 'vm-cell num', 'data-l': 'Network' }, on && g.rxBps != null ? `↓ ${bits(g.rxBps)}  ↑ ${bits(g.txBps)}` : '–'),
     el('span', { class: `vm-cell vm-backup ${b.cls}`, 'data-l': 'Last backup', title: b.title, text: b.text }));
@@ -331,8 +333,10 @@ function fillDrawer() {
         el('div', { class: 'ct-chips' }, mine.map((c) => el('button', { type: 'button', class: `ct-chip${ctProblem(c) ? ' bad' : ''}`, onclick: () => openContainer(c.key) },
           el('span', { class: `led ${c.health === 'unhealthy' ? 'critical' : CT_DOT[c.state] || 'off'}` }), c.name)))] : null;
     })(),
+    g.lookout ? HD.agentSection(g.lookout) : null,
     el('div', { class: 'sect-head' }, el('h4', { text: 'History' }), HD.rangeTabs()),
     el('div', { class: 'sparks' },
+      g.lookout ? sp(`agent:${g.lookout.id}:mem`, 'Memory used (inside)', ' %', 1) : null,
       sp(`${k}:cpu`, 'CPU', ' %', 1),
       sp(`${k}:mem`, 'Memory', ' %', 0),
       sp(`${k}:rx`, 'Network', ' Mbit/s', 1, { key2: `${k}:tx`, names: ['in', 'out'], legend: ['In', 'Out'], zero: true }),

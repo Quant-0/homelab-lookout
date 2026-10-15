@@ -2368,3 +2368,23 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .finder-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .finder-rest summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
 @media (max-width: 560px) { .finder-row { grid-template-columns: 1fr; } }
+
+/* What a Lookout agent reports */
+.agent-sect { margin-top: 14px; display: grid; gap: 8px; }
+.agent-sect h4 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.agent-sect .metrics { margin: 0; }
+.agent-fs { width: 100%; border-collapse: collapse; font-size: 13px; }
+.agent-fs td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.agent-fs td.num { text-align: right; white-space: nowrap; }
+
+/* Admin → Devices → Linux agents */
+.agent-editor { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; display: grid; gap: 10px; }
+.agent-editor h4 { margin: 0; }
+.agent-cmds { display: grid; gap: 10px; margin-top: 6px; }
+.agents-table { width: 100%; border-collapse: collapse; }
+.agents-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.agents-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.warning-text { color: var(--warning); }
+.agent-editor, .agent-editor .form-grid > *, .agent-cmds, .agent-cmds > div, .howto-block { min-width: 0; }
+.agent-cmds .howto-code { white-space: pre-wrap; word-break: break-all; padding-right: 70px; }
+.agent-editor input { max-width: 100%; }

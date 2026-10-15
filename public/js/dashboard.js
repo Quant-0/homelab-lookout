@@ -1045,6 +1045,7 @@ function deviceDetail(info) {
       dev.alerts.mute ? 'Alerts muted' : null,
       [dev.alerts.spacePct != null ? `full at ${dev.alerts.spacePct} %` : null, dev.alerts.diskC != null ? `disks hot at ${dev.alerts.diskC} °C` : null, dev.alerts.otherC != null ? `sensors at ${dev.alerts.otherC} °C` : null].filter(Boolean).join(', ').replace(/^./, (ch) => `Own limits: ${ch}`) || null,
     ].filter(Boolean).join(' · ')) : null,
+    ...(dev.lookout || []).map((a) => HD.agentSection(a)),
     dev.growing?.length ? el('section', { class: 'd-growing' }, el('h4', { text: 'Filling up' }), el('ul', null, dev.growing.map((x) => el('li', { class: x.forecast.days != null && x.forecast.days <= 30 ? 'soon' : null },
       el('span', { text: x.label }), el('span', { class: 'num muted', text: `${Math.round(x.pct)} % · +${x.forecast.perMonth} pp a month` }),
       el('span', { class: 'num', text: x.forecast.days != null ? `full in about ${x.forecast.days} days` : '' }))))) : null,
