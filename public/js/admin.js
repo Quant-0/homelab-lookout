@@ -1731,6 +1731,20 @@ let web = null;
 
 let access = null;
 let proxyKind = 'npm';
+
+// A block of text to copy: a config snippet, a command
+function codeBlock(text, wrap = false) {
+  const pre = el('pre', { class: `howto-code${wrap ? ' wrap' : ''}` }, el('code', { text }));
+  const copy = el('button', { type: 'button', class: 'small', text: 'Copy', onclick: async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+    } catch {
+      getSelection().selectAllChildren(pre);
+    }
+  } });
+  return el('div', { class: 'howto-block' }, pre, copy);
+}
 async function loadAccess() {
   try {
     access = await api('GET', '/api/admin/access');
@@ -1769,18 +1783,7 @@ function renderProxyHowto() {
   const upstream = `${scheme}://${t.host}:${port}`;
   const link = a.dashboardAddress && /^https:/.test(a.dashboardAddress) ? new URL(a.dashboardAddress) : null;
   const domain = link?.hostname || 'lookout.example.com';
-  const code = (text) => {
-    const pre = el('pre', { class: 'howto-code' }, el('code', { text }));
-    const copy = el('button', { type: 'button', class: 'small', text: 'Copy', onclick: async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        copy.textContent = 'Copied';
-      } catch {
-        getSelection().selectAllChildren(pre);
-      }
-    } });
-    return el('div', { class: 'howto-block' }, pre, copy);
-  };
+  const code = codeBlock;
   const steps = (...xs) => el('ol', { class: 'small howto-steps' }, xs.map((x) => el('li', null, ...[].concat(x))));
   const tail = [
     `Set the Dashboard address above to https://${domain}`,
@@ -1813,6 +1816,86 @@ $('access-form').addEventListener('submit', async (ev) => {
     loadAccess();
   } catch (e) {
     showMsg('access-msg', e.message, false);
+  }
+});
+
+// --- Metrics tokens (Prometheus, Home Assistant) ---
+let metricsEdit = null; // the token being changed, or null for a new one
+async function loadMetrics() {
+  let d;
+  try {
+    d = await api('GET', '/api/admin/metrics-tokens');
+  } catch (e) {
+    $('metrics-list').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+    return;
+  }
+  const when = (t) => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  $('metrics-list').replaceChildren(d.tokens.length
+    ? el('ul', { class: 'metrics-tokens' }, d.tokens.map((t) => el('li', null,
+      el('div', { class: 'metrics-token-text' },
+        el('strong', { text: t.name }),
+        el('span', { class: 'small muted', text: `From ${t.allow.join(', ')}` }),
+        el('span', { class: 'small muted', text: t.usedAt ? `Last read ${when(t.usedAt)} from ${t.usedFrom}` : 'Not read since the dashboard started' })),
+      el('div', { class: 'metrics-token-actions' },
+        el('button', { type: 'button', class: 'small', text: 'Change', onclick: () => {
+          metricsEdit = t;
+          const f = $('metrics-form').elements;
+          f.name.value = t.name;
+          f.allow.value = t.allow.join(', ');
+          $('metrics-form-title').textContent = `Change ${t.name}`;
+          $('metrics-submit').textContent = 'Save';
+          $('metrics-cancel').hidden = false;
+          $('metrics-new').replaceChildren();
+          f.allow.focus();
+        } }),
+        el('button', { type: 'button', class: 'small danger', text: 'Remove', onclick: async () => {
+          if (!confirm(`Remove the token ${t.name}? Whatever reads metrics with it stops getting them.`)) return;
+          try {
+            await api('DELETE', `/api/admin/metrics-tokens/${t.id}`);
+            loadMetrics();
+          } catch (e) {
+            showMsg('metrics-msg', e.message, false);
+          }
+        } })))))
+    : el('p', { class: 'small muted', text: 'No tokens yet: make one below for each program that should read the metrics.' }));
+}
+
+function metricsFormReset() {
+  metricsEdit = null;
+  $('metrics-form').reset();
+  $('metrics-form-title').textContent = 'New token';
+  $('metrics-submit').textContent = 'Make token';
+  $('metrics-cancel').hidden = true;
+}
+$('metrics-cancel').addEventListener('click', metricsFormReset);
+
+$('metrics-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const body = { name: f.name.value.trim(), allow: f.allow.value };
+  try {
+    if (metricsEdit) {
+      await api('PUT', `/api/admin/metrics-tokens/${metricsEdit.id}`, body);
+      showMsg('metrics-msg', 'Saved', true);
+      metricsFormReset();
+    } else {
+      const r = await api('POST', '/api/admin/metrics-tokens', body);
+      metricsFormReset();
+      const s = r.setup;
+      $('metrics-new').replaceChildren(el('div', { class: 'metrics-new' },
+        el('p', { class: 'banner', text: `The token for ${r.token.name}. Copy it now: it is not shown again (make a new one if it gets lost).` }),
+        codeBlock(r.secret, true),
+        el('h4', { text: 'Prometheus (for Grafana)' }),
+        el('p', { class: 'small', text: `Add this to prometheus.yml and restart Prometheus. It reads ${s.url} every 30 seconds; in Grafana, add Prometheus as a data source and look for lookout_… metrics.` }),
+        codeBlock(s.prometheus),
+        el('h4', { text: 'Home Assistant' }),
+        el('p', { class: 'small', text: `REST sensors that read ${s.jsonUrl}. Put the line from the first comment in secrets.yaml, the rest in configuration.yaml, and restart Home Assistant. More values are in the JSON: devices.<name>.up, services.<name>.up, power, internet.` }),
+        codeBlock(s.homeAssistant),
+        el('div', { class: 'form-actions' }, el('button', { type: 'button', text: 'Done', onclick: () => $('metrics-new').replaceChildren() }))));
+    }
+    loadMetrics();
+  } catch (e) {
+    showMsg('metrics-msg', e.message, false);
   }
 });
 
@@ -3166,13 +3249,14 @@ const TABS = ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look',
 const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'look', backup: 'backups', account: 'security', checkins: 'schedules', maintenance: 'schedules', sessions: 'security', server: 'system' };
 
 // links straight to a section: the tab it is on, then scrolled to
-const SECTIONS = { 'vm-settings': 'dashboard', access: 'system', passkeys: 'security' };
+const SECTIONS = { 'vm-settings': 'dashboard', access: 'system', metrics: 'system', passkeys: 'security' };
+const SECTION_CARDS = { 'vm-settings': 'vm-settings', access: 'access-card', metrics: 'metrics-card', passkeys: 'passkeys-card' };
 
 function showTab(name, focus) {
   const section = SECTIONS[name] ? name : null;
   if (section) {
     name = SECTIONS[section];
-    setTimeout(() => $(`${section === 'vm-settings' ? 'vm-settings' : section === 'access' ? 'access-card' : 'passkeys-card'}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 150);
+    setTimeout(() => $(SECTION_CARDS[section])?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 150);
   }
   name = OLD_TABS[name] || name;
   if (!TABS.includes(name)) name = 'devices';
@@ -3190,6 +3274,7 @@ function showTab(name, focus) {
   if (name === 'system') {
     loadWeb();
     loadAccess();
+    loadMetrics();
   }
   if (name === 'backups') loadBackup();
   if (name === 'security') loadRemembered();

@@ -35,6 +35,7 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 - A storage **forecast** that warns before a disk is full
 - A **monthly report** of uptime, problems and cost
 - **Undo** any change in Admin, or go back to how it was
+- **Metrics** for Prometheus/Grafana and Home Assistant
 
 </td>
 </tr>
@@ -91,6 +92,7 @@ The installer sets up Node.js, a dedicated system user, an encryption key, a loc
 | | [Check-ins and maintenance](docs/features/checkins-and-maintenance.md) | |
 | | [Power and energy](docs/features/energy.md) | |
 | | [History and the monthly report](docs/features/history-and-reports.md) | |
+| | [Metrics: Prometheus, Grafana, Home Assistant](docs/features/metrics.md) | |
 | | [Docs, Updates, Log and undo](docs/features/docs-updates-log.md) | |
 
 There is also an illustrated **user guide (PDF)** with every page explained, served by the dashboard at `/guide.pdf` (source in [docs/guide](docs/guide)).

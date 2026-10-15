@@ -492,6 +492,7 @@ function loadConfig(raw = readJson(CONFIG_FILE, {})) {
     checkins: Array.isArray(raw.checkins) ? raw.checkins : [], // [{ id, name, token, everyMin, graceMin, deviceId, createdAt }]
     maintenance: Array.isArray(raw.maintenance) ? raw.maintenance : [], // [{ id, name, targets, schedule }]
     agents: Array.isArray(raw.agents) ? raw.agents : [], // [{ id, name, tokenHash, deviceId, guest, watch, updates, interval, createdAt }]
+    metricsTokens: Array.isArray(raw.metricsTokens) ? raw.metricsTokens : [], // [{ id, name, tokenHash, allow, createdAt }]
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
@@ -585,7 +586,7 @@ const CONFIG_HISTORY_FILE = path.join(DATA_DIR, 'config-history.json');
 const CONFIG_HISTORY_DAYS = 90;
 const CONFIG_HISTORY_MAX = 500;
 const CONFIG_HISTORY_BYTES = 20e6;
-const HISTORY_LISTS = ['devices', 'hosts', 'services', 'checkins', 'maintenance', 'agents'];
+const HISTORY_LISTS = ['devices', 'hosts', 'services', 'checkins', 'maintenance', 'agents', 'metricsTokens'];
 const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout'];
 let configHistory = { last: null, versions: [] };
 let historyAuto = null; // texts of a change made outside a request, recorded right after
@@ -675,7 +676,7 @@ function loadConfigHistory() {
 }
 
 // What a part is, for people: "Device atlas", "Power settings"
-const PART_NAMES = { devices: 'Device', hosts: 'Connection', services: 'Service', checkins: 'Check-in', maintenance: 'Maintenance window', agents: 'Agent', channels: 'Alert channel' };
+const PART_NAMES = { devices: 'Device', hosts: 'Connection', services: 'Service', checkins: 'Check-in', maintenance: 'Maintenance window', agents: 'Agent', channels: 'Alert channel', metricsTokens: 'Metrics token' };
 const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings' };
 function partLabel(k, value) {
   const [list] = k.split('/');
@@ -5980,7 +5981,7 @@ function needsStepUp(p, m) {
   return p === '/api/admin/server' || p === '/api/admin/backup/settings' || p === '/api/admin/backup/download'
     || p === '/api/admin/backup/restore' || p === '/api/admin/backup/restore-local'
     || p.startsWith('/api/admin/backup/destinations') || p.startsWith('/api/admin/backup/local/') || p.startsWith('/api/admin/alerts/channels')
-    || p.startsWith('/api/admin/passkeys') || p.startsWith('/api/admin/config-history/');
+    || p.startsWith('/api/admin/passkeys') || p.startsWith('/api/admin/config-history/') || p.startsWith('/api/admin/metrics-tokens');
 }
 
 function stepUpRequired(res) {
@@ -8365,6 +8366,37 @@ async function handleApi(req, res, url, session, viewer = null) {
     return sendJson(res, 200, { incident: publicIncident(x) });
   }
 
+  // --- Metrics tokens (Prometheus, Home Assistant) ---
+  if (p === '/api/admin/metrics-tokens' && m === 'GET') return sendJson(res, 200, { tokens: config.metricsTokens.map(publicMetricsToken), setup: metricsSetup({ id: '<id>' }, null, req) });
+  if (p === '/api/admin/metrics-tokens' && m === 'POST') {
+    if (config.metricsTokens.length >= MAX_METRICS_TOKENS) throw new UserError(`At most ${MAX_METRICS_TOKENS} metrics tokens`);
+    const t = { id: crypto.randomUUID(), ...validateMetricsToken(await readBody(req)), tokenHash: null, createdAt: Date.now() };
+    const token = newAgentToken(t);
+    config.metricsTokens.push(t);
+    saveConfig();
+    event('settings', `Metrics token added: ${t.name}`, `from ${t.allow.join(', ')}`);
+    return sendJson(res, 201, { token: publicMetricsToken(t), secret: `${t.id}.${token}`, setup: metricsSetup(t, token, req) });
+  }
+  const mt = p.match(/^\/api\/admin\/metrics-tokens\/([0-9a-f-]{36})$/);
+  if (mt) {
+    const t = config.metricsTokens.find((x) => x.id === mt[1]);
+    if (!t) return sendError(res, 404, 'Not found');
+    if (m === 'PUT') {
+      const before = { name: t.name, allow: t.allow.join(', ') };
+      Object.assign(t, validateMetricsToken(await readBody(req)));
+      saveConfig();
+      event('settings', `Metrics token changed: ${t.name}`, changesText(before, { name: t.name, allow: t.allow.join(', ') }) || null);
+      return sendJson(res, 200, { token: publicMetricsToken(t) });
+    }
+    if (m === 'DELETE') {
+      config.metricsTokens = config.metricsTokens.filter((x) => x !== t);
+      metricsUse.delete(t.id);
+      saveConfig();
+      event('settings', `Metrics token removed: ${t.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
   // --- Configuration history ---
   if (p === '/api/admin/config-history' && m === 'GET') {
     const before = parseInt(url.searchParams.get('before'), 10);
@@ -8892,6 +8924,12 @@ async function handle(req, res) {
       return res.end(body);
     }
     return sendError(res, 404, 'Not found');
+  }
+  // metrics for Prometheus and Home Assistant: a metrics token, from the addresses it lists
+  if (p === '/metrics' || p === '/metrics.json') {
+    if (!openLimitOk(req, res)) return;
+    if (req.method !== 'GET') return sendError(res, 405, 'Method not allowed');
+    return handleMetrics(req, res, p === '/metrics.json');
   }
   if (req.method !== 'GET' && !sameOrigin(req)) return sendError(res, 403, 'Cross-origin request blocked');
   // the acknowledge link from an alert message: no login, the token in the link is the permission
@@ -10777,6 +10815,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     checkins: [],
     maintenance: [],
     agents: [],
+    metricsTokens: [],
   };
   // check-ins and windows are checked like in Admin, after the devices and services they name
   for (const x of arr(c.checkins)) {
@@ -10796,6 +10835,13 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
   for (const x of arr(c.agents)) {
     try {
       if (UUID.test(x.id) && /^[0-9a-f]{64}$/.test(x.tokenHash)) config.agents.push({ id: x.id, ...validateAgent({ ...x, attach: x.guest ? `guest:${x.guest}` : `device:${x.deviceId}` }), tokenHash: x.tokenHash, createdAt: Number(x.createdAt) || Date.now() });
+    } catch {
+      /* dropped */
+    }
+  }
+  for (const x of arr(c.metricsTokens)) {
+    try {
+      if (UUID.test(x.id) && /^[0-9a-f]{64}$/.test(x.tokenHash) && config.metricsTokens.length < MAX_METRICS_TOKENS) config.metricsTokens.push({ id: x.id, ...validateMetricsToken(x), tokenHash: x.tokenHash, createdAt: Number(x.createdAt) || Date.now() });
     } catch {
       /* dropped */
     }
@@ -11862,6 +11908,349 @@ async function cliSetAdmin(username) {
   if (again !== pw) fatal('Passwords do not match');
   writeJsonAtomic(ADMIN_FILE, { username, hash: await hashPassword(pw), changedAt: Date.now() });
   console.log(`Admin account "${username}" saved in ${ADMIN_FILE}. Restart the service to end existing sessions and remembered devices.`);
+}
+
+// ---------------------------------------------------------------------------
+// Metrics export: /metrics for Prometheus (and so Grafana), /metrics.json for Home Assistant's REST
+// sensors. Read-only, with a token made in Admin (only its hash is stored) that works only from the
+// addresses entered with it. Values carry names and kinds, never addresses or anything secret.
+
+const MAX_METRICS_TOKENS = 20;
+const metricsUse = new Map(); // token id -> { at, ip } (since the dashboard started)
+
+function validateMetricsToken(b) {
+  const name = str(b.name, 48, 'Name', { required: true });
+  const list = (Array.isArray(b.allow) ? b.allow : String(b.allow ?? '').split(/[\s,]+/)).map((x) => String(x).trim()).filter(Boolean);
+  if (!list.length) throw new UserError('Enter the addresses it may be used from, like 192.168.1.30 (Prometheus) or 192.168.1.0/24');
+  if (list.length > 20) throw new UserError('At most 20 addresses');
+  for (const x of list) {
+    const [base, bits] = x.split('/');
+    const okBits = bits === undefined || (/^\d{1,3}$/.test(bits) && Number(bits) <= (net.isIPv6(base) ? 128 : 32) && Number(bits) >= (net.isIPv6(base) ? 48 : 8));
+    if (!net.isIP(base) || !okBits) throw new UserError(`${x.slice(0, 60)} is not an IP address or a range like 192.168.1.0/24`);
+  }
+  return { name, allow: [...new Set(list)] };
+}
+
+function publicMetricsToken(t) {
+  const use = metricsUse.get(t.id);
+  return { id: t.id, name: t.name, allow: t.allow, createdAt: t.createdAt, usedAt: use?.at || null, usedFrom: use?.ip || null };
+}
+
+// The token in `Authorization: Bearer <id>.<token>`, from one of its addresses. Answers and returns
+// null when it isn't.
+async function metricsAuth(req, res) {
+  const ip = clientIp(req) || '';
+  const fail = async (code, msg) => {
+    await new Promise((r) => setTimeout(r, 300));
+    sendError(res, code, msg);
+    return null;
+  };
+  // an address no token may be used from learns nothing about the tokens
+  if (!config.metricsTokens.some((t) => ipInList(ip, t.allow))) return fail(403, 'Metrics are not available from this address; add it to the token in Admin → Server → Metrics');
+  const m = /^Bearer ([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization || ''));
+  const t = m && config.metricsTokens.find((x) => x.id === m[1]);
+  const ok = t && crypto.timingSafeEqual(Buffer.from(agentTokenHash(m[2]), 'hex'), Buffer.from(t.tokenHash, 'hex'));
+  if (!ok) return fail(401, 'Unknown or wrong metrics token');
+  if (!ipInList(ip, t.allow)) return fail(403, 'Metrics are not available from this address; add it to the token in Admin → Server → Metrics');
+  metricsUse.set(t.id, { at: Date.now(), ip });
+  return t;
+}
+
+// Prometheus text format: families with HELP and TYPE, values with labels
+function metricsWriter() {
+  const fams = new Map();
+  const esc = (v) => String(v).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+  const put = (name, help, labels, v, type = 'gauge') => {
+    if (v === true || v === false) v = v ? 1 : 0;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return;
+    if (!fams.has(name)) fams.set(name, { help, type, lines: [] });
+    const l = Object.entries(labels || {}).filter(([, x]) => x !== null && x !== undefined && x !== '');
+    fams.get(name).lines.push(`${name}${l.length ? `{${l.map(([k, x]) => `${k}="${esc(x)}"`).join(',')}}` : ''} ${Number.isInteger(v) ? v : Math.round(v * 1e4) / 1e4}`);
+  };
+  const text = () => [...fams].map(([n, f]) => `# HELP ${n} ${f.help}\n# TYPE ${n} ${f.type}\n${f.lines.join('\n')}`).join('\n') + '\n';
+  return { put, text };
+}
+
+const ratio = (x) => (typeof x === 'number' ? x : null);
+const healthy = (h) => (h ? (h === 'OK' ? 1 : 0) : null);
+
+function metricsText() {
+  const { put, text } = metricsWriter();
+  const version = runtimeInfo().version?.commit || 'dev';
+  put('lookout_info', 'This Homelab Lookout (always 1)', { version }, 1);
+  const devName = (id) => config.devices.find((d) => d.id === id)?.name || null;
+
+  // devices and their connections
+  for (const d of config.devices.filter((x) => !x.hidden)) {
+    const hosts = deviceHosts(d);
+    const agents = config.agents.filter((a) => a.deviceId === d.id && !a.guest && !a.removedAt);
+    const states = [...hosts.map((h) => results.get(h.id)).filter(Boolean).map((r) => r.ok), ...agents.map((a) => agentState(a).ok)];
+    if (states.length) put('lookout_device_up', 'Whether the device answers (1) on any of its connections', { device: d.name, kind: d.kind }, states.some(Boolean));
+    for (const h of hosts) {
+      const r = results.get(h.id);
+      if (!r) continue;
+      const L = { device: d.name, connection: h.type };
+      put('lookout_connection_up', 'Whether the connection answered at the last poll', L, r.ok);
+      if (r.lastOkAt) put('lookout_connection_last_ok_timestamp_seconds', 'When the connection last answered', L, Math.round(r.lastOkAt / 1000));
+      if (r.data) hostMetrics(put, d, h, r.data);
+    }
+  }
+
+  // power and energy
+  const ps = powerSummary();
+  put('lookout_power_watts_total', 'Power drawn now by everything measured (plus estimates, if switched on)', {}, ps.watts);
+  for (const [period, u] of Object.entries({ today: ps.usage.today, month: ps.usage.month, year: ps.usage.year })) {
+    put('lookout_energy_kwh', 'Energy used in the period so far', { period }, u.kwh);
+    put('lookout_energy_cost', 'What the energy cost in the period so far, in kroner', { period, currency: 'NOK' }, u.cost);
+  }
+  if (ps.priceNow) put('lookout_electricity_price_per_kwh', 'The electricity price now, all in, in kroner per kWh', { currency: 'NOK' }, ps.priceNow.total / 100);
+
+  // services
+  for (const s of config.services.filter((x) => !x.hidden)) {
+    const c = serviceResults.get(s.id)?.check;
+    if (!c) continue;
+    const L = { service: s.name };
+    put('lookout_service_up', 'Whether the service answers', L, c.up);
+    if (c.ms != null) put('lookout_service_response_seconds', 'How long the last check took', L, c.ms / 1000);
+    if (typeof c.cert === 'number') put('lookout_service_certificate_expiry_timestamp_seconds', 'When the service\'s certificate expires', L, Math.round((c.cert > 1e12 ? c.cert / 1000 : c.cert)));
+  }
+
+  // problems now, and check-ins
+  const att = attentionList();
+  for (const sev of ['critical', 'warning']) put('lookout_problems', 'Problems now (as under Needs you), by severity', { severity: sev }, att.filter((a) => a.severity === sev).length);
+  put('lookout_problems_muted', 'Problems now that are muted, behind another outage or in maintenance', {}, att.filter((a) => a.muted || a.behind || a.maintenance).length);
+  for (const c of config.checkins) {
+    const st = checkinStatus(c);
+    put('lookout_checkin_up', 'Whether the check-in came in on time (1), late or missed (0)', { checkin: c.name, device: devName(c.deviceId) }, st.state === 'up' ? 1 : st.state === 'new' ? null : 0);
+    if (st.last) put('lookout_checkin_last_timestamp_seconds', 'When the check-in last came in', { checkin: c.name }, Math.round(st.last / 1000));
+  }
+
+  // Linux agents
+  for (const a of config.agents.filter((x) => !x.removedAt)) {
+    const st = agentState(a);
+    const L = { agent: a.name, device: a.guest ? null : devName(a.deviceId) };
+    put('lookout_agent_up', 'Whether the agent reported recently', L, st.ok);
+    const x = st.ok ? st.data : null;
+    if (!x) continue;
+    put('lookout_agent_cpu_ratio', 'CPU in use (0–1)', L, x.cpu?.usage != null ? x.cpu.usage / 100 : null);
+    put('lookout_agent_load1', 'Load average over a minute', L, x.cpu?.load?.[0]);
+    put('lookout_agent_memory_total_bytes', 'Memory in all', L, x.mem?.total);
+    put('lookout_agent_memory_used_bytes', 'Memory in use, as Linux counts it (total − available)', L, x.mem?.total != null && x.mem?.available != null ? x.mem.total - x.mem.available : null);
+    put('lookout_agent_swap_used_bytes', 'Swap in use', L, x.mem?.swapUsed);
+    put('lookout_agent_uptime_seconds', 'How long the machine has been up', L, x.uptime);
+    for (const f of x.fs) {
+      put('lookout_storage_used_bytes', 'Storage in use', { ...L, device: L.device || a.name, storage: f.mount }, f.used);
+      put('lookout_storage_size_bytes', 'Storage size', { ...L, device: L.device || a.name, storage: f.mount }, f.size);
+    }
+    for (const t of x.temps) put('lookout_temperature_celsius', 'Temperature', { device: L.device || a.name, sensor: t.name }, t.c);
+    if (x.updates) {
+      put('lookout_agent_updates_pending', 'Package updates waiting', L, x.updates.count);
+      put('lookout_agent_security_updates_pending', 'Security updates waiting', L, x.updates.security);
+      put('lookout_agent_reboot_required', 'Whether the machine wants a restart', L, x.updates.reboot);
+    }
+    put('lookout_agent_failed_units', 'systemd services that have failed', L, x.failed.length);
+    for (const w of x.watched) put('lookout_agent_service_up', 'Whether a watched systemd service is running', { ...L, unit: w.unit }, w.state === 'active');
+  }
+  return text();
+}
+
+// What one connection's last poll says, as metrics
+function hostMetrics(put, d, h, data) {
+  const D = { device: d.name };
+  // storage, with when it will be full at the pace of the last 60 days
+  for (const st of storagesOf(h, data)) {
+    const L = { ...D, storage: st.label };
+    put('lookout_storage_used_bytes', 'Storage in use', L, st.used);
+    put('lookout_storage_size_bytes', 'Storage size', L, st.size);
+    put('lookout_storage_days_until_full', 'Days until the storage is full at the pace of the last 60 days', L, storageForecast(h.id, st)?.days ?? null);
+  }
+  const ups = data.ups;
+  if (ups) {
+    put('lookout_ups_on_battery', 'Whether the UPS runs on battery', D, ups.onBattery);
+    put('lookout_ups_battery_charge_percent', 'Battery charge', D, ups.charge);
+    put('lookout_ups_runtime_seconds', 'Runtime left on battery', D, ups.runtimeMin != null ? ups.runtimeMin * 60 : null);
+    put('lookout_ups_load_percent', 'Load', D, ups.loadPct);
+    put('lookout_ups_output_watts', 'Power out', D, ups.outputW);
+    put('lookout_ups_input_volts', 'Mains voltage in', D, ups.inputV);
+  }
+  if (h.type === 'idrac') {
+    put('lookout_power_watts', 'Power drawn, as measured by the device', { ...D, source: 'idrac' }, data.watts);
+    for (const t of data.temps || []) put('lookout_temperature_celsius', 'Temperature', { ...D, sensor: t.name }, t.celsius);
+    for (const f of data.fans || []) {
+      put('lookout_fan_rpm', 'Fan speed', { ...D, fan: f.name }, f.rpm);
+      put('lookout_fan_percent', 'Fan speed', { ...D, fan: f.name }, f.percent);
+    }
+    for (const p of data.psus || []) put('lookout_psu_healthy', 'Whether the power supply reports OK', { ...D, psu: p.name }, healthy(p.health));
+    put('lookout_hardware_healthy', 'Whether the server reports its overall health as OK', D, healthy(data.health));
+  } else if (PLUG_TYPES.has(h.type)) put('lookout_power_watts', 'Power drawn, as measured by the device', { ...D, source: h.type }, data.watts);
+  else if (h.type === 'proxmox') {
+    for (const n of data.nodes || []) {
+      const L = { ...D, node: n.name };
+      put('lookout_node_up', 'Whether the Proxmox node is online', L, n.status === 'online');
+      if (n.status !== 'online') continue;
+      put('lookout_cpu_ratio', 'CPU in use (0–1)', L, ratio(n.cpu));
+      put('lookout_memory_used_bytes', 'Memory in use', L, n.mem);
+      put('lookout_memory_total_bytes', 'Memory in all', L, n.maxmem);
+    }
+    for (const g of data.guests || []) {
+      const L = { ...D, node: g.node, vmid: String(g.vmid), guest: g.name, type: g.type };
+      put('lookout_guest_up', 'Whether the VM or container is running', L, g.status === 'running');
+      if (g.status !== 'running') continue;
+      put('lookout_guest_cpu_ratio', 'CPU in use (0–1 of what it was given)', L, ratio(g.cpu));
+      put('lookout_guest_memory_used_bytes', 'Memory in use', L, g.mem);
+      put('lookout_guest_memory_total_bytes', 'Memory it was given', L, g.maxmem);
+      put('lookout_guest_network_receive_bytes_per_second', 'Network in', L, g.rxBps);
+      put('lookout_guest_network_transmit_bytes_per_second', 'Network out', L, g.txBps);
+      put('lookout_guest_disk_read_bytes_per_second', 'Disk reads', L, g.readBps);
+      put('lookout_guest_disk_write_bytes_per_second', 'Disk writes', L, g.writeBps);
+    }
+  } else if (h.type === 'synology' || h.type === 'snmp' || h.type === 'truenas') {
+    const s = data.system || {};
+    put('lookout_cpu_ratio', 'CPU in use (0–1)', D, ratio(s.cpu));
+    if (h.type === 'synology') {
+      put('lookout_memory_used_bytes', 'Memory in use', D, s.memUsed);
+      put('lookout_memory_total_bytes', 'Memory in all', D, s.memTotal);
+      put('lookout_temperature_celsius', 'Temperature', { ...D, sensor: 'system' }, s.temp);
+    }
+    if (h.type === 'truenas') put('lookout_load1', 'Load average over a minute', D, s.loadavg?.[0]);
+  } else if (h.type === 'ping') put('lookout_ping_seconds', 'Round trip of the last ping', D, data.ms != null ? data.ms / 1000 : null);
+  else if (h.type === 'docker' || h.type === 'portainer') {
+    for (const c of data.containers || []) {
+      const L = { ...D, container: c.name };
+      put('lookout_container_up', 'Whether the container is running', L, c.state === 'running');
+      put('lookout_container_restarts', 'How often Docker has restarted it', L, c.restarts, 'counter');
+      if (c.state !== 'running') continue;
+      put('lookout_container_cpu_ratio', 'CPU in use (1 = one core)', L, ratio(c.cpu));
+      put('lookout_container_memory_used_bytes', 'Memory in use', L, c.memUsed);
+    }
+  } else if (h.type === 'unifi' || h.type === 'omada') {
+    for (const x of data.devices || []) {
+      const L = { ...D, network_device: x.name };
+      put('lookout_network_device_up', 'Whether the access point, switch or gateway is online', L, x.online);
+      if (!x.online) continue;
+      put('lookout_network_device_cpu_ratio', 'CPU in use (0–1)', L, ratio(x.cpu));
+      put('lookout_network_device_memory_ratio', 'Memory in use (0–1)', L, ratio(x.mem));
+      put('lookout_network_device_clients', 'Clients connected', L, x.clients);
+      put('lookout_network_device_poe_watts', 'Power over Ethernet delivered', L, x.poe?.usedW);
+      if (x.temps?.length) put('lookout_network_device_temperature_celsius', 'Hottest sensor', L, Math.max(...x.temps.map((t) => t.value)));
+    }
+    const inet = data.health?.internet;
+    if (inet) {
+      put('lookout_internet_up', 'Whether the gateway reports the internet as working', D, inet.status === 'ok');
+      put('lookout_internet_latency_seconds', 'Latency to the internet, as the gateway measures it', D, inet.latencyMs != null ? inet.latencyMs / 1000 : null);
+      put('lookout_internet_receive_bits_per_second', 'Internet traffic in now', D, inet.rxMbps != null ? inet.rxMbps * 1e6 : null);
+      put('lookout_internet_transmit_bits_per_second', 'Internet traffic out now', D, inet.txMbps != null ? inet.txMbps * 1e6 : null);
+    }
+  }
+}
+
+// A short summary for Home Assistant: names become keys ("Core Switch" -> core_switch), so a
+// template reads value_json.devices.core_switch.up
+function metricsJson() {
+  const slug = (s, used) => {
+    const base = String(s).toLowerCase().normalize('NFKD').replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'item';
+    let k = base;
+    for (let i = 2; used.has(k); i++) k = `${base}_${i}`;
+    used.add(k);
+    return k;
+  };
+  const ps = powerSummary();
+  const att = attentionList();
+  const live = att.filter((a) => !a.muted && !a.behind && !a.maintenance);
+  const round = (v, n = 2) => (typeof v === 'number' ? Math.round(v * 10 ** n) / 10 ** n : null);
+  const devices = {};
+  const usedD = new Set();
+  for (const d of config.devices.filter((x) => !x.hidden)) {
+    const hosts = deviceHosts(d);
+    const rs = hosts.map((h) => results.get(h.id)).filter(Boolean);
+    const agents = config.agents.filter((a) => a.deviceId === d.id && !a.guest && !a.removedAt);
+    if (!rs.length && !agents.length) continue;
+    const src = powerSourceOf(d);
+    const watts = src.kind === 'idrac' || src.kind === 'plug' ? results.get(src.host.id)?.data?.watts ?? null : null;
+    const idrac = hosts.find((h) => h.type === 'idrac');
+    const temps = idrac ? results.get(idrac.id)?.data?.temps || [] : [];
+    const ups = rs.map((r) => r.data?.ups).find(Boolean);
+    devices[slug(d.name, usedD)] = {
+      name: d.name, kind: d.kind,
+      up: rs.some((r) => r.ok) || agents.some((a) => agentState(a).ok),
+      problems: live.filter((a) => a.deviceId === d.id).length,
+      ...(watts != null ? { watts: round(watts, 1) } : {}),
+      ...(temps.length ? { temp_max: Math.max(...temps.map((t) => t.celsius)) } : {}),
+      ...(ups ? { ups: { on_battery: ups.onBattery, charge: ups.charge, runtime_min: ups.runtimeMin, load: ups.loadPct } } : {}),
+    };
+  }
+  const services = {};
+  const usedS = new Set();
+  for (const s of config.services.filter((x) => !x.hidden)) {
+    const c = serviceResults.get(s.id)?.check;
+    if (c) services[slug(s.name, usedS)] = { name: s.name, up: c.up, ms: c.ms ?? null };
+  }
+  const inet = config.hosts.filter((h) => h.type === 'unifi').map((h) => results.get(h.id)?.data?.health?.internet).find(Boolean);
+  return {
+    generated_at: new Date().toISOString(),
+    problems: { critical: live.filter((a) => a.severity === 'critical').length, warning: live.filter((a) => a.severity === 'warning').length,
+      list: live.slice(0, 10).map((a) => ({ severity: a.severity, subject: a.subject, text: a.text })) },
+    power: { watts: round(ps.watts, 1), price_now: ps.priceNow ? round(ps.priceNow.total / 100, 3) : null,
+      today_kwh: round(ps.usage.today.kwh), today_cost: round(ps.usage.today.cost), month_kwh: round(ps.usage.month.kwh), month_cost: round(ps.usage.month.cost), currency: 'NOK' },
+    services: { up: Object.values(services).filter((x) => x.up).length, down: Object.values(services).filter((x) => !x.up).length, ...services },
+    internet: inet ? { up: inet.status === 'ok', latency_ms: inet.latencyMs, down_mbps: round(inet.rxMbps), up_mbps: round(inet.txMbps) } : null,
+    devices,
+  };
+}
+
+async function handleMetrics(req, res, json) {
+  if (!(await metricsAuth(req, res))) return;
+  const body = Buffer.from(json ? JSON.stringify(metricsJson()) : metricsText());
+  res.writeHead(200, { 'Content-Type': json ? 'application/json; charset=utf-8' : 'text/plain; version=0.0.4; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+  res.end(body);
+}
+
+// What Admin shows to set Prometheus and Home Assistant up with a token
+function metricsSetup(t, token, req) {
+  const base = config.settings.dashboard.linkUrl || `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`;
+  const u = new URL(base);
+  const secret = token ? `${t.id}.${token}` : `${t.id}.<the token>`;
+  return {
+    url: `${u.origin}/metrics`,
+    jsonUrl: `${u.origin}/metrics.json`,
+    prometheus: [
+      'scrape_configs:',
+      '  - job_name: homelab-lookout',
+      '    scrape_interval: 30s',
+      `    scheme: ${u.protocol.replace(':', '')}`,
+      '    authorization:',
+      `      credentials: ${secret}`,
+      ...(u.protocol === 'https:' ? ['    tls_config:', '      ca_file: /etc/prometheus/lookout-ca.crt  # this dashboard\'s CA (from its sign-in page); not needed behind a reverse proxy with a public certificate'] : []),
+      '    static_configs:',
+      `      - targets: ['${u.host}']`,
+    ].join('\n'),
+    homeAssistant: [
+      '# configuration.yaml (put the token in secrets.yaml as lookout_metrics: "Bearer ' + secret + '")',
+      'rest:',
+      `  - resource: ${u.origin}/metrics.json`,
+      '    scan_interval: 30',
+      '    headers:',
+      '      Authorization: !secret lookout_metrics',
+      ...(u.protocol === 'https:' ? ['    verify_ssl: true  # with a reverse proxy and a public certificate; else add this dashboard\'s CA to Home Assistant'] : []),
+      '    sensor:',
+      '      - name: Lookout power',
+      '        value_template: "{{ value_json.power.watts }}"',
+      '        unit_of_measurement: W',
+      '        device_class: power',
+      '      - name: Lookout energy today',
+      '        value_template: "{{ value_json.power.today_kwh }}"',
+      '        unit_of_measurement: kWh',
+      '        device_class: energy',
+      '        state_class: total_increasing',
+      '      - name: Lookout problems',
+      '        value_template: "{{ value_json.problems.critical + value_json.problems.warning }}"',
+      '        json_attributes_path: "$.problems"',
+      '        json_attributes: [list]',
+      '    binary_sensor:',
+      '      - name: Lookout services all up',
+      '        value_template: "{{ value_json.services.down == 0 }}"',
+    ].join('\n'),
+  };
 }
 
 async function main() {
