@@ -169,6 +169,7 @@ async function main() {
     { file: 'test/history.test.js', fresh: true, seed: require('./history.test.js').seed },
     { file: 'test/rack.test.js', fresh: true, seed: require('./rack.test.js').seed },
     { file: 'test/updates.test.js', fresh: true },
+    { file: 'test/lookout-updates.test.js', fresh: true, env: { LOOKOUT_GITHUB_API: 'https://127.0.0.1:18443/gh', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), NODE_EXTRA_CA_CERTS: path.join(tmp, 'cert.pem'), UPDATE_CHECK_GAP_S: '1', LOOKOUT_VERSION_FILE: path.join(tmp, 'VERSION-lookout') } },
     { file: 'test/docs-history.test.js', fresh: true, seed: require('./docs-history.test.js').seed },
     { file: 'test/metrics.test.js', fresh: true },
     { file: 'test/setup.test.js', fresh: true, noAdmin: true },
@@ -188,7 +189,7 @@ async function main() {
     }
     const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed, 'energy.ui.js': require('./energy.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
-      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' } }[f], noAdmin: f === 'setup.ui.js', skip: !playwright && 'Playwright not installed' });
+      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' }, 'lookout-updates.ui.js': { LOOKOUT_GITHUB_API: 'https://127.0.0.1:18443/gh', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), UPDATE_CHECK_GAP_S: '1', LOOKOUT_VERSION_FILE: path.join(tmp, 'VERSION-lookout-ui') } }[f], noAdmin: f === 'setup.ui.js', skip: !playwright && 'Playwright not installed' });
   }
 
   let passed = 0;

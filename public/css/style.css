@@ -2419,3 +2419,8 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .metrics-new h4 { margin: 10px 0 0; }
 .metrics-new .howto-code { white-space: pre; padding-right: 70px; }
 .metrics-new .howto-code.wrap { white-space: pre-wrap; word-break: break-all; }
+
+/* Updates: Homelab Lookout's own row */
+.upd-howto { color: var(--text-2); overflow-wrap: anywhere; }
+.upd-notes-text { overflow-wrap: anywhere; max-height: 22em; overflow-y: auto; margin-top: 6px; color: var(--text-2); }
+.upd-notes-text h2, .upd-notes-text h3 { font-size: 14px; margin: 8px 0 4px; }

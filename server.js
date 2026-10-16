@@ -129,6 +129,7 @@ const DEFAULT_SETTINGS = {
     // a public page at /status with only up/down and uptime of the services: no addresses or hardware
     statusPage: { enabled: false, title: '' },
     linkUrl: '', // where links in alert messages point; empty = this server's own address
+    lookoutUpdates: true, // ask GitHub once a day whether a newer Homelab Lookout release is out
     trustedProxies: [], // reverse proxies whose X-Forwarded-For / -Proto are believed
   },
   power: {
@@ -987,6 +988,7 @@ function validateDashboard(d) {
     statusPage,
     linkUrl: linkUrl.replace(/\/$/, ''),
     trustedProxies,
+    lookoutUpdates: d.lookoutUpdates !== false,
   };
 }
 
@@ -4980,14 +4982,15 @@ function loadHistory() {
 const NODE_END = { 18: '2025-04-30', 19: '2023-06-01', 20: '2026-04-30', 21: '2024-06-01', 22: '2027-04-30', 23: '2025-06-01', 24: '2028-04-30', 25: '2026-06-01' };
 function runtimeInfo() {
   const end = NODE_END[parseInt(process.versions.node, 10)] || null;
-  const [commit, deployedAt] = String(readText(path.join(__dirname, 'VERSION')) || '').split('\n');
+  const { commit, deployedAt, version } = runningVersion();
   return {
     node: process.versions.node,
     nodeEnd: end,
     nodeSupported: !end || Date.now() <= Date.parse(end),
     history: histDb ? 'sqlite' : 'json',
     install: CONTAINER ? 'docker' : 'service',
-    version: /^[0-9a-f]{40}$/.test(commit || '') ? { commit: commit.slice(0, 7), deployedAt: Date.parse(deployedAt) || null } : null,
+    version: commit ? { commit: commit.slice(0, 7), deployedAt, release: version } : null,
+    repo: LOOKOUT_REPO,
   };
 }
 function readText(file, max = 200) {
@@ -6803,7 +6806,7 @@ function isPublicAddress(ip) {
   return !(v === '::' || v === '::1' || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith('ff'));
 }
 
-async function fetchPublic(link, { accept = '*/*', maxBytes = 1 << 20, hops = 4 } = {}) {
+async function fetchPublic(link, { accept = '*/*', maxBytes = 1 << 20, hops = 4, agent = 'homelab-dashboard (logo lookup)' } = {}) {
   let url;
   try {
     url = new URL(link);
@@ -6827,7 +6830,7 @@ async function fetchPublic(link, { accept = '*/*', maxBytes = 1 << 20, hops = 4 
       t.once('secureConnect', () => (clearTimeout(timer), resolve(t)));
       t.once('error', (e) => (clearTimeout(timer), reject(friendlyNetError(e))));
     });
-    const r = await httpsRequest(sock, `${host.includes(':') ? `[${host}]` : host}:${port}`, { path: `${url.pathname}${url.search}`, headers: { Accept: accept, 'User-Agent': 'homelab-dashboard (logo lookup)' }, binary: true, timeoutMs: 8000, maxBytes });
+    const r = await httpsRequest(sock, `${host.includes(':') ? `[${host}]` : host}:${port}`, { path: `${url.pathname}${url.search}`, headers: { Accept: accept, 'User-Agent': agent }, binary: true, timeoutMs: 8000, maxBytes });
     if ([301, 302, 303, 307, 308].includes(r.status) && r.headers.location) {
       url = new URL(r.headers.location, url);
       continue;
@@ -8347,7 +8350,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   // --- Updates (admin only: versions help an attacker) ---
   if (p === '/api/updates' && m === 'GET') return sendJson(res, 200, { ...updatesPayload(), readOnly: Boolean(session.readOnly), title: config.settings.dashboard.title });
   if (p === '/api/admin/updates/check' && m === 'POST') {
-    if (!updatesRunning && Date.now() - updatesManualAt < 60000) throw Object.assign(new UserError('Checked less than a minute ago; try again shortly'), { status: 429 });
+    if (!updatesRunning && Date.now() - updatesManualAt < UPDATE_CHECK_GAP_MS) throw Object.assign(new UserError('Checked less than a minute ago; try again shortly'), { status: 429 });
     updatesManualAt = Date.now();
     await checkUpdates();
     return sendJson(res, 200, updatesPayload());
@@ -10379,6 +10382,7 @@ const UPDATE_HOUR = 4; // 04:00–04:59 Europe/Oslo, after the nightly backup
 let updates = { checkedAt: null, lastAutoDate: null, items: [] };
 let updatesRunning = null; // promise while a check runs
 let updatesManualAt = 0;
+const UPDATE_CHECK_GAP_MS = (Number(process.env.UPDATE_CHECK_GAP_S) || 60) * 1000; // Check now, at most this often
 
 const RELEASE_NOTES = {
   sonarr: 'https://github.com/Sonarr/Sonarr/releases', radarr: 'https://github.com/Radarr/Radarr/releases', lidarr: 'https://github.com/Lidarr/Lidarr/releases',
@@ -10535,6 +10539,63 @@ async function serviceUpdate(svc) {
 
 const updateError = (e) => (e instanceof UserError ? e.message : 'Check failed').slice(0, 300);
 
+// --- Homelab Lookout's own updates ---
+// The running version is the commit it was built from (VERSION: commit, build time and, for a
+// release image, its version). Once a day GitHub is asked for the latest release and compares it
+// with that commit: a release with changes this one lacks is an update. It never updates itself.
+const LOOKOUT_REPO = /^[\w.-]+\/[\w.-]+$/.test(process.env.LOOKOUT_REPO || '') ? process.env.LOOKOUT_REPO : 'Quant-0/homelab-lookout';
+const GITHUB_API = process.env.LOOKOUT_GITHUB_API || 'https://api.github.com';
+const VERSION_FILE = process.env.LOOKOUT_VERSION_FILE || path.join(__dirname, 'VERSION');
+function runningVersion() {
+  const [commit, built, version] = String(readText(VERSION_FILE) || '').split('\n').map((x) => x.trim());
+  return {
+    commit: /^[0-9a-f]{40}$/.test(commit || '') && !/^0+$/.test(commit) ? commit : null,
+    deployedAt: Date.parse(built) || null,
+    version: /^\d{1,4}\.\d{1,4}\.\d{1,4}([-+][\w.]{1,40})?$/.test(version || '') ? version : null,
+  };
+}
+
+const lookoutHowTo = () => (CONTAINER
+  ? 'Portainer: Stacks → lookout → Editor → Update the stack, with Re-pull image and redeploy. Or: docker compose pull && docker compose up -d'
+  : 'On the server: cd homelab-lookout && git pull && sudo sh deploy/install.sh (it keeps your settings)');
+
+async function lookoutUpdate() {
+  const run = runningVersion();
+  const base = { key: 'lookout', source: 'lookout', ownerType: 'lookout', owner: null, part: 'This dashboard', url: `https://github.com/${LOOKOUT_REPO}/releases` };
+  if (!run.commit) return { ...base, current: 'development copy', available: false, detail: 'Not built or deployed from a commit, so it is not compared with releases' };
+  const short = run.commit.slice(0, 7);
+  const gh = async (p) => JSON.parse((await fetchPublic(`${GITHUB_API}/repos/${LOOKOUT_REPO}${p}`, { accept: 'application/vnd.github+json', maxBytes: 4 << 20, agent: 'homelab-lookout (update check)' })).body.toString('utf8'));
+  let rel;
+  try {
+    rel = await gh('/releases/latest');
+  } catch (e) {
+    if (/HTTP 404/.test(e.message)) return { ...base, current: run.version || short, available: false, detail: 'No release has been published yet' };
+    throw e;
+  }
+  const tag = String(rel?.tag_name || '');
+  if (!/^[\w.+-]{1,40}$/.test(tag)) throw new UserError('Unexpected answer from GitHub');
+  let cmp;
+  try {
+    cmp = await gh(`/compare/${run.commit}...${encodeURIComponent(tag)}`);
+  } catch (e) {
+    if (/HTTP 404/.test(e.message)) return { ...base, current: short, latest: tag, available: false, detail: `This version (${short}) is not on GitHub, so it can't be compared with ${tag}` };
+    throw e;
+  }
+  const ahead = Number(cmp?.ahead_by) || 0; // changes in the release that this one lacks
+  const behind = Number(cmp?.behind_by) || 0; // changes here that the release doesn't have
+  const available = ahead > 0;
+  const current = cmp?.status === 'identical' ? tag : run.version ? `${run.version} (${short})` : behind && !ahead ? `${short}, ${behind} change${behind === 1 ? '' : 's'} newer than ${tag}` : short;
+  const notes = String(rel.body || '').replace(/\r/g, '').trim();
+  return {
+    ...base, current, latest: tag, available,
+    url: /^https:\/\/github\.com\//.test(rel.html_url || '') ? rel.html_url : base.url,
+    detail: available ? `${ahead} change${ahead === 1 ? '' : 's'} since this version` : null,
+    howTo: available ? lookoutHowTo() : null,
+    notes: available ? (notes.length > 4000 ? `${notes.slice(0, 3997)}…` : notes) || null : null,
+    released: Date.parse(rel.published_at) || null,
+  };
+}
+
 async function runUpdateChecks() {
   const jobs = [];
   const now = Date.now();
@@ -10556,6 +10617,9 @@ async function runUpdateChecks() {
       (list) => list.map((r) => ({ ...base, key: `truenas:${h.id}${r.sub ? `:${r.sub}` : ''}`, ...r })),
       (e) => [{ ...base, key: `truenas:${h.id}`, part: 'TrueNAS', url: RELEASE_NOTES.truenas, error: updateError(e) }]));
   }
+  if (config.settings.dashboard.lookoutUpdates !== false) {
+    jobs.push(withTimeout(lookoutUpdate(), 30000, 'Update check').then((r) => [r], (e) => [{ key: 'lookout', source: 'lookout', ownerType: 'lookout', owner: null, part: 'This dashboard', current: runningVersion().version || runningVersion().commit?.slice(0, 7) || null, error: updateError(e) }]));
+  }
   for (const svc of config.services.filter((x) => x.connection && x.integration && UPDATE_CHECKS[x.integration.type])) {
     const base = { key: `svc:${svc.id}`, source: svc.integration.type, ownerType: 'service', owner: svc.id, part: INTEGRATIONS[svc.integration.type].label, url: RELEASE_NOTES[svc.integration.type] || null };
     jobs.push(withTimeout(serviceUpdate(svc), 30000, 'Update check').then((r) => [{ ...base, ...r }], (e) => [{ ...base, error: updateError(e) }]));
@@ -10565,6 +10629,9 @@ async function runUpdateChecks() {
     current: cleanVersion(it.current), latest: cleanVersion(it.latest), available: Boolean(it.available), checkedAt: now,
     url: it.url && /^https:\/\//.test(it.url) ? it.url : null,
   }));
+  const was = updates.items.find((x) => x.key === 'lookout');
+  const own = items.find((x) => x.key === 'lookout');
+  if (own?.available && own.latest !== (was?.available ? was.latest : null)) event('system', `Homelab Lookout ${own.latest} is available (running ${own.current})`);
   updates = { ...updates, checkedAt: now, items };
   writeJsonAtomic(UPDATES_FILE, updates);
   const n = items.filter((x) => x.available).length;
@@ -10619,6 +10686,10 @@ function updatesPayload() {
       list: (st.data.updates.packages || []).map((x) => ({ name: `${x.name}${x.security ? ' (security)' : ''}`, current: null, latest: x.version })), checkedAt: st.at });
   }
   for (const it of updates.items) {
+    if (it.ownerType === 'lookout') {
+      if (config.settings.dashboard.lookoutUpdates !== false) rows.push({ ...it, name: 'Homelab Lookout' });
+      continue;
+    }
     const svc = it.ownerType === 'service' ? config.services.find((x) => x.id === it.owner) : null;
     if (it.ownerType === 'service' && !svc) continue; // removed since the check
     if (it.ownerType === 'device' && !config.devices.some((d) => d.id === it.owner)) continue;

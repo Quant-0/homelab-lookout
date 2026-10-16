@@ -1,9 +1,12 @@
-# The Docker image: tested on every pull request to main, published to ghcr.io on every merge.
-# Pull requests build it for amd64 and arm64 and start the amd64 image the way docker-compose.yml
-# does (test/container.smoke.js); a merge to main pushes both to
-# ghcr.io/quant-0/homelab-lookout (:latest and :sha-<commit>) with a signed build attestation, so
-# `gh attestation verify` can show the image was built here (made only while the repository is
-# public: GitHub offers attestations for private repositories only on Enterprise Cloud).
+# The Docker image: tested on every pull request to main, published to ghcr.io on merges and
+# releases. Pull requests build it for amd64 and arm64 and start the amd64 image the way
+# docker-compose.yml does (test/container.smoke.js). Published to ghcr.io/quant-0/homelab-lookout:
+#   a release v1.2.3   :1.2.3, :1.2 and :latest   (what the compose file uses)
+#   a merge to main    :edge                       (the newest, before a release)
+#   both               :sha-<commit>
+# with a signed build attestation, so `gh attestation verify` can show the image was built here
+# (made only while the repository is public: GitHub offers attestations for private repositories
+# only on Enterprise Cloud).
 #
 # Actions are pinned to commits (the version is in the comment), so a moved tag can't change
 # what runs here.
@@ -14,6 +17,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -56,7 +61,7 @@ jobs:
         run: sudo env PATH="$PATH" ENGINE=docker node test/container.smoke.js lookout:test
 
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -76,6 +81,20 @@ jobs:
       - name: When this commit was made (the image's build time)
         id: when
         run: echo "built=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+      - name: Which tags (a release v1.2.3, or a merge to main)
+        id: tags
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = release ]; then
+            v=${GITHUB_REF_NAME#v}
+            if ! printf '%s' "$v" | grep -Eq '^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$'; then
+              echo "A release's tag must look like v1.2.3 (got: $GITHUB_REF_NAME)"; exit 1
+            fi
+            { echo "version=$v"; echo "list<<EOF"; echo "$IMAGE:$v"; echo "$IMAGE:${v%.*}"; echo "$IMAGE:latest"; echo "$IMAGE:sha-$GITHUB_SHA"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "version="; echo "list<<EOF"; echo "$IMAGE:edge"; echo "$IMAGE:sha-$GITHUB_SHA"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and push (amd64 and arm64)
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -83,16 +102,16 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          tags: ${{ steps.tags.outputs.list }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=Homelab Lookout
+            org.opencontainers.image.version=${{ steps.tags.outputs.version || 'edge' }}
           build-args: |
             LOOKOUT_COMMIT=${{ github.sha }}
             LOOKOUT_BUILT=${{ steps.when.outputs.built }}
+            LOOKOUT_VERSION=${{ steps.tags.outputs.version }}
       - name: Attest where it was built
         if: github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

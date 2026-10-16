@@ -19,6 +19,7 @@ function versions(r) {
 let dash = null;
 let icons = new Map();
 function thumb(r) {
+  if (r.source === 'lookout') return el('span', { class: 'upd-thumb' }, el('img', { class: 'svc-icon', src: '/logo', alt: '' }));
   if (r.ownerType === 'device' && dash) {
     const dev = dash.devices.find((x) => x.id === r.owner);
     const art = dev && Rack.deviceArt(dev, dash);
@@ -36,6 +37,9 @@ function row(r) {
       el('div', { class: 'upd-name' }, el('strong', { text: r.name || r.part }), r.name && r.name !== r.part ? el('span', { class: 'muted', text: r.part }) : null),
       r.error ? el('span', { class: 'small msg error', text: r.error }) : versions(r),
       r.detail ? el('span', { class: 'small muted', text: r.detail }) : null,
+      // Homelab Lookout itself: how to update, and what's new in the release
+      r.howTo ? el('span', { class: 'small upd-howto', text: r.howTo }) : null,
+      r.notes ? el('details', { class: 'upd-list' }, el('summary', { text: `What's new in ${r.latest}` }), el('div', { class: 'upd-notes-text small doc-body' }, MD.render(r.notes))) : null,
       r.list?.length ? el('details', { class: 'upd-list' },
         el('summary', { text: r.source === 'proxmox' ? `Show the ${r.list.length} package${r.list.length === 1 ? '' : 's'}` : `Show ${r.list.length}` }),
         el('div', { class: 'table-wrap' }, el('table', null,

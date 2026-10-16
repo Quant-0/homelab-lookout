@@ -23,7 +23,10 @@ One list of what can be updated, with the installed and the new version and rele
 - Proxmox packages (pve-manager, kernel, QEMU…; read with the read-only token),
 - TrueNAS and its apps, UniFi firmware, Synology DSM,
 - Sonarr, Radarr, Lidarr, Prowlarr, Seerr, Pi-hole, Paperless-ngx, authentik, Portainer, Home Assistant, Tautulli, Plex and AdGuard Home,
-- the packages waiting on each machine with a [Lookout agent](linux-agents.md), with security fixes and *reboot needed*.
+- the packages waiting on each machine with a [Lookout agent](linux-agents.md), with security fixes and *reboot needed*,
+- **Homelab Lookout itself**: a new release, with how many changes it brings, *What's new* from its release notes, and how to update the way it runs here (Docker or directly on Linux).
+
+For Lookout's own updates, GitHub is asked once a day for the latest release of [Quant-0/homelab-lookout](https://github.com/Quant-0/homelab-lookout/releases), and GitHub compares it with the commit this dashboard was built from. A release with changes this one lacks is an update. A build that is the same or newer (like the `:edge` image) is up to date. GitHub sees the server's public address when it is asked; **Admin → Server** has a switch to turn the check off, and then nothing is sent.
 
 It is checked every night at 04:00; **Check now** checks right away. **Nothing is ever installed from the dashboard**: update on the device itself, then press Check now. Home shows the count, and a device's details say *Update available*. Visitors to a public dashboard never see versions.
 
