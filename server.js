@@ -7667,7 +7667,9 @@ async function handleApi(req, res, url, session, viewer = null) {
     const what = changesText(before, config.settings);
     if (what) event('settings', `Settings changed: ${what.split('; ').map((x) => x.split(':')[0]).slice(0, 4).join(', ')}${what.split('; ').length > 4 ? ', …' : ''}`, what);
     else requestCtx.getStore().logged = true; // saved without changes
-    return sendJson(res, 200, { settings: config.settings, warning: addressWarning(config.settings.dashboard.linkUrl) });
+    // only about the address itself, when it or the proxies were just changed
+    const addressChanged = (next.dashboard.linkUrl || '') !== (before.dashboard.linkUrl || '') || JSON.stringify(next.dashboard.trustedProxies || []) !== JSON.stringify(before.dashboard.trustedProxies || []);
+    return sendJson(res, 200, { settings: config.settings, warning: addressChanged ? addressWarning(config.settings.dashboard.linkUrl) : null });
   }
 
   if (p === '/api/admin/hosts' && m === 'POST') {
@@ -10260,14 +10262,15 @@ function ackTokenOk(id, t) {
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
-// A dashboard address the certificate doesn't cover: browsers would refuse it
+// A dashboard address the certificate doesn't cover: browsers would refuse it. Not when a reverse
+// proxy is set up: then the proxy shows its own certificate for the name.
 function addressWarning(link) {
-  if (!link || !link.startsWith('https:') || !tlsInfo) return null;
+  if (!link || !link.startsWith('https:') || !tlsInfo || (config.settings.dashboard.trustedProxies || []).length) return null;
   const u = new URL(link);
   const name = u.hostname.replace(/^\[|\]$/g, '');
   const x = new crypto.X509Certificate(tlsInfo.cert);
   const covered = net.isIP(name) ? x.checkIP(name) : x.checkHost(name);
-  return covered ? null : `The certificate does not cover ${name}, so browsers will warn on that address. For a domain name, put a reverse proxy with its own certificate in front (see Setting up a proxy below)${CONTAINER ? ', or add the name to LOOKOUT_NAMES in the compose file and make a new CA' : ''}.`;
+  return covered ? null : `The dashboard's own certificate doesn't cover ${name}, so browsers will warn on that address. Put a reverse proxy with its own certificate in front and add it under Reverse proxies (Admin → Server → Address & reverse proxy shows how)${CONTAINER ? ', or add the name to LOOKOUT_NAMES in the compose file and make a new CA' : ''}.`;
 }
 
 // Where links in messages point: the address set in Admin, or this server's own

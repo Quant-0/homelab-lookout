@@ -84,6 +84,20 @@ const portOpen = (port) => new Promise((res) => { const s = net.connect({ host: 
   // --- validation and lockout protection ---
   const cur = r.json.settings;
   const put = (s) => H('PUT', '/api/admin/server', s);
+
+  // --- the dashboard address and this certificate ---
+  const dash = (await H('GET', '/api/admin/config')).json.settings.dashboard;
+  r = await H('PUT', '/api/admin/settings', { dashboard: { ...dash, linkUrl: 'https://lookout.example.test' } });
+  ok(r.status === 200 && /certificate doesn't cover lookout\.example\.test/.test(r.json.warning) && /Admin → Server → Address & reverse proxy/.test(r.json.warning), 'an address the certificate does not cover is pointed out, saying where to fix it');
+  r = await H('PUT', '/api/admin/settings', { dashboard: { ...r.json.settings.dashboard, refreshSeconds: 45 } });
+  ok(r.status === 200 && !r.json.warning, 'saving something else on the Dashboard tab says nothing about it');
+  r = await H('PUT', '/api/admin/settings', { dashboard: { ...r.json.settings.dashboard, trustedProxies: '192.0.2.10' } });
+  ok(r.status === 200 && !r.json.warning, 'with a reverse proxy (which shows its own certificate): no warning');
+  r = await H('PUT', '/api/admin/settings', { dashboard: { ...r.json.settings.dashboard, linkUrl: 'https://lookout2.example.test' } });
+  ok(r.status === 200 && !r.json.warning, 'not even when the address changes');
+  r = await H('PUT', '/api/admin/settings', { dashboard: { ...r.json.settings.dashboard, linkUrl: '', trustedProxies: '', refreshSeconds: dash.refreshSeconds } });
+  ok(r.status === 200, 'back as it was');
+
   r = await put({ https: { ...cur.https, enabled: false }, http: { ...cur.http, enabled: false } });
   ok(r.status === 400 && /At least one/.test(r.json.error), 'cannot turn both off');
   r = await put({ https: { ...cur.https, enabled: false }, http: { ...cur.http, mode: 'redirect' } });
