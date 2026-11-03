@@ -496,6 +496,7 @@ function loadConfig(raw = readJson(CONFIG_FILE, {})) {
     maintenance: Array.isArray(raw.maintenance) ? raw.maintenance : [], // [{ id, name, targets, schedule }]
     agents: Array.isArray(raw.agents) ? raw.agents : [], // [{ id, name, tokenHash, deviceId, guest, watch, updates, interval, createdAt }]
     metricsTokens: Array.isArray(raw.metricsTokens) ? raw.metricsTokens : [], // [{ id, name, tokenHash, allow, createdAt }]
+    claude: normalizeClaude(raw.claude), // { reporters: [{ id, name, tokenHash, limits, createdAt }], adminKey, status: { enabled, alert } }
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
@@ -590,7 +591,7 @@ const CONFIG_HISTORY_DAYS = 90;
 const CONFIG_HISTORY_MAX = 500;
 const CONFIG_HISTORY_BYTES = 20e6;
 const HISTORY_LISTS = ['devices', 'hosts', 'services', 'checkins', 'maintenance', 'agents', 'metricsTokens'];
-const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout'];
+const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout', 'claude'];
 let configHistory = { last: null, versions: [] };
 let historyAuto = null; // texts of a change made outside a request, recorded right after
 
@@ -603,7 +604,7 @@ function configParts(c) {
   for (const s of ['dashboard', 'power', 'appearance']) parts[`settings/${s}`] = { value: c.settings?.[s] ?? null };
   for (const s of HISTORY_SECTIONS) parts[s] = { value: c[s] ?? null };
   if (c.backup) {
-    const { history, lastAutoDate, ...rest } = c.backup;
+    const { history, lastAutoDate, lastAutoSlot, ...rest } = c.backup;
     parts.backup = { value: rest };
   }
   return JSON.parse(JSON.stringify(parts));
@@ -680,7 +681,7 @@ function loadConfigHistory() {
 
 // What a part is, for people: "Device atlas", "Power settings"
 const PART_NAMES = { devices: 'Device', hosts: 'Connection', services: 'Service', checkins: 'Check-in', maintenance: 'Maintenance window', agents: 'Agent', channels: 'Alert channel', metricsTokens: 'Metrics token' };
-const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings' };
+const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings', claude: 'Claude settings' };
 function partLabel(k, value) {
   const [list] = k.split('/');
   if (!PART_NAMES[list]) return SECTION_NAMES[k] || k;
@@ -739,7 +740,7 @@ function applyConfigParts(parts) {
       else arr.splice(Math.min(Number.isInteger(pos) ? pos : arr.length, arr.length), 0, value);
     } else if (k === 'alerts') Object.assign(raw.alerts, value || {});
     else if (list === 'settings') raw.settings[id] = value;
-    else if (k === 'backup') raw.backup = { ...(value || {}), history: raw.backup.history, lastAutoDate: raw.backup.lastAutoDate };
+    else if (k === 'backup') raw.backup = { ...(value || {}), history: raw.backup.history, lastAutoDate: raw.backup.lastAutoDate, lastAutoSlot: raw.backup.lastAutoSlot };
     else if (HISTORY_SECTIONS.includes(k)) raw[k] = value;
   }
   const keep = config;
@@ -769,6 +770,7 @@ function configReplaced() {
   unifiSessions.clear();
   svcSessions.clear();
   schedulePolling();
+  scheduleClaude();
 }
 
 // Undo one version: its parts as they were before it. A part changed again since is a conflict,
@@ -1382,11 +1384,12 @@ function syncUnifiDevices(h, devices) {
 }
 
 // The wall display: which panels, in what order and size, and which devices and services it shows
-const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices'];
+const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices', 'claude'];
 const WALL_SIZES = ['normal', 'wide', 'tall', 'big'];
 const DEFAULT_WALL = {
-  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
-  hidden: ['devices'],
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }],
+  hidden: ['devices', 'claude'],
+  claude: { style: 'number', stats: ['tokens', 'limits', 'status'] }, // the Claude panel: how it looks and what it shows
   showServices: true,
   services: null, // null = the same as Home
   devices: null, // null = every device
@@ -1437,11 +1440,12 @@ function validateWall(b) {
     seen.add(x.id);
     panels.push({ id: x.id, size: x.size });
   }
-  for (const d of DEFAULT_WALL.panels) if (!seen.has(d.id)) panels.push({ ...d }); // panels added in later versions
+  const added = DEFAULT_WALL.panels.filter((d) => !seen.has(d.id)); // panels added in later versions: as by default
+  for (const d of added) panels.push({ ...d });
   const ids = (v, list, max) => (v === null || v === undefined ? null : Array.isArray(v) ? [...new Set(v.filter((id) => typeof id === 'string' && list.some((x) => x.id === id)))].slice(0, max) : null);
   return {
     panels,
-    hidden: [...new Set((Array.isArray(b.hidden) ? b.hidden : []).filter((id) => WALL_PANELS.includes(id)))],
+    hidden: [...new Set([...(Array.isArray(b.hidden) ? b.hidden : []), ...added.filter((d) => DEFAULT_WALL.hidden.includes(d.id)).map((d) => d.id)].filter((id) => WALL_PANELS.includes(id)))],
     showServices: b.showServices !== false,
     services: ids(b.services, config.services, 60),
     devices: ids(b.devices, config.devices, 100),
@@ -1449,6 +1453,10 @@ function validateWall(b) {
     cables: b.cables === true,
     logo: b.logo !== false,
     vmCount: b.vmCount !== false,
+    claude: {
+      style: CLAUDE_WALL_STYLES.includes(b.claude?.style) ? b.claude.style : DEFAULT_WALL.claude.style,
+      stats: Array.isArray(b.claude?.stats) ? CLAUDE_STATS.filter((k) => b.claude.stats.includes(k)) : [...DEFAULT_WALL.claude.stats],
+    },
   };
 }
 
@@ -1461,6 +1469,10 @@ function wallLayout() {
   }
 }
 
+// The Claude tile on Home: shown or not, and which numbers it has
+const CLAUDE_HOME_STATS = ['tokens', 'cost', 'limits', 'status'];
+const claudeHomeLayout = (x) => ({ hidden: x?.hidden === true, stats: Array.isArray(x?.stats) ? CLAUDE_STATS.filter((k) => x.stats.includes(k)) : [...CLAUDE_HOME_STATS] });
+
 // Home's tiles in an order (v3). Older grid layouts are still read from the config, but not saved.
 function validateLayout(b) {
   if (b === null || b.items === null) return null;
@@ -1472,7 +1484,7 @@ function validateLayout(b) {
     seen.add(i.id);
     return { id: i.id };
   });
-  return { v: 3, items, hidden: [...new Set(hidden)] };
+  return { v: 3, items, hidden: [...new Set(hidden)], claude: claudeHomeLayout(b.claude) };
 }
 
 // ---------------------------------------------------------------------------
@@ -6542,6 +6554,7 @@ function loadStatic() {
     '/static/js/login.js': 'js/login.js',
     '/static/js/dashboard.js': 'js/dashboard.js',
     '/static/js/wall.js': 'js/wall.js',
+    '/static/js/claude.js': 'js/claude.js',
     '/static/js/look.js': 'js/look.js',
     '/static/js/rack.js': 'js/rack.js',
     '/static/js/models.js': 'js/models.js',
@@ -7099,6 +7112,7 @@ function forVisitors(payload) {
       guests: h.data.guests.map((g) => (g.agent ? { ...g, agent: { ...g.agent, ips: [], os: null } } : g)),
     },
   } : h));
+  payload.claude = null; // how much Claude is used is the owner's own business
   return payload;
 }
 
@@ -7266,6 +7280,7 @@ function dashboardPayload() {
     // maintenance on now: what it covers, so tiles and cards can say so
     maintenance: activeMaintenance().map((w) => ({ id: w.id, name: w.name, until: w.until, all: w.targets.all, devices: w.targets.devices, services: w.targets.services })),
     services: s.serviceAlerts ? servicesSummary() : null,
+    claude: claudeSummary(),
   };
 }
 
@@ -7786,6 +7801,72 @@ async function handleApi(req, res, url, session, viewer = null) {
       saveConfig();
       recheckAlerts();
       event('devices', `Agent removed: ${a.name}`);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+  // Claude: reporters, the Admin API key and the status page
+  if (p === '/api/admin/claude' && m === 'GET') return sendJson(res, 200, claudeAdminState());
+  if (p === '/api/admin/claude/settings' && m === 'PUT') {
+    const b = await readBody(req);
+    const c = config.claude;
+    const status = { enabled: b.status?.enabled === true, alert: b.status?.alert !== false };
+    const texts = [];
+    if (b.adminKey === null) {
+      if (c.adminKey) texts.push('Claude: Admin API key removed');
+      c.adminKey = null;
+      claudeData.api = null;
+    } else if (typeof b.adminKey === 'string' && b.adminKey.trim()) {
+      const key = validateSecret(b.adminKey.trim());
+      if (!/^sk-ant-[A-Za-z0-9_-]{10,300}$/.test(key)) throw new UserError('That is not an Anthropic API key (they start with sk-ant-)');
+      // checked before it is kept: a wrong key says so here, not an hour later on Home
+      const got = await fetchClaudeApi(key);
+      c.adminKey = encryptSecret({ ...claudeKeyHost(), secret: null }, key);
+      claudeData.api = { at: Date.now(), lastOkAt: Date.now(), error: null, ...got };
+      texts.push('Claude: Admin API key saved');
+    }
+    if (status.enabled !== c.status.enabled || status.alert !== c.status.alert) texts.push(`Claude status page ${status.enabled ? `checked${status.alert ? ', outages under Needs you' : ''}` : 'not checked'}`);
+    c.status = status;
+    if (!status.enabled) claudeData.status = null;
+    saveConfig();
+    saveClaudeData();
+    scheduleClaude();
+    recheckAlerts();
+    for (const t of texts) event('settings', t);
+    return sendJson(res, 200, claudeAdminState());
+  }
+  if (p === '/api/admin/claude/reporters' && m === 'POST') {
+    if (config.claude.reporters.length >= MAX_CLAUDE_REPORTERS) throw new UserError(`At most ${MAX_CLAUDE_REPORTERS} reporters`);
+    const r = { id: crypto.randomUUID(), ...validateClaudeReporter(await readBody(req)), tokenHash: null, createdAt: Date.now() };
+    const token = newAgentToken(r);
+    config.claude.reporters.push(r);
+    saveConfig();
+    event('settings', `Claude reporter added: ${r.name}`);
+    return sendJson(res, 201, { reporter: { id: r.id, name: r.name }, token, commands: claudeCommands(r, token) });
+  }
+  const cr = p.match(/^\/api\/admin\/claude\/reporters\/([0-9a-f-]{36})(\/token)?$/);
+  if (cr) {
+    const r = config.claude.reporters.find((x) => x.id === cr[1]);
+    if (!r) return sendError(res, 404, 'Not found');
+    if (cr[2] && m === 'POST') {
+      const token = newAgentToken(r);
+      saveConfig();
+      event('settings', `Claude reporter ${r.name}: new token (the old one stopped working)`);
+      return sendJson(res, 200, { token, commands: claudeCommands(r, token) });
+    }
+    if (!cr[2] && m === 'PUT') {
+      Object.assign(r, validateClaudeReporter(await readBody(req)));
+      if (!r.limits && claudeData.reporters[r.id]) claudeData.reporters[r.id].limits = null;
+      saveConfig();
+      saveClaudeData();
+      event('settings', `Claude reporter updated: ${r.name}${r.limits ? ' (with plan limits)' : ''}`);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (!cr[2] && m === 'DELETE') {
+      config.claude.reporters = config.claude.reporters.filter((x) => x !== r);
+      delete claudeData.reporters[r.id];
+      saveConfig();
+      saveClaudeData();
+      event('settings', `Claude reporter removed: ${r.name}`);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -8659,9 +8740,7 @@ async function handleApi(req, res, url, session, viewer = null) {
   if (p === '/api/admin/backup' && m === 'GET') return sendJson(res, 200, backupStatus());
   if (p === '/api/admin/backup/settings' && m === 'PUT') {
     const b = await readBody(req);
-    const time = String(b.schedule?.time || '');
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new UserError('Time must be HH:MM');
-    const schedule = { enabled: b.schedule?.enabled === true, time, keep: num(b.schedule?.keep, 1, 100, 'Copies to keep', { int: true }) };
+    const schedule = validateBackupSchedule(b.schedule || {});
     if (typeof b.passphrase === 'string' && b.passphrase) {
       const problem = backupPassphraseProblem(b.passphrase);
       if (problem) throw new UserError(problem);
@@ -8936,6 +9015,19 @@ async function handle(req, res) {
     }
     return sendError(res, 404, 'Not found');
   }
+  // the Claude reporter: its scripts (nothing secret in them) and its reports
+  if (p.startsWith('/claude/')) {
+    if (!openLimitOk(req, res)) return;
+    if ((p === '/claude/report' || p === '/claude/bye') && req.method === 'POST') return handleClaudeReport(req, res, p === '/claude/bye');
+    if ((p === '/claude/install.sh' || p === '/claude/lookout-claude.py') && req.method === 'GET') {
+      let text = fs.readFileSync(p === '/claude/install.sh' ? CLAUDE_INSTALL : CLAUDE_SCRIPT, 'utf8');
+      if (p === '/claude/install.sh') text = text.replaceAll('__URL__', `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`);
+      const body = Buffer.from(text);
+      res.writeHead(200, { 'Content-Type': `${p.endsWith('.sh') ? 'text/x-shellscript' : 'text/x-python'}; charset=utf-8`, 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+      return res.end(body);
+    }
+    return sendError(res, 404, 'Not found');
+  }
   // metrics for Prometheus and Home Assistant: a metrics token, from the addresses it lists
   if (p === '/metrics' || p === '/metrics.json') {
     if (!openLimitOk(req, res)) return;
@@ -9107,6 +9199,7 @@ const ALERT_TYPES = {
   agent: { label: 'Linux machine (agent)', hint: 'From the Lookout agent: a systemd service failed or a watched one stopped, security updates are waiting, or the machine needs a reboot.', delay: 5 },
   container: { label: 'Container problem', hint: 'A Docker container keeps restarting, stopped although its restart policy says it should run, or fails its health check. Label a container lookout.ignore=true to leave it out.', delay: 2 },
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
+  claude: { label: 'Claude outage', hint: 'status.claude.com reports a major outage (with the status page switched on in Admin → Dashboard → Claude).', delay: 0, off: true },
   backup: {
     label: 'Backup failed',
     hint: 'An automatic backup of the dashboard or one of its destinations failed, a Proxmox backup job did, or a VM has no backup newer than its backup job\'s interval plus a day (VMs in no job: the limit here).',
@@ -10071,6 +10164,11 @@ function alertConditions(all = false) {
   }
   const w = measuredWatts().total;
   if (over('power', 'total', w, rules.power.watts, rules.power.watts * 0.05)) add('power', 'total', 'warning', `Power draw ${Math.round(w)} W`, `Limit ${rules.power.watts} W`, null, false);
+  // Claude's status page: a major outage there (only while the page answers; Admin → Dashboard → Claude)
+  const cs = claudeData.status;
+  if (config.claude.status.enabled && config.claude.status.alert && !cs?.error && ['major', 'critical'].includes(cs?.indicator)) {
+    add('claude', 'status', cs.indicator === 'critical' ? 'critical' : 'warning', `Claude: ${cs.text}`, cs.incidents.map((x) => x.name).join(' · ') || 'status.claude.com', null, false);
+  }
   return out;
 }
 
@@ -10727,7 +10825,50 @@ const BACKUP_SCRYPT = { N: 32768, r: 8, p: 1 };
 const LOCAL_BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUP_BASE = path.resolve(process.env.BACKUP_DIR || '/var/backups/homelab-dashboard'); // mount NAS shares here
 const BACKUP_NAME = /^homelab-dashboard-\d{4}-\d{2}-\d{2}-\d{6}(-[a-z-]+)?\.hldb$/;
-const DEFAULT_BACKUP = { schedule: { enabled: false, time: '03:30', keep: 14 }, passphrase: null, destinations: [], history: [], lastAutoDate: null };
+const DEFAULT_BACKUP = { schedule: { enabled: false, every: 'day', time: '03:30', hours: 6, weekday: 0, day: 1, keep: 14 }, passphrase: null, destinations: [], history: [], lastAutoDate: null, lastAutoSlot: null };
+// How often automatic backups run: every few hours (counted from the time), every day, a day of the
+// week or a day of the month (1–28, so every month has it), each at the time set
+const BACKUP_EVERY = ['hours', 'day', 'week', 'month'];
+const BACKUP_HOURS = [1, 2, 3, 4, 6, 8, 12];
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+function validateBackupSchedule(b) {
+  const time = String(b?.time || '');
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new UserError('Time must be HH:MM');
+  const every = BACKUP_EVERY.includes(b.every) ? b.every : 'day';
+  const hours = Number(b.hours ?? DEFAULT_BACKUP.schedule.hours);
+  if (!BACKUP_HOURS.includes(hours)) throw new UserError(`Every … hours: ${BACKUP_HOURS.join(', ')}`);
+  return {
+    enabled: b.enabled === true, every, time, hours,
+    weekday: num(b.weekday ?? 0, 0, 6, 'Day of the week', { int: true }),
+    day: num(b.day ?? 1, 1, 28, 'Day of the month', { int: true }),
+    keep: num(b.keep, 1, 100, 'Copies to keep', { int: true }),
+  };
+}
+// The minutes after midnight a backup is due on a day that has one
+function backupMinutes(sch) {
+  const [hh, mm] = sch.time.split(':').map(Number);
+  if (sch.every !== 'hours') return [hh * 60 + mm];
+  const step = sch.hours * 60;
+  const out = [];
+  for (let t = (hh * 60 + mm) % step; t < 1440; t += step) out.push(t);
+  return out;
+}
+const backupDay = (sch, z) => (sch.every === 'week' ? z.weekday === sch.weekday : sch.every === 'month' ? Number(z.date.slice(8)) === sch.day : true);
+// The next time an automatic backup runs, or null
+function nextBackupAt(sch, now = Date.now()) {
+  if (!sch.enabled) return null;
+  const today = osloDayStart(now);
+  for (let i = 0; i < 62; i++) {
+    const start = osloDayStart(today + i * 864e5 + 12 * 3600e3);
+    if (!backupDay(sch, zoned(start + 12 * 3600e3))) continue;
+    for (const t of backupMinutes(sch)) if (start + t * 60e3 > now) return start + t * 60e3;
+  }
+  return null;
+}
+function scheduleText(sch) {
+  const at = sch.every === 'hours' ? `every ${sch.hours === 1 ? 'hour' : `${sch.hours} hours`} from ${sch.time}` : `at ${sch.time}`;
+  return sch.every === 'week' ? `every ${WEEKDAYS[sch.weekday]} ${at}` : sch.every === 'month' ? `on day ${sch.day} of every month ${at}` : sch.every === 'day' ? `every day ${at}` : at;
+}
 
 async function backupKey(passphrase, salt) {
   return scryptAsync(passphrase, salt, { ...BACKUP_SCRYPT, keylen: 32 });
@@ -10774,6 +10915,7 @@ function backupBundle() {
         destinations: config.backup.destinations.map((d) => ({ ...d, secret: undefined, secretPlain: d.secret ? secretOrNull(destHost(d)) : null })),
       },
       alerts: { ...config.alerts, channels: config.alerts.channels.map((c) => ({ ...c, secret: undefined, secretPlain: c.secret ? secretOrNull(channelHost(c)) : null })) },
+      claude: { ...config.claude, adminKey: undefined, adminKeyPlain: config.claude.adminKey ? secretOrNull(claudeKeyHost()) : null },
     },
     docs,
     docsHistory,
@@ -10892,12 +11034,19 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     services,
     icons: restoredImages.icons.map((x) => x.rec),
     servicesLayout: Array.isArray(c.servicesLayout?.groups) ? { groups: c.servicesLayout.groups.filter((k) => typeof k === 'string').slice(0, 200), columns: c.servicesLayout.columns || {} } : null,
-    backup: { ...structuredClone(DEFAULT_BACKUP), ...b, passphrase: null, passphrasePlain: undefined, destinations },
+    backup: { ...structuredClone(DEFAULT_BACKUP), ...b, schedule: (() => {
+      try {
+        return validateBackupSchedule({ ...DEFAULT_BACKUP.schedule, ...(b.schedule || {}) }); // a file from before intervals: every day
+      } catch {
+        return structuredClone(DEFAULT_BACKUP.schedule);
+      }
+    })(), passphrase: null, passphrasePlain: undefined, destinations },
     alerts: normalizeAlerts(c.alerts, channels),
     checkins: [],
     maintenance: [],
     agents: [],
     metricsTokens: [],
+    claude: normalizeClaude({ ...c.claude, adminKey: null }),
   };
   // check-ins and windows are checked like in Admin, after the devices and services they name
   for (const x of arr(c.checkins)) {
@@ -10929,6 +11078,15 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     }
   }
   if (b.passphrasePlain) config.backup.passphrase = encryptSecret(passHost(), b.passphrasePlain);
+  config.claude.reporters = config.claude.reporters.flatMap((x) => {
+    try {
+      return [{ id: x.id, ...validateClaudeReporter(x), tokenHash: x.tokenHash, createdAt: Number(x.createdAt) || Date.now() }];
+    } catch {
+      return [];
+    }
+  });
+  const ck = c.claude?.adminKeyPlain;
+  if (typeof ck === 'string' && /^sk-ant-[A-Za-z0-9_-]{10,300}$/.test(ck)) config.claude.adminKey = encryptSecret({ ...claudeKeyHost(), secret: null }, ck);
   // Settings are validated like changes made in Admin; a section that doesn't pass gets the defaults
   const valid = (fn, v, fallback) => {
     try {
@@ -11230,12 +11388,19 @@ async function runBackup(trigger) {
 }
 
 // Checked every 30 s: runs once per day at the chosen time (Europe/Oslo)
+// Every 30 s: a backup that is due runs once, within half an hour of its time (after a restart too)
 function backupTick() {
   const sch = config.backup.schedule;
   if (!sch.enabled || backupRunning) return;
   const z = zoned(Date.now());
-  const [hh, mm] = sch.time.split(':').map(Number);
-  if (config.backup.lastAutoDate === z.date || z.hour * 60 + z.minute < hh * 60 + mm || z.hour * 60 + z.minute > hh * 60 + mm + 30) return;
+  if (!backupDay(sch, z)) return;
+  const now = z.hour * 60 + z.minute;
+  const t = backupMinutes(sch).find((x) => now >= x && now <= x + 30);
+  if (t === undefined) return;
+  const slot = `${z.date} ${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  // a daily backup from before slots were kept: the date says it ran today
+  if (config.backup.lastAutoSlot === slot || (!config.backup.lastAutoSlot && sch.every === 'day' && config.backup.lastAutoDate === z.date)) return;
+  config.backup.lastAutoSlot = slot;
   config.backup.lastAutoDate = z.date;
   runBackup('scheduled').catch(() => {});
 }
@@ -11251,6 +11416,8 @@ function backupStatus() {
   }
   return {
     schedule: b.schedule,
+    next: nextBackupAt(b.schedule),
+    scheduleText: scheduleText(b.schedule),
     hasPassphrase: Boolean(b.passphrase),
     destinations: b.destinations.map((d) => ({ ...d, secret: undefined, hasSecret: Boolean(d.secret) })),
     history: b.history,
@@ -11603,6 +11770,389 @@ function agentSummary(a) {
     net: (d?.net || []).map((x) => ({ name: x.name, rxBps: x.rxBps ?? null, txBps: x.txBps ?? null })),
     failed: d?.failed || [], down: (d?.watched || []).filter((x) => x.state !== 'active'), watched: d?.watched || [],
     updates: d?.updates ? { count: d.updates.count, security: d.updates.security, reboot: d.updates.reboot } : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Claude (Admin → Dashboard → Claude): how much Claude is used, on Home and the wall display.
+// Three sources, each one optional:
+// - Claude reporters: a small Python script on a machine where Claude Code runs (as that user)
+//   adds up Claude Code's own logs and pushes numbers only: tokens per model and hour, sessions
+//   started and active minutes. When plan limits are switched on here, it also asks Anthropic how
+//   much of the plan's 5-hour and weekly limits is used, with that machine's own Claude sign-in,
+//   which never leaves the machine (an unofficial endpoint: it may change without notice). Its
+//   token is kept as a hash, like an agent's.
+// - The Usage and Cost Analytics API of a Claude Console organization, with an Admin API key
+//   (kept encrypted), once an hour.
+// - status.claude.com, every 5 minutes; a major outage can show under Needs you.
+// Costs for Claude Code are estimates at API list prices; a subscription is billed differently.
+
+const CLAUDE_SCRIPT = path.join(PUBLIC_DIR, 'claude', 'lookout-claude.py');
+const CLAUDE_INSTALL = path.join(PUBLIC_DIR, 'claude', 'install.sh');
+const CLAUDE_VERSION = (/^VERSION = '([0-9.]+)'$/m.exec(readText(CLAUDE_SCRIPT, 4096) || '') || [])[1] || null;
+const CLAUDE_FILE = path.join(DATA_DIR, 'claude-usage.json');
+const CLAUDE_STATUS_URL = process.env.CLAUDE_STATUS_URL || 'https://status.claude.com'; // overridable for the tests
+const ANTHROPIC_API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com';
+const CLAUDE_STATUS_MS = (Number(process.env.CLAUDE_STATUS_S) || 300) * 1000;
+const CLAUDE_API_MS = (Number(process.env.CLAUDE_API_S) || 3600) * 1000;
+const CLAUDE_REPORT_MS = 5 * 60 * 1000; // how often a reporter sends
+const CLAUDE_DAYS = 30;
+const MAX_CLAUDE_REPORTERS = 50;
+const CLAUDE_STATS = ['tokens', 'cost', 'sessions', 'models', 'limits', 'status'];
+const CLAUDE_WALL_STYLES = ['number', 'rings', 'tile', 'ticker'];
+
+// API list prices, dollars per million tokens: input, output, cache read. Cache writes cost 1.25×
+// input (kept 5 minutes) or 2× input (kept an hour). The longest matching start of the name wins.
+const CLAUDE_PRICES = [
+  ['claude-fable-5-1', 10, 50, 0.25], ['claude-fable-5', 10, 50, 1], ['claude-mythos-5', 10, 50, 0.25],
+  ['claude-opus-5-5', 4, 20, 0.2], ['claude-opus-5', 5, 25, 0.5],
+  ['claude-opus-4-8', 5, 25, 0.5], ['claude-opus-4-7', 5, 25, 0.5], ['claude-opus-4-6', 5, 25, 0.5], ['claude-opus-4-5', 5, 25, 0.5], ['claude-opus-4', 15, 75, 1.5],
+  ['claude-sonnet-5-5', 2, 10, 0.2], ['claude-sonnet-5', 2, 10, 0.2], ['claude-sonnet-4', 3, 15, 0.3], ['claude-3-7-sonnet', 3, 15, 0.3],
+  ['claude-haiku-4-5', 1, 5, 0.1], ['claude-3-5-haiku', 0.8, 4, 0.08], ['claude-3-haiku', 0.25, 1.25, 0.03],
+].sort((a, b) => b[0].length - a[0].length);
+function claudePrice(model) {
+  return CLAUDE_PRICES.find(([p]) => model === p || model.startsWith(`${p}-`)) || null;
+}
+// one row from a reporter: [input, output, cache read, cache write 5 min, cache write 1 h, replies]
+function claudeRowCost(model, r) {
+  const p = claudePrice(model);
+  if (!p) return null;
+  const [, inp, out, read] = p;
+  return (r[0] * inp + r[1] * out + r[2] * read + r[3] * inp * 1.25 + r[4] * inp * 2) / 1e6;
+}
+// "claude-opus-5-5" -> "Opus 5.5"
+function claudeModelName(model) {
+  const m = /^claude-(?:(\d+(?:-\d)?)-)?([a-z]+)(?:-(\d+(?:-\d)?))?(?:-\d{8})?$/.exec(model);
+  if (!m) return model;
+  const ver = (m[3] || m[1] || '').replace('-', '.');
+  return `${m[2][0].toUpperCase()}${m[2].slice(1)}${ver ? ` ${ver}` : ''}`;
+}
+
+function normalizeClaude(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  return {
+    reporters: (Array.isArray(r.reporters) ? r.reporters : []).filter((x) => UUID.test(x?.id) && /^[0-9a-f]{64}$/.test(x.tokenHash || '')).slice(0, MAX_CLAUDE_REPORTERS),
+    adminKey: typeof r.adminKey === 'string' && r.adminKey.startsWith('v1.') ? r.adminKey : null,
+    status: { enabled: r.status?.enabled === true, alert: r.status?.alert !== false },
+  };
+}
+const claudeOn = () => Boolean(config.claude.reporters.length || config.claude.adminKey || config.claude.status.enabled);
+// the Admin API key is bound to a fixed identity (not the test address)
+const claudeKeyHost = () => ({ id: 'claude-admin-key', type: 'anthropic', address: 'api.anthropic.com', username: '', tlsMode: 'verify', fingerprint: '', secret: config.claude.adminKey });
+
+function validateClaudeReporter(b) {
+  return { name: str(b.name, 48, 'Name', { required: true }), limits: b.limits === true };
+}
+
+// What the reporters, the API and the status page last said: kept across restarts
+let claudeData = { reporters: {}, api: null, status: null };
+function loadClaudeData() {
+  const d = readJson(CLAUDE_FILE, {});
+  claudeData = { reporters: d.reporters && typeof d.reporters === 'object' && !Array.isArray(d.reporters) ? d.reporters : {}, api: d.api || null, status: d.status || null };
+}
+function saveClaudeData() {
+  for (const id of Object.keys(claudeData.reporters)) if (!config.claude.reporters.some((r) => r.id === id)) delete claudeData.reporters[id];
+  writeJsonAtomic(CLAUDE_FILE, claudeData);
+}
+
+// A report, checked field by field: hours are "YYYY-MM-DDTHH" (UTC) within the last 36 days
+function cleanClaudeReport(j) {
+  const n = (v, max = 1e13) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(Math.round(v), max) : 0);
+  const t = (v, len) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').slice(0, len) : null);
+  const now = Date.now();
+  const hours = {};
+  const src = j.hours && typeof j.hours === 'object' && !Array.isArray(j.hours) ? j.hours : {};
+  for (const [k, v] of Object.entries(src).slice(0, 24 * 40)) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(k) || !v || typeof v !== 'object') continue;
+    const at = Date.parse(`${k}:00:00Z`);
+    if (!(at >= now - 36 * 864e5) || at > now + 3600e3) continue;
+    const m = {};
+    for (const [model, row] of Object.entries(v.m && typeof v.m === 'object' ? v.m : {}).slice(0, 20)) {
+      if (/^claude-[a-z0-9.-]{1,60}$/.test(model) && Array.isArray(row)) m[model] = [0, 1, 2, 3, 4, 5].map((i) => n(row[i]));
+    }
+    hours[k] = { s: n(v.s, 1000), a: n(v.a, 60), m };
+  }
+  let limits = null;
+  if (j.limits && typeof j.limits === 'object') {
+    const w = (x) => (x && typeof x.pct === 'number' && Number.isFinite(x.pct) ? { pct: Math.max(0, Math.min(1000, x.pct)), resetsAt: Number.isFinite(Date.parse(x.resetsAt)) ? Date.parse(x.resetsAt) : null } : null);
+    const l = j.limits;
+    limits = { plan: t(l.plan, 20), error: t(l.error, 160), fiveHour: w(l.fiveHour), sevenDay: w(l.sevenDay), sevenDayOpus: w(l.sevenDayOpus), sevenDaySonnet: w(l.sevenDaySonnet) };
+  }
+  return { version: t(j.reporter, 20), host: t(j.hostname, 64), hours, limits };
+}
+
+// POST /claude/report (Authorization: Bearer <id>.<token>): the answer is key=value lines
+async function handleClaudeReport(req, res, bye = false) {
+  const m = /^Bearer ([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(String(req.headers.authorization || ''));
+  const r = m && config.claude.reporters.find((x) => x.id === m[1]);
+  const ok = r && crypto.timingSafeEqual(Buffer.from(agentTokenHash(m[2]), 'hex'), Buffer.from(r.tokenHash, 'hex'));
+  if (!ok) {
+    await new Promise((x) => setTimeout(x, 300));
+    return sendError(res, 401, 'Unknown reporter or wrong token');
+  }
+  if (bye) {
+    delete claudeData.reporters[r.id];
+    r.removedAt = Date.now();
+    saveConfig();
+    saveClaudeData();
+    event('settings', `The Claude reporter ${r.name} was uninstalled there`);
+    return sendJson(res, 200, { ok: true });
+  }
+  const data = cleanClaudeReport(await readBody(req, 2 * 1024 * 1024));
+  const now = Date.now();
+  const prev = claudeData.reporters[r.id];
+  if (r.removedAt) {
+    delete r.removedAt;
+    saveConfig();
+  }
+  claudeData.reporters[r.id] = { at: now, ip: clientIp(req), version: data.version, host: data.host, hours: data.hours, limits: r.limits && data.limits ? { ...data.limits, at: now } : r.limits ? prev?.limits || null : null };
+  saveClaudeData();
+  if (!prev) event('settings', `The Claude reporter ${r.name} reports (${data.host || '?'}, reporter ${data.version || '?'})`);
+  const text = Buffer.from(`limits=${r.limits ? 'yes' : 'no'}\nlatest=${CLAUDE_VERSION || ''}\n`);
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': text.length });
+  return res.end(text);
+}
+
+function claudeCommands(r, token) {
+  const { base, ca } = agentTarget();
+  const args = `--id ${r.id} --token ${token || '<token>'}`;
+  const install = ca
+    ? `curl -fsSk ${base}/ca.crt -o /tmp/lookout-ca.crt && [ "$(sed '/-----/d' /tmp/lookout-ca.crt | base64 -d | sha256sum | cut -c1-64)" = "${ca}" ] && curl -fsS --cacert /tmp/lookout-ca.crt ${base}/claude/install.sh | sh -s -- ${args} --ca /tmp/lookout-ca.crt`
+    : `curl -fsS ${base}/claude/install.sh | sh -s -- ${args}`;
+  return { install, status: '~/.local/bin/lookout-claude status', test: '~/.local/bin/lookout-claude test', update: '~/.local/bin/lookout-claude update', uninstall: '~/.local/bin/lookout-claude uninstall', caChecked: Boolean(ca) };
+}
+
+// --- the status page (Atlassian Statuspage) ---
+const STATUS_WORDS = { none: 'All systems operational', minor: 'Minor problems', major: 'Major outage', critical: 'Critical outage', maintenance: 'Maintenance' };
+async function pollClaudeStatus() {
+  const now = Date.now();
+  try {
+    const r = await connRequest({ url: CLAUDE_STATUS_URL, tlsMode: 'verify' }, '/api/v2/summary.json', { headers: { Accept: 'application/json', 'User-Agent': 'homelab-lookout (Claude status)' }, full: true, maxBytes: 2 << 20 });
+    if (r.status !== 200 || !r.json?.status) throw new UserError(`HTTP ${r.status} from the status page`);
+    const j = r.json;
+    const t = (v, len) => String(v ?? '').replace(/[\u0000-\u001f]/g, '').slice(0, len);
+    const indicator = Object.hasOwn(STATUS_WORDS, j.status.indicator) ? j.status.indicator : 'none';
+    const prev = claudeData.status;
+    claudeData.status = {
+      at: now, lastOkAt: now, error: null, indicator,
+      text: t(j.status.description, 100) || STATUS_WORDS[indicator],
+      components: (Array.isArray(j.components) ? j.components : []).filter((c) => c && !c.group && typeof c.name === 'string').slice(0, 16).map((c) => ({ name: t(c.name, 60), status: t(c.status, 30) })),
+      incidents: (Array.isArray(j.incidents) ? j.incidents : []).slice(0, 5).map((x) => ({ name: t(x.name, 160), impact: t(x.impact, 20), status: t(x.status, 30), link: /^https:\/\/[^\s"<>]{1,300}$/.test(x.shortlink || '') ? x.shortlink : null, updatedAt: Date.parse(x.updated_at) || null })),
+    };
+    if (prev && !prev.error && prev.indicator !== indicator) event('network', `Claude status: ${claudeData.status.text}`);
+  } catch (e) {
+    claudeData.status = { ...(claudeData.status || { components: [], incidents: [], indicator: null, text: null, lastOkAt: null }), at: now, error: e.message };
+  }
+  saveClaudeData();
+  alertsSoon();
+}
+
+// --- the Usage and Cost Analytics API (a Claude Console organization) ---
+async function anthropicAdminGet(key, reqPath) {
+  const r = await connRequest({ url: ANTHROPIC_API_URL, tlsMode: 'verify' }, reqPath, {
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'analytics-usage-cost-2026-08-24', Accept: 'application/json', 'User-Agent': 'homelab-lookout (usage)' }, full: true, maxBytes: 8 << 20, timeoutMs: 20000 });
+  if (r.status === 401 || r.status === 403) throw new UserError(`HTTP ${r.status}: the Admin API key is wrong, revoked or not an Admin key`);
+  if (r.status !== 200 || !r.json) throw new UserError(`HTTP ${r.status} from Anthropic${r.json?.error?.message ? `: ${String(r.json.error.message).slice(0, 160)}` : ''}`);
+  return r.json;
+}
+async function anthropicRows(key, endpoint, from, to) {
+  const rows = [];
+  let page = null;
+  for (let i = 0; i < 10; i++) {
+    const q = new URLSearchParams({ starting_at: from, ending_at: to, time_bucket_width: '1d', order_by: 'time', order: 'asc', limit: '1000' });
+    q.append('group_by[]', 'model');
+    if (page) q.set('page', page);
+    const j = await anthropicAdminGet(key, `/v1/organizations/analytics/${endpoint}?${q}`);
+    rows.push(...(Array.isArray(j.data) ? j.data : []));
+    if (!j.has_more || !j.next_page) return { rows, refreshedAt: Date.parse(j.data_refreshed_at) || null };
+    page = String(j.next_page);
+  }
+  return { rows, refreshedAt: null };
+}
+async function fetchClaudeApi(key) {
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const to = `${day(Date.now() + 864e5)}T00:00:00Z`;
+  const from = `${day(Date.now() - CLAUDE_DAYS * 864e5)}T00:00:00Z`;
+  const [usage, cost] = await Promise.all([anthropicRows(key, 'usage', from, to), anthropicRows(key, 'cost', from, to)]);
+  const days = {};
+  const models = {};
+  const d = (row) => (days[String(row.starting_at).slice(0, 10)] ||= { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, requests: 0, cost: 0 });
+  const mod = (row, date) => (models[`${date}|${String(row.group?.model || 'other').slice(0, 60)}`] ||= { tokens: 0, cost: 0 });
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  for (const row of usage.rows) {
+    const u = row.usage || {};
+    const x = d(row);
+    const write = n(u.cache_creation?.ephemeral_5m_input_tokens) + n(u.cache_creation?.ephemeral_1h_input_tokens);
+    const total = n(u.total_tokens) || n(u.uncached_input_tokens) + n(u.cache_read_input_tokens) + write + n(u.output_tokens);
+    x.tokens += total;
+    x.input += n(u.uncached_input_tokens);
+    x.output += n(u.output_tokens);
+    x.cacheRead += n(u.cache_read_input_tokens);
+    x.cacheWrite += write;
+    x.requests += n(u.requests);
+    mod(row, String(row.starting_at).slice(0, 10)).tokens += total;
+  }
+  for (const row of cost.rows) {
+    const usd = n(row.cost?.amount) / 100; // cents, as a decimal string
+    d(row).cost += usd;
+    mod(row, String(row.starting_at).slice(0, 10)).cost += usd;
+  }
+  return { days, models, refreshedAt: usage.refreshedAt || cost.refreshedAt };
+}
+async function pollClaudeApi() {
+  if (!config.claude.adminKey) return;
+  const now = Date.now();
+  try {
+    const got = await fetchClaudeApi(decryptSecret(claudeKeyHost()));
+    claudeData.api = { at: now, lastOkAt: now, error: null, ...got };
+  } catch (e) {
+    claudeData.api = { ...(claudeData.api || { days: {}, models: {}, refreshedAt: null, lastOkAt: null }), at: now, error: e.message };
+  }
+  saveClaudeData();
+}
+
+let claudeTimers = { status: null, api: null };
+function scheduleClaude() {
+  clearInterval(claudeTimers.status);
+  clearInterval(claudeTimers.api);
+  claudeTimers = { status: null, api: null };
+  if (config.claude.status.enabled) {
+    pollClaudeStatus();
+    claudeTimers.status = setInterval(pollClaudeStatus, CLAUDE_STATUS_MS);
+    claudeTimers.status.unref();
+  }
+  if (config.claude.adminKey) {
+    pollClaudeApi();
+    claudeTimers.api = setInterval(pollClaudeApi, CLAUDE_API_MS);
+    claudeTimers.api.unref();
+  }
+}
+
+// --- for pages ---
+function claudeReporterState(r) {
+  const d = claudeData.reporters[r.id];
+  // quiet for three reports is "not reporting"
+  return { ok: Boolean(d && Date.now() - d.at <= 3 * CLAUDE_REPORT_MS + 60e3), at: d?.at || null, never: !d, data: d || null };
+}
+
+function claudeAdminState() {
+  const c = config.claude;
+  return {
+    reporters: c.reporters.map((r) => {
+      const st = claudeReporterState(r);
+      return { id: r.id, name: r.name, limits: r.limits, createdAt: r.createdAt, removedAt: r.removedAt || null, ok: st.ok, at: st.at, never: st.never, host: st.data?.host || null, version: st.data?.version || null, latest: CLAUDE_VERSION, limitsError: st.data?.limits?.error || null, commands: claudeCommands(r) };
+    }),
+    adminKey: Boolean(c.adminKey),
+    api: claudeData.api ? { at: claudeData.api.at, lastOkAt: claudeData.api.lastOkAt, error: claudeData.api.error, refreshedAt: claudeData.api.refreshedAt } : null,
+    status: { ...c.status, at: claudeData.status?.at || null, error: claudeData.status?.error || null, text: claudeData.status?.text || null },
+    latest: CLAUDE_VERSION,
+  };
+}
+
+// "2026-11-03T22" (UTC) -> its Oslo date, kept since it never changes
+const claudeHourDates = new Map();
+function claudeHourDate(k) {
+  let d = claudeHourDates.get(k);
+  if (!d) {
+    if (claudeHourDates.size > 5000) claudeHourDates.clear();
+    d = zoned(Date.parse(`${k}:00:00Z`)).date;
+    claudeHourDates.set(k, d);
+  }
+  return d;
+}
+
+// The last 30 days (Oslo time), today and this week (the last 7 days), over every reporter;
+// plus each machine, the plan limits, the API and the status page
+function claudeSummary() {
+  if (!claudeOn()) return null;
+  const c = config.claude;
+  const now = Date.now();
+  const start = osloDayStart(now);
+  const dates = Array.from({ length: CLAUDE_DAYS }, (_, i) => zoned(start - (CLAUDE_DAYS - 1 - i) * 864e5 + 12 * 3600e3).date);
+  const today = dates[dates.length - 1];
+  const week = new Set(dates.slice(-7));
+  const blank = () => ({ tokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, replies: 0, cost: 0, unpriced: 0, sessions: 0, active: 0 });
+  const days = new Map(dates.map((d) => [d, { date: d, ...blank() }]));
+  const add = (x, model, row) => {
+    const cost = claudeRowCost(model, row);
+    x.tokens += row[0] + row[1] + row[2] + row[3] + row[4];
+    x.input += row[0];
+    x.output += row[1];
+    x.cacheRead += row[2];
+    x.cacheWrite += row[3] + row[4];
+    x.replies += row[5];
+    if (cost === null) x.unpriced += row[0] + row[1] + row[2] + row[3] + row[4];
+    else x.cost += cost;
+  };
+  const models = { today: new Map(), week: new Map() };
+  const machines = [];
+  let limits = null;
+  for (const r of c.reporters) {
+    const st = claudeReporterState(r);
+    const mine = { today: blank(), week: blank() };
+    for (const [k, h] of Object.entries(st.data?.hours || {})) {
+      const date = claudeHourDate(k);
+      const day = days.get(date);
+      if (!day) continue;
+      const spans = [day, ...(date === today ? [mine.today] : []), ...(week.has(date) ? [mine.week] : [])];
+      for (const x of spans) {
+        x.sessions += h.s;
+        x.active += h.a;
+      }
+      for (const [model, row] of Object.entries(h.m)) {
+        for (const x of spans) add(x, model, row);
+        for (const [span, on] of [['today', date === today], ['week', week.has(date)]]) {
+          if (!on) continue;
+          if (!models[span].has(model)) models[span].set(model, { model, name: claudeModelName(model), ...blank() });
+          add(models[span].get(model), model, row);
+        }
+      }
+    }
+    const l = st.data?.limits;
+    if (r.limits && l && (!limits || l.at > limits.at)) limits = { ...l, machine: r.name };
+    machines.push({ id: r.id, name: r.name, host: st.data?.host || null, ok: st.ok, at: st.at, never: st.never, removedAt: r.removedAt || null, version: st.data?.version || null, latest: CLAUDE_VERSION, limitsOn: r.limits, today: mine.today, week: mine.week });
+  }
+  const list = [...days.values()];
+  const sum = (rows) => rows.reduce((a, x) => {
+    for (const k of Object.keys(a)) a[k] += x[k];
+    return a;
+  }, blank());
+  const hit = (x) => (x.input + x.cacheRead + x.cacheWrite ? x.cacheRead / (x.input + x.cacheRead + x.cacheWrite) : null);
+  const span = (x) => ({ ...x, cost: round2(x.cost), cacheHit: hit(x) });
+  const byTokens = (m) => [...m.values()].sort((a, b) => b.tokens - a.tokens).map(span);
+  for (const x of machines) Object.assign(x, { today: span(x.today), week: span(x.week) });
+  // the API: its days are UTC days, as Anthropic counts them
+  let api = null;
+  if (c.adminKey) {
+    const a = claudeData.api;
+    const apiDays = Array.from({ length: CLAUDE_DAYS }, (_, i) => new Date(now - (CLAUDE_DAYS - 1 - i) * 864e5).toISOString().slice(0, 10));
+    const month = new Date(now).toISOString().slice(0, 7);
+    const rows = apiDays.map((date) => ({ date, tokens: a?.days?.[date]?.tokens || 0, cost: round2(a?.days?.[date]?.cost || 0), requests: a?.days?.[date]?.requests || 0 }));
+    const monthCost = Object.entries(a?.days || {}).filter(([date]) => date.startsWith(month)).reduce((s, [, x]) => s + x.cost, 0);
+    const mods = new Map();
+    for (const [k, v] of Object.entries(a?.models || {})) {
+      const [date, model] = k.split('|');
+      if (!apiDays.slice(-7).includes(date)) continue;
+      const x = mods.get(model) || { model, name: claudeModelName(model), tokens: 0, cost: 0 };
+      x.tokens += v.tokens;
+      x.cost += v.cost;
+      mods.set(model, x);
+    }
+    api = {
+      at: a?.at || null, lastOkAt: a?.lastOkAt || null, error: a?.error || null, refreshedAt: a?.refreshedAt || null,
+      today: rows[rows.length - 1], week: { tokens: rows.slice(-7).reduce((s, x) => s + x.tokens, 0), cost: round2(rows.slice(-7).reduce((s, x) => s + x.cost, 0)) },
+      month: round2(monthCost), days: rows, models: [...mods.values()].sort((x, y) => y.cost - x.cost).map((x) => ({ ...x, cost: round2(x.cost) })),
+    };
+  }
+  const s = claudeData.status;
+  return {
+    reporters: c.reporters.length,
+    today: span(days.get(today)), week: span(sum(list.slice(-7))), month: span(sum(list.filter((x) => x.date.startsWith(today.slice(0, 7))))),
+    days: list.map((x) => ({ date: x.date, tokens: x.tokens, cost: round2(x.cost), sessions: x.sessions, active: x.active })),
+    models: { today: byTokens(models.today), week: byTokens(models.week) },
+    machines, limits, api,
+    status: c.status.enabled ? (s ? { ...s, stale: !s.lastOkAt || now - s.lastOkAt > 3 * CLAUDE_STATUS_MS } : { at: null, error: null, indicator: null, text: null, components: [], incidents: [] }) : null,
+    home: claudeHomeLayout(config.layout?.claude),
   };
 }
 
@@ -12403,6 +12953,7 @@ async function main() {
   KEY = loadKey();
   loadConfig();
   loadEnergy();
+  loadClaudeData();
   loadHistory();
   loadAlertState();
   loadEvents();
@@ -12438,6 +12989,7 @@ async function main() {
   const nodeEnd = NODE_END[major];
   if (nodeEnd && Date.now() > Date.parse(nodeEnd)) event('system', `Node.js ${process.versions.node} no longer gets security updates (support ended ${nodeEnd}); upgrade to Node.js 24`);
   schedulePolling();
+  scheduleClaude();
   setInterval(pruneEvents, 24 * 3600 * 1000).unref();
   setInterval(pruneIncidents, 24 * 3600 * 1000).unref();
   setInterval(() => incidentsDirty && saveIncidents(), 60 * 1000).unref();

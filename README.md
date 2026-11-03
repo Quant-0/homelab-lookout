@@ -24,6 +24,7 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 - **Services** with live status and the numbers that matter (34 integrations)
 - **VMs and containers** from Proxmox, Docker and Portainer, with backups
 - **Wall display** for a tablet or TV
+- **Claude usage**: Claude Code tokens, plan limits and API cost, and Claude's status
 
 </td>
 <td width="50%" valign="top">
@@ -60,6 +61,7 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 | **Network** | UniFi (and Protect cameras), TP-Link Omada, any SNMPv3 switch or router |
 | **Power** | UPSes over NUT or SNMP, Shelly and Tasmota plugs, Home Assistant power sensors; electricity prices for Norway (spot or Norgespris, plus grid tariff) |
 | **Inside machines** | The **Lookout agent**: a small shell script for any Linux machine (memory as Linux counts it, filesystems, systemd services, pending updates) |
+| **Claude** | Claude Code's own logs through a small reporter (tokens, sessions, plan limits), a Claude Console organization's usage and cost, and status.claude.com |
 | **Anything else** | Ping, TCP port, DNS lookup and web page checks; a custom JSON API card |
 
 Read-only accounts are enough everywhere, and passwords are stored encrypted and never sent back to the browser.

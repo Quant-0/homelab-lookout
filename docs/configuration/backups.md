@@ -15,7 +15,18 @@ The [configuration history](../features/docs-updates-log.md#configuration-histor
 
 ## Automatic backups
 
-A daily time, how many copies to keep, and a passphrase. Copies are kept on the server, and also go to each **destination**:
+How often, how many copies to keep, and a passphrase:
+
+| How often | Runs |
+|---|---|
+| **Every few hours** | Every 1, 2, 3, 4, 6, 8 or 12 hours, counted from the time set: every 6 hours from 03:30 is 03:30, 09:30, 15:30 and 21:30 |
+| **Every day** | At the time set (the default) |
+| **Every week** | On the weekday chosen, at the time set |
+| **Every month** | On the day chosen (1–28, so every month has it), at the time set |
+
+Admin shows when the next one runs. A backup that was due while the server was off runs if it comes back within half an hour. **Copies to keep** counts backups, so with backups every few hours the same number covers fewer days.
+
+Copies are kept on the server, and also go to each **destination**:
 
 | Destination | Set up |
 |---|---|

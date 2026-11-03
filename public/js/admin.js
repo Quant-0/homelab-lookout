@@ -1135,6 +1135,136 @@ $('agent-new').addEventListener('click', async () => {
   openAgent(null);
 });
 
+// --- Claude: reporters, the status page and the Admin API key ---
+
+let claudeState = null;
+async function loadClaude() {
+  try {
+    claudeState = await api('GET', '/api/admin/claude');
+  } catch (e) {
+    $('claude-list').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+    return;
+  }
+  const s = claudeState;
+  $('claude-list').replaceChildren(s.reporters.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'agents-table' },
+    el('thead', null, el('tr', null, ['Reporter', 'Plan limits', 'Last report', 'Version', ''].map((t) => el('th', { text: t })))),
+    el('tbody', null, s.reporters.map((r) => el('tr', null,
+      el('td', null, el('span', { class: `led ${r.removedAt ? 'off' : r.ok ? 'good' : r.never ? 'off' : 'critical'}` }), ' ', el('strong', { text: r.name }), r.host ? el('div', { class: 'small muted', text: r.host }) : null),
+      el('td', { class: 'small' }, r.limits ? 'On' : 'Off', r.limits && r.limitsError ? el('div', { class: 'small warning-text', text: r.limitsError }) : null),
+      el('td', { class: 'small num', text: r.removedAt ? 'uninstalled there' : r.at ? fmt.time(r.at) : 'never yet' }),
+      el('td', { class: 'small num' }, r.version || '–', r.version && r.latest && r.version !== r.latest ? el('div', { class: 'small warning-text', text: `${r.latest} available` }) : null),
+      el('td', { class: 'r' }, el('button', { type: 'button', class: 'small', text: 'Edit', onclick: () => openReporter(r) }))))))) : el('p', { class: 'small muted', text: 'No reporters yet.' }));
+  const f = $('claude-form').elements;
+  f.statusEnabled.checked = s.status.enabled;
+  f.statusAlert.checked = s.status.alert;
+  f.statusAlert.disabled = !s.status.enabled;
+  f.adminKey.value = '';
+  f.adminKey.placeholder = s.adminKey ? 'Saved (type a new one to replace it)' : 'sk-ant-admin01-…';
+  $('claude-key-remove').hidden = !s.adminKey;
+  $('claude-api-state').textContent = !s.adminKey ? '' : s.api?.error ? `Last try ${fmt.time(s.api.at)}: ${s.api.error}` : s.api?.lastOkAt ? `Read ${fmt.time(s.api.lastOkAt)}` : 'Not read yet';
+}
+
+function claudeCommandsBox(cmd, token) {
+  const block = (label, text) => {
+    const pre = el('pre', { class: 'howto-code' }, el('code', { text }));
+    const copy = el('button', { type: 'button', class: 'small', text: 'Copy', onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copy.textContent = 'Copied';
+      } catch {
+        getSelection().selectAllChildren(pre);
+      }
+    } });
+    return el('div', null, el('div', { class: 'small muted', text: label }), el('div', { class: 'howto-block' }, pre, copy));
+  };
+  return el('div', { class: 'agent-cmds' },
+    token ? block('Install: run this on the machine as the user who uses Claude Code (not with sudo; it needs curl, Python 3 and systemd)', cmd.install) : el('p', { class: 'small muted', text: 'The token is only shown once. To install again, press New token for a fresh install command (the old token stops working).' }),
+    token && cmd.caChecked ? el('p', { class: 'hint', text: 'The command checks the dashboard\'s own certificate authority by its fingerprint before trusting it.' }) : null,
+    block('Check it on the machine', cmd.status),
+    block('Send a report now', cmd.test),
+    block('Update the reporter (when this page says a newer one is available)', cmd.update),
+    block('Remove it from the machine', cmd.uninstall));
+}
+
+function openReporter(r, created) {
+  const box = $('claude-editor');
+  box.hidden = false;
+  const name = el('input', { value: r?.name || '', maxlength: 48, required: true, placeholder: 'workstation' });
+  const limits = el('input', { type: 'checkbox', checked: r ? r.limits : false });
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const body = () => ({ name: name.value, limits: limits.checked });
+  const close = () => {
+    box.hidden = true;
+    box.replaceChildren();
+  };
+  const cmds = el('div');
+  if (created) cmds.replaceChildren(claudeCommandsBox(created.commands, created.token));
+  else if (r) cmds.replaceChildren(claudeCommandsBox(r.commands, null));
+  box.replaceChildren(
+    el('h4', { text: r ? `Edit ${r.name}` : 'New reporter' }),
+    el('div', { class: 'form-grid' },
+      el('label', null, el('span', { text: 'Name (the machine)' }), name),
+      el('label', { class: 'check wide' }, limits, ' Plan limits: how much of the 5-hour and weekly limits is used (Pro and Max plans)')),
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: r ? 'Save' : 'Create and show the install command', onclick: async () => {
+        try {
+          if (r) {
+            await api('PUT', `/api/admin/claude/reporters/${r.id}`, body());
+            msg.textContent = 'Saved: the reporter picks it up with its next report';
+            msg.className = 'msg ok';
+            loadClaude();
+          } else {
+            const x = await api('POST', '/api/admin/claude/reporters', body());
+            await loadClaude();
+            openReporter(claudeState.reporters.find((y) => y.id === x.reporter.id), x);
+          }
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      r ? el('button', { type: 'button', text: 'New token', onclick: async () => {
+        if (!confirm('Make a new token? The reporter stops reporting until it is installed again with the new command.')) return;
+        const x = await api('POST', `/api/admin/claude/reporters/${r.id}/token`, {});
+        cmds.replaceChildren(claudeCommandsBox(x.commands, x.token));
+      } }) : null,
+      el('button', { type: 'button', text: 'Close', onclick: close }),
+      r ? el('button', { type: 'button', class: 'danger', text: 'Remove', onclick: async () => {
+        if (!confirm(`Remove the reporter ${r.name}? Its numbers go too. Run "~/.local/bin/lookout-claude uninstall" on the machine as well.`)) return;
+        await api('DELETE', `/api/admin/claude/reporters/${r.id}`);
+        close();
+        loadClaude();
+      } }) : null,
+      msg),
+    cmds);
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  name.focus();
+}
+$('claude-new').addEventListener('click', async () => {
+  if (!claudeState) await loadClaude();
+  openReporter(null);
+});
+$('claude-form').elements.statusEnabled.addEventListener('change', (e) => ($('claude-form').elements.statusAlert.disabled = !e.target.checked));
+async function saveClaude(adminKey, okText) {
+  const f = $('claude-form').elements;
+  try {
+    claudeState = await api('PUT', '/api/admin/claude/settings', { status: { enabled: f.statusEnabled.checked, alert: f.statusAlert.checked }, adminKey });
+    await loadClaude();
+    showMsg('claude-msg', okText, true);
+  } catch (e) {
+    showMsg('claude-msg', e.message, false);
+  }
+}
+$('claude-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const key = ev.target.elements.adminKey.value.trim();
+  showMsg('claude-msg', key ? 'Checking the key with Anthropic…' : '', true);
+  saveClaude(key || undefined, key ? 'Saved: the key works' : 'Saved');
+});
+$('claude-key-remove').addEventListener('click', () => {
+  if (confirm('Remove the Admin API key? Its numbers leave Home and the wall.')) saveClaude(null, 'The key is removed');
+});
+
 // --- Add device: start from the catalog ---
 const CONN_TEXT = { idrac: 'Redfish', unifi: 'UniFi console', 'unifi-found': 'Found through UniFi', synology: 'Synology SNMPv3', snmp: 'SNMPv3', nut: 'NUT', omada: 'Omada controller', ping: 'Ping', shelly: 'Shelly plug', tasmota: 'Tasmota plug', hass: 'Home Assistant sensor', docker: 'Docker', portainer: 'Portainer', proxmox: 'Proxmox', truenas: 'TrueNAS', protect: 'Drawn only (Protect)', null: 'Drawn only' };
 
@@ -2676,8 +2806,14 @@ const destSummary = (d) => (d.type === 'folder' ? `${bk.folderBase}/${d.folder |
 function renderBackup() {
   const f = $('bk-schedule').elements;
   f.enabled.checked = bk.schedule.enabled;
+  f.every.value = bk.schedule.every;
+  f.hours.value = String(bk.schedule.hours);
+  f.weekday.value = String(bk.schedule.weekday);
+  f.day.value = bk.schedule.day;
   f.time.value = bk.schedule.time;
   f.keep.value = bk.schedule.keep;
+  showEvery();
+  $('bk-next').textContent = bk.next ? `Backs up ${bk.scheduleText}; next ${fmt.time(bk.next)}.` : bk.schedule.enabled ? '' : 'Automatic backups are off.';
   f.passphrase.value = '';
   f.passphrase.placeholder = bk.hasPassphrase ? 'Stored (leave blank to keep)' : 'Not set';
   $('bk-pass-hint').textContent = bk.hasPassphrase ? 'Write-only. Needed to restore these backups; keep a copy somewhere safe.' : 'Required for automatic backups (min. 12 characters).';
@@ -2785,11 +2921,19 @@ $('bk-restore').addEventListener('submit', async (ev) => {
   }
 });
 
+// only the fields for the interval chosen: hours, a weekday or a day of the month
+function showEvery() {
+  const f = $('bk-schedule').elements;
+  for (const l of $('bk-schedule').querySelectorAll('[data-every]')) l.hidden = l.dataset.every !== f.every.value;
+  $('bk-time-label').textContent = f.every.value === 'hours' ? 'Starting at' : 'Time';
+}
+$('bk-schedule').elements.every.addEventListener('change', showEvery);
+
 $('bk-schedule').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const f = ev.target.elements;
   try {
-    bk = await api('PUT', '/api/admin/backup/settings', { schedule: { enabled: f.enabled.checked, time: f.time.value, keep: Number(f.keep.value) }, passphrase: f.passphrase.value });
+    bk = await api('PUT', '/api/admin/backup/settings', { schedule: { enabled: f.enabled.checked, every: f.every.value, hours: Number(f.hours.value), weekday: Number(f.weekday.value), day: Number(f.day.value), time: f.time.value, keep: Number(f.keep.value) }, passphrase: f.passphrase.value });
     renderBackup();
     showMsg('bk-schedule-msg', 'Saved', true);
   } catch (e) {
@@ -3272,8 +3416,8 @@ const TABS = ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look',
 const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'look', backup: 'backups', account: 'security', checkins: 'schedules', maintenance: 'schedules', sessions: 'security', server: 'system' };
 
 // links straight to a section: the tab it is on, then scrolled to
-const SECTIONS = { 'vm-settings': 'dashboard', access: 'system', metrics: 'system', passkeys: 'security' };
-const SECTION_CARDS = { 'vm-settings': 'vm-settings', access: 'access-card', metrics: 'metrics-card', passkeys: 'passkeys-card' };
+const SECTIONS = { 'vm-settings': 'dashboard', claude: 'dashboard', access: 'system', metrics: 'system', passkeys: 'security' };
+const SECTION_CARDS = { 'vm-settings': 'vm-settings', claude: 'claude-card', access: 'access-card', metrics: 'metrics-card', passkeys: 'passkeys-card' };
 
 function showTab(name, focus) {
   const section = SECTIONS[name] ? name : null;
@@ -3299,6 +3443,7 @@ function showTab(name, focus) {
     loadAccess();
     loadMetrics();
   }
+  if (name === 'dashboard') loadClaude();
   if (name === 'backups') loadBackup();
   if (name === 'security') loadRemembered();
   if (name === 'alerts') loadAlerts();

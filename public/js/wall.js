@@ -16,11 +16,12 @@ let spotTimer = null;
 let refreshTimer = null;
 let draft = null; // the layout being customized (previewed live, saved on Save)
 
-const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices' };
+const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices', claude: 'Claude' };
 const SIZE_NAMES = { normal: 'Normal', wide: 'Wide', tall: 'Tall', big: 'Big' };
 const DEFAULT_LAYOUT = {
-  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }],
-  hidden: ['devices'], showServices: true, services: null, devices: null, clock: true, logo: true, cables: false, vmCount: true,
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }],
+  hidden: ['devices', 'claude'], showServices: true, services: null, devices: null, clock: true, logo: true, cables: false, vmCount: true,
+  claude: { style: 'number', stats: ['tokens', 'limits', 'status'] },
 };
 const layout = () => draft || data?.wall || DEFAULT_LAYOUT;
 
@@ -283,6 +284,21 @@ function renderDevices() {
     })));
 }
 
+// --- Claude: a panel in the grid, or a ticker line above the services ---
+function renderClaude() {
+  const c = data.claude;
+  const lay = layout();
+  const cfg = lay.claude || DEFAULT_LAYOUT.claude;
+  const tick = $('claude-ticker');
+  tick.hidden = !c || lay.hidden.includes('claude') || cfg.style !== 'ticker';
+  if (!c) return;
+  if (cfg.style === 'ticker') {
+    if (!tick.hidden) Claude.ticker(tick, c, cfg);
+    return;
+  }
+  Claude.wallPanel($('claude'), c, cfg);
+}
+
 // Order, size and visibility of the panels
 function applyLayout() {
   const lay = layout();
@@ -293,7 +309,7 @@ function applyLayout() {
     node.style.order = String(i);
     node.classList.remove('size-normal', 'size-wide', 'size-tall', 'size-big');
     node.classList.add(`size-${p.size}`);
-    node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length));
+    node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length)) || (p.id === 'claude' && (!data.claude || lay.claude?.style === 'ticker'));
   });
   document.querySelector('.clock').hidden = !lay.clock;
   $('wall-brand').hidden = lay.logo === false;
@@ -362,6 +378,23 @@ function openCustomize() {
       }) : null];
     };
     const svcItems = (services?.groups || []).flatMap((g) => g.services || []).map((x) => ({ id: x.id, name: x.name }));
+    // the Claude panel: its style and what it shows
+    draft.claude ||= structuredClone(DEFAULT_LAYOUT.claude);
+    const style = el('select', { name: 'claude-style', 'aria-label': 'Style of the Claude panel' }, Object.entries(Claude.STYLE_NAMES).map(([k, t]) => el('option', { value: k, text: t })));
+    style.value = draft.claude.style;
+    style.addEventListener('change', () => {
+      draft.claude.style = style.value;
+      preview();
+    });
+    const claudeBox = data.claude ? [
+      el('h4', { text: 'Claude panel' }),
+      el('p', { class: 'hint', text: 'Limit rings need plan limits (Admin → Dashboard → Claude); the ticker is a thin line above the services, whatever the size.' }),
+      el('label', null, el('span', { class: 'small muted', text: 'Style' }), style),
+      pickList(Object.entries(Claude.STAT_NAMES).map(([id, name]) => ({ id, name })), draft.claude.stats, (id, on) => {
+        draft.claude.stats = on ? Object.keys(Claude.STAT_NAMES).filter((k) => k === id || draft.claude.stats.includes(k)) : draft.claude.stats.filter((k) => k !== id);
+        preview();
+      }),
+    ] : [];
     body.replaceChildren(
       el('h4', { text: 'Panels' }),
       el('p', { class: 'hint', text: 'Tick the ones to show; the order fills the screen left to right, top to bottom. Wide takes two columns, Tall two rows, Big both.' }),
@@ -375,6 +408,7 @@ function openCustomize() {
       ...(draft.showServices ? chooser('services', 'The same as Home', 'The ones I pick (up to 10 show)', svcItems) : []),
       el('h4', { text: 'Devices panel' }),
       ...chooser('devices', 'Every device', 'The ones I pick', data.devices.map((x) => ({ id: x.id, name: x.name }))),
+      ...claudeBox,
       el('div', { class: 'form-actions' },
         el('button', { type: 'button', class: 'primary', text: 'Save', onclick: async () => {
           try {
@@ -441,6 +475,7 @@ function render() {
   renderRack();
   renderServices();
   renderDevices();
+  renderClaude();
 }
 
 async function refresh() {

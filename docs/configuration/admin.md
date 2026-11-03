@@ -8,7 +8,7 @@
 | | **Services** | Cards, status checks and integrations ([Services](../features/services.md)) |
 | | **Alerts** | Channels and what to send where ([Alerts](../features/alerts.md)) |
 | | **Check-ins & maintenance** | [Check-ins and maintenance windows](../features/checkins-and-maintenance.md) |
-| Dashboard | **Dashboard** | Title, provider, what shows on Home, VMs, the status page, making it public |
+| Dashboard | **Dashboard** | Title, provider, what shows on Home, VMs, the status page, Claude, making it public |
 | | **Look** | Theme, accent, logo and app icon, background |
 | | **Power & cost** | Prices and tariffs ([Power and energy](../features/energy.md)) |
 | System | **Backups** | Download, restore, automatic backups ([Backups](backups.md)) |
@@ -26,6 +26,7 @@ Passwords, tokens and keys are entered only here, stored encrypted and never sho
 - **Services on Home**: one line with the count (default), tiles, a compact list, only the ones that are down, or off. Untick *A service that is down shows under "Needs you"* to keep services out of Home's problems.
 - **VMs and containers**: where they show (Home, the Proxmox server's details, a count on the server in the rack) and with which numbers.
 - **Status page**: switch on the public `/status` page.
+- **Claude**: reporters for Claude Code, the Claude status page and an API organization's Admin key. See [Claude usage](../features/claude.md).
 - **Make the dashboard public**: shows Home, the rack and services to anyone who can reach it (never addresses, secrets or versions). Keep it off and share the status page instead.
 
 ## Look

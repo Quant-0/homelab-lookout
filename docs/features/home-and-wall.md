@@ -9,6 +9,7 @@ Home answers one question: is everything all right?
 - **At the top**: how many faults and things to watch, or *All normal*, and one line about the rest.
 - **Needs you**: one row per problem, worst first, with how long it has lasted. Click a row to open the device. A connection that stops answering is listed after 2 minutes, so one slow reading doesn't raise an alarm. The same findings drive the [alerts](alerts.md).
 - **Power** and **Internet**: two big cards with the number now and a graph of the last day. Power opens the details: today, this month, the month's forecast, cost per day and the year. Internet comes from the gateway (UniFi or Omada): up or down, traffic against your last speed test, clients, the provider with its logo, and the public IP (only when signed in).
+- **Claude** (when set up, see [Claude usage](claude.md)): Claude Code's tokens today and this week, the cost at API prices, the plan limits and Claude's status.
 - **Devices**: one tile per device, drawn as it looks, with one status (*OK*, *Warning*, *Fault*, *Offline*, *Unreachable* or *Maintenance*), its worst problem or its model, and one key number.
 - **At the bottom**: services up, VMs running and updates waiting, each a link.
 
@@ -33,7 +34,7 @@ Clicking a tile opens the details: its problems first, then its numbers and grap
 
 ### Customize
 
-As admin, **Customize** on Home drags tiles into another order and hides the ones you don't want there (they stay in the rack and search). It is saved on the server, so it is the same everywhere. **Admin → Dashboard** chooses how services and VMs show on Home.
+As admin, **Customize** on Home drags tiles into another order and hides the ones you don't want there (they stay in the rack and search), and chooses what the Claude tile shows. It is saved on the server, so it is the same everywhere. **Admin → Dashboard** chooses how services and VMs show on Home.
 
 ## Rack
 
@@ -61,7 +62,8 @@ Set the rack's size and numbering, and drag devices and panels, in **Admin → D
 
 - the headline (*2 faults, 1 to watch* or *All systems normal*), your logo and title beside the clock;
 - **Needs you**: one problem at a time, eight seconds each, with the full list beside it;
-- power with its graph, the internet, the rack and the services.
+- power with its graph, the internet, the rack and the services;
+- and if you tick it, **Claude**: a big number, limit rings, a full tile or a ticker line (see [Claude usage](claude.md#on-home-and-the-wall)).
 
 The buttons fade out when nobody touches the screen. The full-screen button keeps the screen awake where the browser allows it. For a wall tablet, sign in once with *Remember this device for viewing*.
 

@@ -157,6 +157,7 @@ async function main() {
     { file: 'test/report.test.js', fresh: true },
     { file: 'test/discover.test.js', fresh: true, env: { DISCOVER_LOOPBACK: '1', DISCOVER_PORTS: '18481,18482,18483,18484,18485,18486,18487,18488,18489', DISCOVER_ROLES: '18483:3493,18484:2375,18485:80,18486:8096,18487:443' } },
     { file: 'test/agent.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0' } },
+    { file: 'test/claude.test.js', fresh: true, env: { CLAUDE_STATUS_URL: 'http://127.0.0.1:18090/claudestatus', CLAUDE_STATUS_S: '1', ANTHROPIC_API_URL: 'http://127.0.0.1:18090/anthropic' }, skip: !which('python3') && 'python3 not found' },
     { file: 'test/incidents.test.js', fresh: true, env: { OFFLINE_GRACE_S: '0', REMIND_HOUR_MS: '2000' } },
     { file: 'test/sessions.test.js', fresh: true, env: { STEP_UP_S: '2' } },
     { file: 'test/sessions-restart.test.js', fresh: false },
@@ -189,7 +190,7 @@ async function main() {
     }
     const seeds = { 'history.ui.js': require('./history.test.js').seed, 'docs-nav.ui.js': require('./ui/docs-nav.ui.js').seed, 'energy.ui.js': require('./energy.test.js').seed };
     for (const f of fs.readdirSync(path.join(__dirname, 'ui')).filter((x) => x.endsWith('.ui.js')))
-      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' }, 'lookout-updates.ui.js': { LOOKOUT_GITHUB_API: 'https://127.0.0.1:18443/gh', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), UPDATE_CHECK_GAP_S: '1', LOOKOUT_VERSION_FILE: path.join(tmp, 'VERSION-lookout-ui') } }[f], noAdmin: f === 'setup.ui.js', skip: !playwright && 'Playwright not installed' });
+      suites.push({ file: `test/ui/${f}`, fresh: true, seed: seeds[f], env: { 'sessions.ui.js': { STEP_UP_S: '3' }, 'incidents.ui.js': { OFFLINE_GRACE_S: '0' }, 'passkeys.ui.js': { STEP_UP_S: '3' }, 'claude.ui.js': { CLAUDE_STATUS_URL: 'http://127.0.0.1:18090/claudestatus', CLAUDE_STATUS_S: '2' }, 'lookout-updates.ui.js': { LOOKOUT_GITHUB_API: 'https://127.0.0.1:18443/gh', PUBLIC_FETCH_ALLOW_LOCAL: '1', PUBLIC_FETCH_ONLY: '127.0.0.1', PUBLIC_FETCH_CA: path.join(tmp, 'cert.pem'), UPDATE_CHECK_GAP_S: '1', LOOKOUT_VERSION_FILE: path.join(tmp, 'VERSION-lookout-ui') } }[f], noAdmin: f === 'setup.ui.js', skip: !playwright && 'Playwright not installed' });
   }
 
   let passed = 0;

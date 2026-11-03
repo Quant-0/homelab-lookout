@@ -48,6 +48,12 @@ const cleanup = [];
 process.on('exit', () => cleanup.forEach((fn) => { try { fn(); } catch {} }));
 const which = (b) => (process.env.PATH || '').split(':').concat(['/usr/sbin']).map((d) => path.join(d, b)).find((p) => fs.existsSync(p));
 
+// a time in Oslo: weekday, day, hour and minute
+const osloParts = (ms) => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Oslo', weekday: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { weekday: p.weekday, day: p.day, hour: p.hour, minute: p.minute, time: `${p.hour}:${p.minute}` };
+};
+
 (async () => {
   const req = client(BASE);
   await req.login();
@@ -65,6 +71,27 @@ const which = (b) => (process.env.PATH || '').split(':').concat(['/usr/sbin']).m
   ok(r.status === 400, 'invalid time rejected');
   r = await req('PUT', '/api/admin/backup/settings', { schedule: { enabled: true, time: '03:30', keep: 3 }, passphrase: PASS });
   ok(r.status === 200 && r.json.hasPassphrase && !r.text.includes(PASS), 'schedule saved, passphrase write-only');
+  ok(r.json.schedule.every === 'day' && r.json.next > Date.now() && r.json.next - Date.now() <= 864e5 + 3600e3 && osloParts(r.json.next).time === '03:30' && r.json.scheduleText === 'every day at 03:30', 'without an interval it backs up every day, at the time');
+  // intervals: every few hours, a day of the week, a day of the month
+  const put = (schedule) => req('PUT', '/api/admin/backup/settings', { schedule: { enabled: true, time: '03:30', keep: 3, ...schedule } });
+  r = await put({ every: 'hours', hours: 5 });
+  ok(r.status === 400 && /hours/.test(r.json.error), 'every 5 hours is not offered (the hours divide the day)');
+  r = await put({ every: 'hours', hours: 6 });
+  let at = osloParts(r.json.next);
+  ok(r.status === 200 && r.json.next - Date.now() <= 6 * 3600e3 + 60e3 && at.minute === '30' && ['03', '09', '15', '21'].includes(at.hour) && /every 6 hours from 03:30/.test(r.json.scheduleText), `every 6 hours: the next one is at 03:30, 09:30, 15:30 or 21:30 (${at.time})`);
+  r = await put({ every: 'week', weekday: 2 });
+  at = osloParts(r.json.next);
+  ok(r.status === 200 && at.weekday === 'Wed' && at.time === '03:30' && r.json.next - Date.now() <= 7 * 864e5 + 3600e3 && r.json.scheduleText === 'every Wednesday at 03:30', 'every week: on the weekday chosen');
+  r = await put({ every: 'month', day: 31 });
+  ok(r.status === 400 && /Day of the month/.test(r.json.error), 'a day of the month is 1–28, so every month has it');
+  r = await put({ every: 'month', day: 15 });
+  at = osloParts(r.json.next);
+  ok(r.status === 200 && at.day === '15' && at.time === '03:30' && r.json.next - Date.now() <= 32 * 864e5, 'every month: on the day chosen');
+  r = await put({ every: 'neon' });
+  ok(r.status === 200 && r.json.schedule.every === 'day', 'an unknown interval is every day');
+  r = await req('PUT', '/api/admin/backup/settings', { schedule: { enabled: false, every: 'week', weekday: 4, time: '03:30', keep: 3 } });
+  ok(r.json.next === null && r.json.schedule.weekday === 4, 'switched off: no next backup, the choice is kept');
+  r = await put({});
 
   // --- download + file format ---
   r = await req('POST', '/api/admin/backup/download', { passphrase: PASS });
