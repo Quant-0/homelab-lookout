@@ -343,6 +343,31 @@
           <div class="form-actions"><button type="submit" class="primary">Save</button><a class="button" href="/status" target="_blank" rel="noopener">Open the status page</a><span class="msg" id="sp-msg" role="status"></span></div>
         </form>
       </section>
+      <section class="card" id="claude-card">
+        <div class="card-head">
+          <div class="title"><h3>Claude</h3><p class="hint">How much Claude is used, as a tile on Home and a panel on the wall display (choose what it shows with Customize there). Any of the three below is enough.</p></div>
+        </div>
+        <h4>Claude Code</h4>
+        <p class="hint">A reporter on each machine where Claude Code runs adds up Claude Code's own logs every 5 minutes and sends only the numbers: tokens per model, sessions and active time, never a prompt, a reply or a file name. It runs as your user (it needs Python 3 and systemd). Plan limits, if you tick them, are asked of Anthropic by the reporter with that machine's own Claude sign-in, which never leaves it; that is an unofficial source that may change.</p>
+        <div class="form-actions"><button type="button" class="primary" id="claude-new">Add reporter</button></div>
+        <div id="claude-editor" class="agent-editor" hidden></div>
+        <div id="claude-list"></div>
+        <form id="claude-form" autocomplete="off">
+          <h4>Status page</h4>
+          <fieldset class="checks" aria-label="Claude status page">
+            <label class="check"><input type="checkbox" name="statusEnabled"> Check status.claude.com every 5 minutes</label>
+            <label class="check"><input type="checkbox" name="statusAlert"> A major outage shows under “Needs you”</label>
+          </fieldset>
+          <p class="hint">Notifications for an outage are switched on with the Claude outage rule on the Alerts tab.</p>
+          <h4>API organization</h4>
+          <p class="hint">For a Claude Console organization: an Admin API key (sk-ant-admin…, made by an admin under Settings → Admin keys) reads the organization's daily tokens and costs once an hour. It is kept encrypted and only sent to api.anthropic.com.</p>
+          <div class="form-grid two">
+            <label><span>Admin API key</span><input name="adminKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-admin01-…"></label>
+            <div class="small muted" id="claude-api-state"></div>
+          </div>
+          <div class="form-actions"><button type="submit" class="primary">Save</button><button type="button" id="claude-key-remove" hidden>Remove the key</button><span class="msg" id="claude-msg" role="status"></span></div>
+        </form>
+      </section>
       </div>
       <div class="tab-panel" role="tabpanel" id="tab-look" aria-labelledby="tabbtn-look" hidden>
       <section class="card" id="appearance-card">
@@ -455,11 +480,27 @@
         <h3>Automatic backups</h3>
         <form id="bk-schedule" autocomplete="off">
           <div class="form-grid">
-            <label class="check"><input type="checkbox" name="enabled"> Back up automatically every day</label>
-            <label><span>Time</span><input name="time" type="time" required></label>
+            <label class="check"><input type="checkbox" name="enabled"> Back up automatically</label>
+            <label><span>How often</span>
+              <select name="every">
+                <option value="hours">Every few hours</option>
+                <option value="day">Every day</option>
+                <option value="week">Every week</option>
+                <option value="month">Every month</option>
+              </select>
+            </label>
+            <label data-every="hours"><span>Every</span>
+              <select name="hours"><option value="1">hour</option><option value="2">2 hours</option><option value="3">3 hours</option><option value="4">4 hours</option><option value="6">6 hours</option><option value="8">8 hours</option><option value="12">12 hours</option></select>
+            </label>
+            <label data-every="week"><span>On</span>
+              <select name="weekday"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select>
+            </label>
+            <label data-every="month"><span>On day</span><input name="day" type="number" min="1" max="28" step="1"></label>
+            <label><span id="bk-time-label">Time</span><input name="time" type="time" required></label>
             <label><span>Copies to keep</span><input name="keep" type="number" min="1" max="100" step="1" required></label>
             <label><span>Passphrase for automatic backups</span><input name="passphrase" type="password" autocomplete="new-password"><span class="hint" id="bk-pass-hint"></span></label>
           </div>
+          <p class="hint" id="bk-next"></p>
           <div class="form-actions">
             <button type="submit" class="primary">Save</button>
             <button type="button" id="bk-run">Back up now</button>

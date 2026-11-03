@@ -8,6 +8,8 @@ const send = (res, code, body, headers = {}) => {
 };
 const basicOk = (req) => req.headers.authorization === 'Basic ' + Buffer.from(`admin:${KEY}`).toString('base64');
 let piholeLogins = 0;
+let claudeIndicator = 'none';
+let anthropicCalls = 0;
 
 const routes = {
   // like Jellyfin 10.11+: the old X-Emby-Token header is refused
@@ -235,6 +237,39 @@ const routes = {
     if (p.includes('action=login_failed')) return send(res, 200, { pagination: { count: 2 } });
     if (p.startsWith('/api/v3/events/events/')) return send(res, 200, { pagination: { count: 14 } });
   },
+  // status.claude.com (CLAUDE_STATUS_URL); POST /claudestatus/set?indicator=major changes what it says
+  claudestatus(req, res, p, q) {
+    if (p.startsWith('/set')) {
+      claudeIndicator = q.get('indicator') || 'none';
+      return send(res, 200, { ok: true });
+    }
+    if (p !== '/api/v2/summary.json') return;
+    const down = claudeIndicator === 'major' || claudeIndicator === 'critical';
+    return send(res, 200, {
+      page: { name: 'Claude' },
+      status: { indicator: claudeIndicator, description: { none: 'All Systems Operational', minor: 'Minor Service Outage', major: 'Partial System Outage', critical: 'Major System Outage' }[claudeIndicator] },
+      components: [{ name: 'claude.ai', status: down ? 'major_outage' : 'operational' }, { name: 'Claude Code', status: 'operational' }, { name: 'A group', group: true, status: 'operational' }],
+      incidents: down ? [{ name: 'Elevated errors on Claude Opus', status: 'investigating', impact: claudeIndicator, shortlink: 'https://stspg.io/abc', updated_at: new Date().toISOString() }] : [],
+    });
+  },
+  // Anthropic's Usage and Cost Analytics API (ANTHROPIC_API_URL); two pages of usage
+  anthropic(req, res, p, q) {
+    if (req.headers['x-api-key'] !== 'sk-ant-admin01-testkey-123') return send(res, 401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+    if (req.headers['anthropic-beta'] !== 'analytics-usage-cost-2026-08-24' || req.headers['anthropic-version'] !== '2023-06-01') return send(res, 400, { error: { message: 'missing headers' } });
+    const today = new Date().toISOString().slice(0, 10);
+    const row = (model, metrics, key) => ({ starting_at: `${today}T00:00:00Z`, ending_at: `${today}T23:59:59Z`, group: { model }, [key]: metrics });
+    if (p.startsWith('/v1/organizations/analytics/usage')) {
+      anthropicCalls++;
+      if (!q.get('page')) return send(res, 200, { data: [row('claude-opus-5-5', { uncached_input_tokens: 1000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 500 }, cache_read_input_tokens: 4000, output_tokens: 2000, total_tokens: 7500, requests: 12 }, 'usage')], has_more: true, next_page: 'page_2', data_refreshed_at: new Date(Date.now() - 3600e3).toISOString() });
+      return send(res, 200, { data: [row('claude-haiku-4-5', { uncached_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }, cache_read_input_tokens: 0, output_tokens: 500, total_tokens: 1000, requests: 3 }, 'usage')], has_more: false, next_page: null, data_refreshed_at: new Date(Date.now() - 3600e3).toISOString() });
+    }
+    if (p.startsWith('/v1/organizations/analytics/cost')) return send(res, 200, { data: [row('claude-opus-5-5', { currency: 'USD', amount: '12345.000000', list_amount: '12345.000000', requests: 12 }, 'cost'), row('claude-haiku-4-5', { currency: 'USD', amount: '55.000000', list_amount: '55.000000', requests: 3 }, 'cost')], has_more: false, next_page: null, data_refreshed_at: null });
+  },
+  // the plan limits a Claude reporter asks for (LOOKOUT_CLAUDE_USAGE_URL)
+  oauthusage(req, res) {
+    if (req.headers.authorization !== 'Bearer oauth-token-123' || req.headers['anthropic-beta'] !== 'oauth-2025-04-20') return send(res, 401, { error: 'unauthorized' });
+    return send(res, 200, { five_hour: { utilization: 37.0, resets_at: new Date(Date.now() + 2 * 3600e3).toISOString() }, seven_day: { utilization: 81.5, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() }, seven_day_opus: null, iguana_necktie: { utilization: 3 }, extra_usage: { is_enabled: false } });
+  },
   custom(req, res, p) {
     if (p === '/stats' && req.headers['x-token'] === KEY) return send(res, 200, { data: { users: 7, nested: { up: 'yes' } }, list: [1, 2] });
     if (p === '/stats') return send(res, 401, {});
@@ -246,8 +281,8 @@ http.createServer((req, res) => {
   const [, name, ...rest] = u.pathname.split('/');
   const p = '/' + rest.join('/');
   const route = routes[name === 'qbittorrent5' ? 'qbittorrent' : name];
-  if (name === '__stats') return send(res, 200, { piholeLogins });
+  if (name === '__stats') return send(res, 200, { piholeLogins, anthropicCalls });
   if (!route) return send(res, 404, {});
-  const handled = route(req, res, p + (u.search && !['tautulli', 'sabnzbd', 'pihole5'].includes(name) ? u.search : ''), u.searchParams);
+  const handled = route(req, res, p + (u.search && !['tautulli', 'sabnzbd', 'pihole5', 'claudestatus', 'anthropic'].includes(name) ? u.search : ''), u.searchParams);
   if (!handled && !res.headersSent) send(res, 404, { error: 'not found', path: p });
 }).listen(18090, '127.0.0.1', () => console.log('services mock on 18090'));

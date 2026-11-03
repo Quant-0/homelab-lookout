@@ -1072,6 +1072,11 @@ function refreshDrawer() {
     drawerFor.box.replaceChildren(powerDetail(lastData.power));
     return;
   }
+  if (drawerFor.id === 'claude') {
+    if (!lastData.claude) return drawerFor.close();
+    drawerFor.box.replaceChildren(Claude.detail(lastData.claude, lastData.loggedIn));
+    return;
+  }
   const info = infos.find((x) => x.id === drawerFor.id);
   if (!info) return drawerFor.close();
   const scroller = drawerFor.box.parentElement;
@@ -1167,6 +1172,28 @@ function powerDetail(p) {
         el('tbody', null, u.days.slice().reverse().map((x) => el('tr', null, el('td', { text: x.date }), el('td', { class: 'r', text: fmt.n(x.kwh, 2) }), el('td', { class: 'r', text: fmt.kr(x.cost) }))))))),
     notes.length ? el('p', { class: 'hint', text: notes.join(' ') }) : null,
     el('div', { class: 'detail-actions' }, el('a', { class: 'button primary', href: '/energy' }, HD.icon('chart-column'), 'Energy report')));
+}
+
+// ---------------------------------------------------------------------------
+// Claude: the tile under power and the internet (claude.js draws it)
+
+let claudeEdit = null; // while Customize is open: { stats, hidden }
+
+function renderClaude(d) {
+  const box = $('claude-sec');
+  const c = d.claude;
+  const edit = editing && c ? claudeEdit : null;
+  box.hidden = !c || (!edit && c.home.hidden);
+  if (box.hidden) return box.replaceChildren();
+  if (edit) edit.onChange = () => renderClaude(lastData);
+  box.replaceChildren(Claude.homeTile(c, openClaude, edit));
+}
+
+function openClaude() {
+  if (!lastData?.claude) return;
+  const box = el('div', null, Claude.detail(lastData.claude, lastData.loggedIn));
+  const { close } = HD.drawer('Claude', box, { onClose: () => (drawerFor = null) });
+  drawerFor = { id: 'claude', box, close };
 }
 
 // The internet provider: set in Admin, else what the UniFi console reports
@@ -1667,6 +1694,7 @@ function loadLayout(layout) {
 function startEdit() {
   editing = true;
   savedLayout = { order: [...tileOrder], hidden: new Set(tileHidden) };
+  claudeEdit = lastData.claude ? { stats: [...lastData.claude.home.stats], hidden: lastData.claude.home.hidden } : null;
   tileOrder = orderedInfos().map((x) => x.id);
   render(lastData);
 }
@@ -1687,8 +1715,15 @@ function renderEditBar() {
   if (!editing) return bar.replaceChildren();
   const msg = el('span', { class: 'msg', role: 'status' });
   bar.replaceChildren(
-    el('p', { class: 'hint', text: 'Drag tiles to change their order. The eye hides a tile from Home (it stays in the rack and in search).' }),
-    el('button', { type: 'button', text: 'Reset', onclick: () => { tileOrder = []; tileHidden.clear(); tileOrder = orderedInfos().map((x) => x.id); renderDevices(); } }),
+    el('p', { class: 'hint', text: `Drag tiles to change their order. The eye hides a tile from Home (it stays in the rack and in search).${claudeEdit ? ' Tick what the Claude tile shows.' : ''}` }),
+    el('button', { type: 'button', text: 'Reset', onclick: () => {
+      tileOrder = [];
+      tileHidden.clear();
+      tileOrder = orderedInfos().map((x) => x.id);
+      if (claudeEdit) Object.assign(claudeEdit, { stats: ['tokens', 'cost', 'limits', 'status'], hidden: false });
+      renderDevices();
+      renderClaude(lastData);
+    } }),
     el('button', { type: 'button', text: 'Cancel', onclick: () => stopEdit(true) }),
     el('button', {
       type: 'button',
@@ -1696,7 +1731,8 @@ function renderEditBar() {
       text: 'Save',
       onclick: async () => {
         try {
-          await HD.api('PUT', '/api/admin/layout', { v: 3, items: tileOrder.map((id) => ({ id: `device:${id}` })), hidden: [...tileHidden].map((id) => `device:${id}`) });
+          const r = await HD.api('PUT', '/api/admin/layout', { v: 3, items: tileOrder.map((id) => ({ id: `device:${id}` })), hidden: [...tileHidden].map((id) => `device:${id}`), claude: claudeEdit ? { stats: claudeEdit.stats, hidden: claudeEdit.hidden } : lastData.claude?.home });
+          if (lastData.claude) lastData.claude.home = r.layout.claude;
           stopEdit(false);
         } catch (e) {
           msg.textContent = e.message;
@@ -1741,7 +1777,7 @@ function renderHeader(d) {
   HD.shell({ active: view === 'rack' ? 'rack' : 'overview', title: d.title, admin: d.loggedIn, viewer: d.viewer, updates: d.updates?.available || 0, rack: Boolean(d.rack?.enabled) });
   $('page-title').textContent = view === 'rack' ? 'Rack' : d.title;
   $('nav').replaceChildren(...[
-    d.loggedIn && view === 'home' && infos.length ? HD.iconButton('sliders-horizontal', 'Customize', { id: 'customize', disabled: editing, onclick: startEdit }) : null,
+    d.loggedIn && view === 'home' && (infos.length || d.claude) ? HD.iconButton('sliders-horizontal', 'Customize', { id: 'customize', disabled: editing, onclick: startEdit }) : null,
     HD.iconButton('tv', 'Wall display', { href: '/wall', class: 'ghost' }),
   ].filter(Boolean));
 }
@@ -1759,6 +1795,7 @@ function render(d) {
   renderSummary(d);
   renderNeeds(d);
   $('hero').replaceChildren(...[powerTile(d.power), internetTile(d)].filter(Boolean));
+  renderClaude(d);
   renderDevices();
   renderServicesSec(servicesData, d.homeServices);
   renderVms(d);
@@ -1774,6 +1811,11 @@ function render(d) {
 
 // Search results link to /#device-<id>; the rack is /#rack
 function jumpToHash() {
+  if (location.hash === '#claude') {
+    history.replaceState(null, '', location.pathname);
+    openClaude();
+    return;
+  }
   const m = /^#device-([0-9a-f-]{36})$/.exec(location.hash);
   if (m) {
     history.replaceState(null, '', location.pathname);

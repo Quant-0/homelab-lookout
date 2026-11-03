@@ -214,6 +214,24 @@ h2, h3 { break-after: avoid; }
   <p><b>Internet</b> comes from your gateway (UniFi or Omada), with your provider and its logo. The public IP is only shown to people who are signed in.</p>
 </section>
 
+<section class="page">
+  <h2>Claude</h2>
+  <p>When it is set up in <span class="ui">Admin → Dashboard → Claude</span>, a <b>Claude</b> tile shows how much Claude is used: Claude Code's tokens today and over the week, what that would cost at API prices, how much of your plan's limits is used, and whether Claude itself is up.</p>
+  <figure><img src="img/claude-tile.png" alt=""><figcaption><b>The Claude tile:</b> today's tokens, the cost at API prices, the last 7 days and the plan limits.</figcaption></figure>
+  <div class="two-wide">
+    <figure><img src="img/claude-drawer.png" alt=""><figcaption><b>Claude details:</b> the limits with when they reset, today, the week and the month, tokens per day, models and machines.</figcaption></figure>
+    <div>
+      <ul>
+        <li><b>Claude reporter:</b> a small script on each machine where Claude Code runs adds up its logs every 5 minutes and sends only the numbers, never a prompt or a reply. With <i>Plan limits</i> ticked it also asks Anthropic how much of the 5-hour and weekly limits is used, with that machine's own sign-in (an unofficial source that may change).</li>
+        <li><b>Status page:</b> what status.claude.com says; a major outage shows under "Needs you".</li>
+        <li><b>API organization:</b> a Claude Console organization's daily tokens and cost, with an Admin API key.</li>
+        <li>Costs for Claude Code are <b>estimates at API prices</b>; a Pro or Max plan is billed by subscription.</li>
+        <li><span class="ui">Customize</span> chooses what the tile shows. On the wall it is a big number, limit rings, a full tile or a ticker line.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <section>
   <h2>Devices and their details</h2>
   <p>Each device has a tile with its drawing, one status (<b>OK</b>, <b>Warning</b>, <b>Fault</b>, <b>Offline</b>, <b>Unreachable</b> or <b>Maintenance</b>), its worst problem or model, and one key number. Click a tile for the details: problems first, then numbers, graphs, power supplies, fans, drives, ports, VMs and containers, with buttons for its Docs sheet and Admin.</p>
@@ -544,6 +562,7 @@ h2, h3 { break-after: avoid; }
         <li><b>Title</b>, <b>internet provider</b> (and its logo) and <b>refresh interval</b>.</li>
         <li><b>Services on Home</b> and <b>VMs and containers</b>: where they show and with which numbers.</li>
         <li><b>Status page:</b> switch on the public <code>/status</code> page (chapter 5).</li>
+        <li><b>Claude:</b> reporters for Claude Code, the Claude status page and an API organization's Admin key (chapter 3).</li>
       </ul>
       <div class="note warn"><b>Keep "Make the dashboard public" off</b> unless you really mean it: it shows Home, the rack and services to anyone who can reach the server. Share the status page instead.</div>
     </div>
@@ -582,7 +601,7 @@ h2, h3 { break-after: avoid; }
   <ul>
     <li><b>Download now</b> gives one encrypted file with everything, including all passwords. Choose a passphrase of at least 12 characters and keep it in your password manager.</li>
     <li><b>Restore</b> reads such a file; the current state is saved first.</li>
-    <li><b>Automatic backups</b> run daily and can also go to a NAS folder, S3 storage or another machine over SSH.</li>
+    <li><b>Automatic backups</b> run every few hours, every day, every week or every month at the time you set, and can also go to a NAS folder, S3 storage or another machine over SSH. Admin shows when the next one runs.</li>
   </ul>
   <div class="note"><b>Moving to a new server:</b> download a backup, install Lookout on the new machine, and restore it. Devices keep their passwords because they travel inside the encrypted backup.</div>
 </section>

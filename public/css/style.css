@@ -2424,3 +2424,93 @@ pre.ck-code { white-space: pre-wrap; word-break: break-all; font-size: 12px; bac
 .upd-howto { color: var(--text-2); overflow-wrap: anywhere; }
 .upd-notes-text { overflow-wrap: anywhere; max-height: 22em; overflow-y: auto; margin-top: 6px; color: var(--text-2); }
 .upd-notes-text h2, .upd-notes-text h3 { font-size: 14px; margin: 8px 0 4px; }
+
+/* ---- Claude: the tile on Home, its drawer, the wall panel and ticker (claude.js) ---- */
+#claude-sec { margin-top: 16px; }
+.claude-tile { --line-c: var(--accent); width: 100%; min-height: 0; padding-bottom: 22px; cursor: pointer; }
+div.claude-tile { cursor: default; }
+.claude-tile.tile-off { opacity: 0.5; }
+.editing .claude-tile { outline: 1px dashed var(--accent-line); outline-offset: 2px; }
+.claude-tile .big-num { font-size: clamp(54px, 6vw, 84px); }
+.claude-tile .big-num small { white-space: nowrap; }
+.big-num.good { color: var(--good); }
+.big-num.warning { color: var(--warning-ink); }
+.big-num.critical { color: var(--critical-ink); }
+.cl-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); gap: 22px 32px; align-items: end; }
+.cl-body > :only-child { grid-column: 1 / -1; }
+.cl-main { display: flex; flex-direction: column; min-width: 0; }
+@media (max-width: 900px) { .cl-body { grid-template-columns: minmax(0, 1fr); } }
+.cl-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; font-weight: 500; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-status.warning { color: var(--warning-ink); }
+.cl-status.critical { color: var(--critical-ink); }
+.big-head .cl-status { margin-left: 6px; }
+.cl-sub { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 2px; }
+
+.cl-bars { display: flex; align-items: flex-end; gap: 6px; height: 112px; min-width: 0; }
+.cl-bars > span { position: relative; flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 3px; }
+.cl-bars i { display: block; width: 100%; max-width: 30px; height: var(--h); min-height: 3px; border-radius: 5px 5px 2px 2px; background: color-mix(in srgb, var(--line-c, var(--accent)) 34%, transparent); }
+.cl-bars i:only-child, .cl-bars small:first-child { margin-top: auto; }
+.cl-bars .now i { background: linear-gradient(180deg, color-mix(in srgb, var(--line-c, var(--accent)) 85%, #fff), var(--line-c, var(--accent))); box-shadow: 0 0 calc(18px * var(--glow)) -4px var(--line-c, var(--accent)); }
+.cl-bars small { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1; }
+.cl-bars.wide { gap: 3px; height: 130px; }
+.cl-bars.wide i { border-radius: 3px 3px 1px 1px; }
+
+.cl-limits { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cl-meter { display: grid; grid-template-columns: minmax(62px, auto) minmax(60px, 1fr) auto; grid-template-areas: 'l bar pct' '. when when'; gap: 2px 10px; align-items: center; font-size: 13px; color: var(--muted); }
+.cl-meter .l { grid-area: l; }
+.cl-meter .bar { grid-area: bar; display: block; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); overflow: hidden; }
+.cl-meter .bar i { display: block; height: 100%; width: var(--w); border-radius: 3px; background: var(--c, var(--good)); box-shadow: 0 0 10px color-mix(in srgb, var(--c, var(--good)) 55%, transparent); }
+.cl-meter strong { grid-area: pct; color: var(--text); font-size: 15px; font-weight: 600; text-align: right; }
+.cl-meter .when { grid-area: when; font-size: 11.5px; text-align: right; }
+.cl-meter.warning, .cl-ring.warning { --c: var(--warning); }
+.cl-meter.critical, .cl-ring.critical { --c: var(--critical); }
+
+.cl-edit { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 16px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.cl-edit legend { padding: 0 4px; }
+
+.claude-card .cl-sec { margin-top: 18px; }
+.claude-card .cl-sec > h4 { margin: 0 0 10px; }
+.claude-card .cl-sec h4:not(:first-child), .claude-card .power-chart { margin-top: 18px; }
+.claude-card .cl-sec h4 + .table-wrap, .claude-card .kv { margin-top: 12px; }
+.claude-card .cl-limits { max-width: 520px; }
+.cl-table td:first-child { white-space: nowrap; }
+.cl-components { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 18px; margin: 0; padding: 0; list-style: none; }
+.cl-components li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; font-size: 13.5px; }
+.cl-components li .small { grid-column: 2; }
+
+/* the wall */
+.wall .claude { cursor: pointer; --line-c: var(--accent); }
+.wall .claude .lbl .cl-status { font-size: inherit; }
+.wall .claude .huge small { white-space: nowrap; }
+.wall .huge.good { color: var(--good); }
+.wall .huge.warning { color: var(--warning-ink); }
+.wall .huge.critical { color: var(--critical-ink); }
+.cl-wall-bars .cl-bars { position: absolute; inset: 0; height: auto; }
+.wall .claude .cl-limits { margin-bottom: clamp(6px, 1vh, 12px); }
+.wall .claude .cl-meter { font-size: clamp(12px, 1.5vh, 16px); }
+.wall .claude .cl-meter strong { font-size: clamp(14px, 1.9vh, 20px); }
+.cl-rings { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: space-evenly; margin: clamp(6px, 1vh, 12px) 0; container-type: size; }
+.cl-ring { position: relative; flex: none; width: min(44cqw, 100cqh - 2.2em); aspect-ratio: 1; display: grid; place-items: center; margin-bottom: 1.6em; }
+.cl-ring svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.cl-ring circle { fill: none; stroke-width: 8; }
+.cl-ring .track { stroke: color-mix(in srgb, var(--text) 8%, transparent); }
+.cl-ring .arc { stroke: var(--c, var(--good)); stroke-linecap: round; filter: drop-shadow(0 0 calc(6px * var(--glow)) var(--c, var(--good))); }
+.cl-ring .in { position: relative; text-align: center; line-height: 1; }
+.cl-ring .in b { display: block; font-size: clamp(22px, 4.4vh, 54px); font-weight: 600; letter-spacing: -0.05em; }
+.cl-ring .in b small { font-size: 0.45em; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+.cl-ring .in span { display: block; margin-top: 4px; font-size: clamp(11px, 1.4vh, 15px); color: var(--muted); }
+.cl-ring .when { position: absolute; bottom: -1.6em; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: clamp(10px, 1.2vh, 13px); color: var(--muted); }
+.cl-ticker { flex: none; display: flex; align-items: center; gap: clamp(14px, 2vw, 34px); min-width: 0; padding: clamp(8px, 1.2vh, 14px) clamp(14px, 1.6vw, 22px); border: 1px solid var(--border); border-radius: 14px; background: var(--surface); font-size: clamp(13px, 1.7vh, 19px); color: var(--muted); white-space: nowrap; overflow: hidden; cursor: pointer; }
+.cl-ticker[hidden] { display: none; }
+.cl-tick-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); }
+.cl-tick-name .icon { width: 1.1em; height: 1.1em; color: var(--accent); }
+.cl-ticker .cl-status { font-size: inherit; }
+.cl-tick b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* a Claude panel that is small: the unit goes under the number, and the limit bars give way to the chart */
+.wall .claude { container-type: size; }
+@container (max-width: 520px) { .wall .claude .huge small { display: block; margin: 0.25em 0 0; } }
+@container (max-height: 380px) { .wall .claude .cl-limits { display: none; } }
+@container (min-height: 381px) { .wall .claude .cl-short { display: none; } }
+@container (max-height: 380px) { .wall .claude .cl-tall { display: none; } }
+.wall .claude .cl-trio { margin-top: auto; }
+@container (max-height: 260px) { .wall .claude .cl-wall-bars { display: none; } }

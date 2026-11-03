@@ -30,6 +30,25 @@ http.createServer((q, res) => {
   return json(200, { cpu_stats: { cpu_usage: { total_usage: cpuT * (1 + C.indexOf(c)) }, system_cpu_usage: sysT, online_cpus: 4 }, memory_stats: { usage: c.mem, limit: 8e9, stats: { inactive_file: 0 } } });
 }).listen(18471, '127.0.0.1');
 
+// Claude Code in the sample lab: a reporter with two weeks of made-up use (the same numbers every time)
+function sampleClaude() {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const hours = {};
+  const now = Date.now();
+  for (let h = 14 * 24; h >= 0; h--) {
+    const t = now - h * 3600e3;
+    const hour = new Date(t).getUTCHours();
+    if (hour < 7 || hour > 21 || rnd() < 0.45) continue;
+    const k = 0.4 + rnd() * 1.6;
+    hours[new Date(t).toISOString().slice(0, 13)] = { s: rnd() < 0.3 ? 1 : 0, a: Math.round(20 + rnd() * 40), m: {
+      'claude-opus-5-5': [Math.round(900 * k), Math.round(42000 * k), Math.round(5.2e6 * k), 0, Math.round(160000 * k), Math.round(60 * k)],
+      ...(rnd() < 0.4 ? { 'claude-sonnet-5-5': [Math.round(400 * k), Math.round(15000 * k), Math.round(1.1e6 * k), Math.round(60000 * k), 0, Math.round(25 * k)] } : {}),
+    } };
+  }
+  return { reporter: '1.0.0', hostname: 'workstation', hours, limits: { plan: 'max', fiveHour: { pct: 34, resetsAt: new Date(now + 2.4 * 3600e3).toISOString() }, sevenDay: { pct: 61, resetsAt: new Date(now + 3.2 * 864e5).toISOString() } } };
+}
+
 (async () => {
   const b = await chromium.launch();
   const ctx = await b.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2, colorScheme: 'dark' });
@@ -54,7 +73,7 @@ http.createServer((q, res) => {
   await p.fill('#username', 'admin'); await p.fill('#password', 'correct horse battery'); await p.click('button[type=submit]'); await p.waitForURL(B + '/');
 
   // set the scene: logo, provider logo, faster refresh, patch panel and cables
-  await p.evaluate(async (svg) => {
+  await p.evaluate(async ({ svg, claude }) => {
     const { csrf } = await (await fetch('/api/session')).json();
     const H = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
     const up = await (await fetch('/api/admin/logo', { method: 'POST', headers: { 'Content-Type': 'image/svg+xml', 'X-CSRF-Token': csrf }, body: svg })).json();
@@ -83,9 +102,12 @@ http.createServer((q, res) => {
     await fetch('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ dashboard: { ...cfg2.settings.dashboard, statusPage: { enabled: true, title: 'Lab status' }, linkUrl: 'https://lookout.home.arpa:8443' } }) });
     await fetch('/api/admin/alerts/channels', { method: 'POST', headers: H, body: JSON.stringify({ type: 'push', name: 'Phones' }) });
     await fetch('/api/admin/alerts/channels', { method: 'POST', headers: H, body: JSON.stringify({ type: 'ntfy', name: 'ntfy', url: 'https://ntfy.sh', topic: 'homelab-x7k2p9q4m3', auth: 'none' }) });
+    // Claude Code on a workstation, with plan limits
+    const cr = await (await fetch('/api/admin/claude/reporters', { method: 'POST', headers: H, body: JSON.stringify({ name: 'workstation', limits: true }) })).json();
+    await fetch('/claude/report', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cr.reporter.id}.${cr.token}` }, body: JSON.stringify(claude) });
     // a Docker host, and a device reached through the switch
     await fetch('/api/admin/devices', { method: 'POST', headers: H, body: JSON.stringify({ name: 'apps', kind: 'server', location: 'none', connections: [{ type: 'docker', address: '127.0.0.1:18471' }], parent: id('core-switch') }) });
-  }, SVG);
+  }, { svg: SVG, claude: sampleClaude() });
   // a new public IP, so Home shows the notice
   await fetch('https://127.0.0.1:18443/__wan?ip=203.0.113.99').catch(() => {});
   await sleep(14000);
@@ -99,6 +121,12 @@ http.createServer((q, res) => {
     await p.keyboard.press('Escape');
   });
   await shot('net-card', () => el('net-card', '.big.net'));
+  await shot('claude-tile', () => el('claude-tile', '#claude-sec'));
+  await shot('claude-drawer', async () => {
+    await p.click('.claude-tile'); await sleep(1200);
+    await top('claude-drawer');
+    await p.keyboard.press('Escape'); await sleep(500);
+  });
   await shot('power-drawer', async () => {
     await p.click('.power-tile'); await sleep(1800);
     await top('power-drawer');
@@ -241,6 +269,18 @@ http.createServer((q, res) => {
   await w.goto(B + '/login'); await w.fill('#username', 'admin'); await w.fill('#password', 'correct horse battery'); await w.click('button[type=submit]'); await w.waitForURL(B + '/');
   await w.goto(B + '/wall'); await sleep(6000);
   await shot('wall', () => w.screenshot({ path: `${OUT}/wall.png` }));
+  // the Claude panel as limit rings, in place of the problem list; the wall is put back after
+  await shot('claude-wall', async () => {
+    const before = await w.evaluate(async () => (await (await fetch('/api/dashboard')).json()).wall);
+    const put = (lay) => w.evaluate(async (x) => {
+      const { csrf } = await (await fetch('/api/session')).json();
+      await fetch('/api/admin/wall', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(x) });
+    }, lay);
+    await put({ ...before, hidden: [...before.hidden.filter((x) => x !== 'claude'), 'list'], claude: { style: 'rings', stats: ['tokens', 'cost', 'limits', 'status'] } });
+    await w.reload(); await sleep(4000);
+    await w.screenshot({ path: `${OUT}/claude-wall.png` });
+    await put(before);
+  });
   await shot('wall-customize', async () => {
     await w.mouse.move(1700, 60); await sleep(300);
     await w.click('#wall-customize'); await sleep(900);
