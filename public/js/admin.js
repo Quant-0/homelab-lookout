@@ -1147,10 +1147,10 @@ async function loadClaude() {
   }
   const s = claudeState;
   $('claude-list').replaceChildren(s.reporters.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'agents-table' },
-    el('thead', null, el('tr', null, ['Reporter', 'Plan limits', 'Last report', 'Version', ''].map((t) => el('th', { text: t })))),
+    el('thead', null, el('tr', null, ['Reporter', 'Reports', 'Last report', 'Version', ''].map((t) => el('th', { text: t })))),
     el('tbody', null, s.reporters.map((r) => el('tr', null,
       el('td', null, el('span', { class: `led ${r.removedAt ? 'off' : r.ok ? 'good' : r.never ? 'off' : 'critical'}` }), ' ', el('strong', { text: r.name }), r.host ? el('div', { class: 'small muted', text: r.host }) : null),
-      el('td', { class: 'small' }, r.limits ? 'On' : 'Off', r.limits && r.limitsError ? el('div', { class: 'small warning-text', text: r.limitsError }) : null),
+      el('td', { class: 'small' }, [r.usage ? 'Tokens' : null, r.limits ? 'plan limits' : null].filter(Boolean).join(' and ').replace(/^p/, 'P'), r.limits && r.limitsError ? el('div', { class: 'small warning-text', text: r.limitsError }) : null),
       el('td', { class: 'small num', text: r.removedAt ? 'uninstalled there' : r.at ? fmt.time(r.at) : 'never yet' }),
       el('td', { class: 'small num' }, r.version || '–', r.version && r.latest && r.version !== r.latest ? el('div', { class: 'small warning-text', text: `${r.latest} available` }) : null),
       el('td', { class: 'r' }, el('button', { type: 'button', class: 'small', text: 'Edit', onclick: () => openReporter(r) }))))))) : el('p', { class: 'small muted', text: 'No reporters yet.' }));
@@ -1190,9 +1190,10 @@ function openReporter(r, created) {
   const box = $('claude-editor');
   box.hidden = false;
   const name = el('input', { value: r?.name || '', maxlength: 48, required: true, placeholder: 'workstation' });
+  const usage = el('input', { type: 'checkbox', checked: r ? r.usage : true });
   const limits = el('input', { type: 'checkbox', checked: r ? r.limits : false });
   const msg = el('span', { class: 'msg', role: 'status' });
-  const body = () => ({ name: name.value, limits: limits.checked });
+  const body = () => ({ name: name.value, usage: usage.checked, limits: limits.checked });
   const close = () => {
     box.hidden = true;
     box.replaceChildren();
@@ -1204,7 +1205,8 @@ function openReporter(r, created) {
     el('h4', { text: r ? `Edit ${r.name}` : 'New reporter' }),
     el('div', { class: 'form-grid' },
       el('label', null, el('span', { text: 'Name (the machine)' }), name),
-      el('label', { class: 'check wide' }, limits, ' Plan limits: how much of the 5-hour and weekly limits is used (Pro and Max plans)')),
+      el('label', { class: 'check wide' }, usage, ' Claude Code tokens: count what Claude Code on this machine uses (from its logs)'),
+      el('label', { class: 'check wide' }, limits, ' Plan limits: how much of the 5-hour and weekly limits is used, for the whole account, and how the week splits between Claude Code, chats and the rest (Pro and Max plans)')),
     el('div', { class: 'form-actions' },
       el('button', { type: 'button', class: 'primary', text: r ? 'Save' : 'Create and show the install command', onclick: async () => {
         try {

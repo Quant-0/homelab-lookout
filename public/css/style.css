@@ -2514,3 +2514,17 @@ div.claude-tile { cursor: default; }
 @container (max-height: 380px) { .wall .claude .cl-tall { display: none; } }
 .wall .claude .cl-trio { margin-top: auto; }
 @container (max-height: 260px) { .wall .claude .cl-wall-bars { display: none; } }
+/* the week by product: one stacked bar and its keys */
+.cl-split { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+.cl-split .bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cl-split .bar i { display: block; width: var(--w); height: 100%; }
+.cl-split .keys { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12px; }
+.cl-split .keys span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cl-split .keys i { width: 8px; height: 8px; border-radius: 2px; }
+.cl-split .p0 { background: var(--accent); }
+.cl-split .p1 { background: var(--net); }
+.cl-split .p2 { background: var(--power); }
+.cl-split .p3 { background: var(--muted); }
+/* without the token bars (plan limits only), the limits take the rest of the row */
+.cl-body:not(:has(.cl-bars)) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); }
+@media (max-width: 900px) { .cl-body:not(:has(.cl-bars)) { grid-template-columns: minmax(0, 1fr); } }

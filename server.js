@@ -7856,9 +7856,10 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (!cr[2] && m === 'PUT') {
       Object.assign(r, validateClaudeReporter(await readBody(req)));
       if (!r.limits && claudeData.reporters[r.id]) claudeData.reporters[r.id].limits = null;
+      if (!r.usage && claudeData.reporters[r.id]) claudeData.reporters[r.id].hours = {};
       saveConfig();
       saveClaudeData();
-      event('settings', `Claude reporter updated: ${r.name}${r.limits ? ' (with plan limits)' : ''}`);
+      event('settings', `Claude reporter updated: ${r.name} (${[r.usage ? 'tokens' : null, r.limits ? 'plan limits' : null].filter(Boolean).join(' and ')})`);
       return sendJson(res, 200, { ok: true });
     }
     if (!cr[2] && m === 'DELETE') {
@@ -11831,7 +11832,7 @@ function claudeModelName(model) {
 function normalizeClaude(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   return {
-    reporters: (Array.isArray(r.reporters) ? r.reporters : []).filter((x) => UUID.test(x?.id) && /^[0-9a-f]{64}$/.test(x.tokenHash || '')).slice(0, MAX_CLAUDE_REPORTERS),
+    reporters: (Array.isArray(r.reporters) ? r.reporters : []).filter((x) => UUID.test(x?.id) && /^[0-9a-f]{64}$/.test(x.tokenHash || '')).slice(0, MAX_CLAUDE_REPORTERS).map((x) => ({ ...x, usage: x.usage !== false, limits: x.limits === true })),
     adminKey: typeof r.adminKey === 'string' && r.adminKey.startsWith('v1.') ? r.adminKey : null,
     status: { enabled: r.status?.enabled === true, alert: r.status?.alert !== false },
   };
@@ -11841,7 +11842,9 @@ const claudeOn = () => Boolean(config.claude.reporters.length || config.claude.a
 const claudeKeyHost = () => ({ id: 'claude-admin-key', type: 'anthropic', address: 'api.anthropic.com', username: '', tlsMode: 'verify', fingerprint: '', secret: config.claude.adminKey });
 
 function validateClaudeReporter(b) {
-  return { name: str(b.name, 48, 'Name', { required: true }), limits: b.limits === true };
+  const out = { name: str(b.name, 48, 'Name', { required: true }), usage: b.usage !== false, limits: b.limits === true };
+  if (!out.usage && !out.limits) throw new UserError('Choose what it reports: Claude Code tokens, plan limits or both');
+  return out;
 }
 
 // What the reporters, the API and the status page last said: kept across restarts
@@ -11876,7 +11879,9 @@ function cleanClaudeReport(j) {
   if (j.limits && typeof j.limits === 'object') {
     const w = (x) => (x && typeof x.pct === 'number' && Number.isFinite(x.pct) ? { pct: Math.max(0, Math.min(1000, x.pct)), resetsAt: Number.isFinite(Date.parse(x.resetsAt)) ? Date.parse(x.resetsAt) : null } : null);
     const l = j.limits;
-    limits = { plan: t(l.plan, 20), error: t(l.error, 160), fiveHour: w(l.fiveHour), sevenDay: w(l.sevenDay), sevenDayOpus: w(l.sevenDayOpus), sevenDaySonnet: w(l.sevenDaySonnet) };
+    // this week's use split by product (Claude Code, Chats, Cowork, Other), in percent
+    const breakdown = (Array.isArray(l.breakdown) ? l.breakdown : []).slice(0, 8).map((x) => ({ key: t(x?.key, 30), name: t(x?.name, 40), pct: typeof x?.pct === 'number' && Number.isFinite(x.pct) ? Math.max(0, Math.min(100, x.pct)) : null })).filter((x) => x.key && x.name && x.pct !== null);
+    limits = { plan: t(l.plan, 20), error: t(l.error, 160), fiveHour: w(l.fiveHour), sevenDay: w(l.sevenDay), sevenDayOpus: w(l.sevenDayOpus), sevenDaySonnet: w(l.sevenDaySonnet), breakdown };
   }
   return { version: t(j.reporter, 20), host: t(j.hostname, 64), hours, limits };
 }
@@ -11905,10 +11910,10 @@ async function handleClaudeReport(req, res, bye = false) {
     delete r.removedAt;
     saveConfig();
   }
-  claudeData.reporters[r.id] = { at: now, ip: clientIp(req), version: data.version, host: data.host, hours: data.hours, limits: r.limits && data.limits ? { ...data.limits, at: now } : r.limits ? prev?.limits || null : null };
+  claudeData.reporters[r.id] = { at: now, ip: clientIp(req), version: data.version, host: data.host, hours: r.usage ? data.hours : {}, limits: r.limits && data.limits ? { ...data.limits, at: now } : r.limits ? prev?.limits || null : null };
   saveClaudeData();
   if (!prev) event('settings', `The Claude reporter ${r.name} reports (${data.host || '?'}, reporter ${data.version || '?'})`);
-  const text = Buffer.from(`limits=${r.limits ? 'yes' : 'no'}\nlatest=${CLAUDE_VERSION || ''}\n`);
+  const text = Buffer.from(`usage=${r.usage ? 'yes' : 'no'}\nlimits=${r.limits ? 'yes' : 'no'}\nlatest=${CLAUDE_VERSION || ''}\n`);
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': text.length });
   return res.end(text);
 }
@@ -12040,7 +12045,7 @@ function claudeAdminState() {
   return {
     reporters: c.reporters.map((r) => {
       const st = claudeReporterState(r);
-      return { id: r.id, name: r.name, limits: r.limits, createdAt: r.createdAt, removedAt: r.removedAt || null, ok: st.ok, at: st.at, never: st.never, host: st.data?.host || null, version: st.data?.version || null, latest: CLAUDE_VERSION, limitsError: st.data?.limits?.error || null, commands: claudeCommands(r) };
+      return { id: r.id, name: r.name, usage: r.usage, limits: r.limits, createdAt: r.createdAt, removedAt: r.removedAt || null, ok: st.ok, at: st.at, never: st.never, host: st.data?.host || null, version: st.data?.version || null, latest: CLAUDE_VERSION, limitsError: st.data?.limits?.error || null, commands: claudeCommands(r) };
     }),
     adminKey: Boolean(c.adminKey),
     api: claudeData.api ? { at: claudeData.api.at, lastOkAt: claudeData.api.lastOkAt, error: claudeData.api.error, refreshedAt: claudeData.api.refreshedAt } : null,
@@ -12110,7 +12115,7 @@ function claudeSummary() {
     }
     const l = st.data?.limits;
     if (r.limits && l && (!limits || l.at > limits.at)) limits = { ...l, machine: r.name };
-    machines.push({ id: r.id, name: r.name, host: st.data?.host || null, ok: st.ok, at: st.at, never: st.never, removedAt: r.removedAt || null, version: st.data?.version || null, latest: CLAUDE_VERSION, limitsOn: r.limits, today: mine.today, week: mine.week });
+    machines.push({ id: r.id, name: r.name, host: st.data?.host || null, ok: st.ok, at: st.at, never: st.never, removedAt: r.removedAt || null, version: st.data?.version || null, latest: CLAUDE_VERSION, usageOn: r.usage, limitsOn: r.limits, today: mine.today, week: mine.week });
   }
   const list = [...days.values()];
   const sum = (rows) => rows.reduce((a, x) => {
@@ -12147,6 +12152,7 @@ function claudeSummary() {
   const s = claudeData.status;
   return {
     reporters: c.reporters.length,
+    usage: c.reporters.filter((r) => r.usage).length, // reporters that count Claude Code's tokens
     today: span(days.get(today)), week: span(sum(list.slice(-7))), month: span(sum(list.filter((x) => x.date.startsWith(today.slice(0, 7))))),
     days: list.map((x) => ({ date: x.date, tokens: x.tokens, cost: round2(x.cost), sessions: x.sessions, active: x.active })),
     models: { today: byTokens(models.today), week: byTokens(models.week) },

@@ -24,7 +24,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForSelector('#claude-card');
   await page.click('#claude-new');
   await page.fill('#claude-editor input:not([type=checkbox])', 'workstation');
-  await page.check('#claude-editor input[type=checkbox]');
+  await page.check('#claude-editor label:has-text("Plan limits") input');
   await page.click('#claude-editor button:has-text("Create and show the install command")');
   await page.waitForSelector('#claude-editor pre');
   const install = await page.textContent('#claude-editor pre');
@@ -32,7 +32,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   check(/workstation/.test(await page.textContent('#claude-list')) && /never yet/.test(await page.textContent('#claude-list')), 'the reporter is listed, not reporting yet');
   const [, id, token] = /--id (\S+) --token (\S+)/.exec(install);
   const hour = new Date().toISOString().slice(0, 13);
-  await page.request.post(`${B}/claude/report`, { headers: { Authorization: `Bearer ${id}.${token}` }, data: { reporter: '1.0.0', hostname: 'ws', hours: { [hour]: { s: 2, a: 45, m: { 'claude-opus-5-5': [1000, 200000, 12000000, 0, 300000, 40] } } }, limits: { plan: 'max', fiveHour: { pct: 42, resetsAt: new Date(Date.now() + 7200e3).toISOString() }, sevenDay: { pct: 93, resetsAt: new Date(Date.now() + 3 * 864e5).toISOString() } } } });
+  await page.request.post(`${B}/claude/report`, { headers: { Authorization: `Bearer ${id}.${token}` }, data: { reporter: '1.0.0', hostname: 'ws', hours: { [hour]: { s: 2, a: 45, m: { 'claude-opus-5-5': [1000, 200000, 12000000, 0, 300000, 40] } } }, limits: { plan: 'max', fiveHour: { pct: 42, resetsAt: new Date(Date.now() + 7200e3).toISOString() }, sevenDay: { pct: 93, resetsAt: new Date(Date.now() + 3 * 864e5).toISOString() }, breakdown: [{ key: 'claude_code', name: 'Claude Code', pct: 80 }, { key: 'chat', name: 'Chats', pct: 20 }] } } });
   await page.check('#claude-form input[name=statusEnabled]');
   await page.click('#claude-form button[type=submit]');
   await page.waitForFunction(() => /Saved/.test(document.getElementById('claude-msg').textContent));
@@ -64,6 +64,17 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.reload();
   await page.waitForSelector('.claude-tile');
   check(!/\$\d/.test(await page.textContent('.claude-tile')), 'and it stays off after Save and a reload');
+
+  // plan limits only: the tile shows the limits, the week by product and the status, no tokens
+  const cs = (await (await page.request.get(`${B}/api/session`)).json()).csrf;
+  await page.request.put(`${B}/api/admin/claude/reporters/${id}`, { data: { name: 'workstation', usage: false, limits: true }, headers: { 'X-CSRF-Token': cs } });
+  await page.reload();
+  await page.waitForSelector('.claude-tile .cl-split');
+  const lim = await page.textContent('.claude-tile');
+  check(/42\s*% of the 5-hour limit/.test(lim) && /Claude Code 80 %/.test(lim) && /Chats 20 %/.test(lim) && !/tokens/.test(lim) && !/\$/.test(lim) && (await page.locator('.claude-tile .cl-bars').count()) === 0, 'limits only: the 5-hour limit as the number, the bars, the week by product, no tokens or cost');
+  await page.screenshot({ path: `${S}/claude-limits-only.png` });
+  await page.request.put(`${B}/api/admin/claude/reporters/${id}`, { data: { name: 'workstation', usage: true, limits: true }, headers: { 'X-CSRF-Token': cs } });
+  await page.request.post(`${B}/claude/report`, { headers: { Authorization: `Bearer ${id}.${token}` }, data: { reporter: '1.1.0', hostname: 'ws', hours: { [hour]: { s: 2, a: 45, m: { 'claude-opus-5-5': [1000, 200000, 12000000, 0, 300000, 40] } } }, limits: { plan: 'max', fiveHour: { pct: 42, resetsAt: new Date(Date.now() + 7200e3).toISOString() }, sevenDay: { pct: 93, resetsAt: new Date(Date.now() + 3 * 864e5).toISOString() } } } });
 
   // the wall: a panel in each style, and the ticker
   const csrf = (await (await page.request.get(`${B}/api/session`)).json()).csrf;
