@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 HOME = os.path.expanduser('~')
 CONF = os.environ.get('LOOKOUT_CLAUDE_CONF') or os.path.join(HOME, '.config', 'lookout-claude', 'reporter.conf')
 STATE_DIR = os.environ.get('LOOKOUT_CLAUDE_STATE') or os.path.join(HOME, '.local', 'state', 'lookout-claude')
@@ -211,8 +211,17 @@ def plan_limits():
 
 # --- sending ---
 
+# The system's trusted certificates, plus the dashboard's own CA when it has one (like curl does):
+# the same address may be the dashboard itself or a reverse proxy with a public certificate
+def tls(conf):
+    ctx = ssl.create_default_context()
+    if conf['CA']:
+        ctx.load_verify_locations(cafile=conf['CA'])
+    return ctx
+
+
 def post(conf, path, body):
-    ctx = ssl.create_default_context(cafile=conf['CA']) if conf['CA'] else None
+    ctx = tls(conf)
     req = urllib.request.Request(conf['URL'].rstrip('/') + path, data=json.dumps(body).encode(), method='POST', headers={
         'Content-Type': 'application/json', 'Authorization': f"Bearer {conf['ID']}.{conf['TOKEN']}", 'User-Agent': f'homelab-lookout-claude/{VERSION}'})
     with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
@@ -287,8 +296,7 @@ def status():
 
 def update():
     conf = read_conf()
-    ctx = ssl.create_default_context(cafile=conf['CA']) if conf['CA'] else None
-    with urllib.request.urlopen(conf['URL'].rstrip('/') + '/claude/lookout-claude.py', timeout=20, context=ctx) as r:
+    with urllib.request.urlopen(conf['URL'].rstrip('/') + '/claude/lookout-claude.py', timeout=20, context=tls(conf)) as r:
         text = r.read()
     if not text.startswith(b'#!/usr/bin/env python3'):
         die('the dashboard did not send a reporter')

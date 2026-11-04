@@ -95,7 +95,7 @@ function reporter(cmd = 'test') {
   let run = reporter();
   ok(run.ok && /4 replies/.test(run.out) && /limits=no/.test(run.out), `the reporter sends, counting each reply once (3 now, 1 ten days ago) (${run.out.trim().split('\n')[0]})`);
   let c = await claude();
-  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.1.0' && c.usage === 1, 'Home has Claude, with the machine reporting');
+  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.1.1' && c.usage === 1, 'Home has Claude, with the machine reporting');
   ok(c.week.tokens === 1476000 && c.week.replies === 3 && c.week.input === 16000 && c.week.output === 160000 && c.week.cacheRead === 1000000 && c.week.cacheWrite === 300000, `7 days: tokens by kind, the error line and the half-written line left out (${c.week.tokens})`);
   ok(Math.abs(c.week.cost - 4.65) < 0.011, `the cost at API prices, cache writes and reads included ($${c.week.cost})`);
   ok(Math.abs(c.week.cacheHit - 1000000 / 1316000) < 1e-6, 'cache hits: reads of all input');
