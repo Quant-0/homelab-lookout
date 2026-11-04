@@ -6,13 +6,13 @@ A **Claude** tile on Home (and a panel on the wall display) shows how much Claud
 
 | Source | What it gives | What it needs |
 |---|---|---|
-| **Claude reporter** | Claude Code on that machine: tokens per model and hour (input, output, cache reads and writes), sessions, active time; and, if you tick it, the **plan limits** (5 hours and the week, with when they reset) | Python 3 and systemd on the machine where Claude Code runs |
+| **Claude reporter** | Claude Code on that machine: tokens per model and hour (input, output, cache reads and writes), sessions, active time; and, if you tick it, the **plan limits** for the whole account (5 hours and the week, with when they reset, and how the week splits between Claude Code, chats and the rest) | Python 3 and systemd on a Linux machine where you are signed in to Claude Code |
 | **Status page** | What [status.claude.com](https://status.claude.com) says: all fine, minor problems or an outage, per part (claude.ai, the API, Claude Code…) and the incidents | Nothing; checked every 5 minutes |
 | **API organization** | A Claude Console organization's daily tokens and costs, per model (the Usage and Cost Analytics API) | An **Admin API key** (`sk-ant-admin…`), made by an organization admin under Settings → Admin keys |
 
 ## Claude reporter
 
-1. **Admin → Dashboard → Claude → Add reporter**. Give it the machine's name, and tick **Plan limits** if you want them (Pro and Max plans).
+1. **Admin → Dashboard → Claude → Add reporter**. Give it the machine's name and choose what it reports: **Claude Code tokens**, **Plan limits** (Pro and Max plans), or both. With only plan limits it never reads the logs, and the tile shows just the limits.
 2. **Create** shows the install command. Run it on the machine **as the user who uses Claude Code**, not with sudo:
 
 ```sh
@@ -33,6 +33,8 @@ On the machine:
 It reads Claude Code's logs in `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR`), only what was added since the last run, and counts each reply once (Claude Code writes a reply once per part). It sends numbers only: **never a prompt, a reply, a file name or a project name**. The last 35 days are sent each time, so the dashboard has them again after a restart.
 
 ### Plan limits
+
+The limits are for your **whole Claude account**: every computer, the claude.ai website and apps, and cloud sessions all count. So one reporter anywhere is enough for them, while tokens are only counted on machines with a reporter. Next to the limits, the tile shows how this week's use splits between Claude Code, Chats, Cowork and Other.
 
 With plan limits ticked, the reporter asks Anthropic how much of the 5-hour and weekly limits is used, with the machine's own Claude sign-in (`~/.claude/.credentials.json`). The sign-in is read there and sent only to Anthropic; it never reaches the dashboard, and the reporter never renews it (Claude Code does that the next time it is used; until then the tile says the sign-in has expired). This is the same source Claude Code's `/usage` uses, but it is **not an official API**: it may change or stop without notice. On a Mac the sign-in is kept in the keychain, so plan limits work on Linux only.
 

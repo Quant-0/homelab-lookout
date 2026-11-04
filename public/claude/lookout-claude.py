@@ -3,7 +3,9 @@
 # used (tokens per model and hour, sessions, active time) from its own logs in ~/.claude, and sends
 # only those numbers to the dashboard: never a prompt, a reply, a file name or a project name.
 # With plan limits on (Admin), it also asks Anthropic how much of the 5-hour and weekly limits is
-# used, with this machine's own Claude sign-in; the sign-in itself never leaves the machine.
+# used, and how the week splits between Claude Code, chats and the rest, with this machine's own
+# Claude sign-in; the sign-in itself never leaves the machine. With token counting off (Admin), it
+# doesn't read the logs at all.
 # Runs as the user who uses Claude Code, from a systemd user timer.
 #
 #   lookout-claude status      what it last sent
@@ -22,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 HOME = os.path.expanduser('~')
 CONF = os.environ.get('LOOKOUT_CLAUDE_CONF') or os.path.join(HOME, '.config', 'lookout-claude', 'reporter.conf')
 STATE_DIR = os.environ.get('LOOKOUT_CLAUDE_STATE') or os.path.join(HOME, '.local', 'state', 'lookout-claude')
@@ -198,6 +200,10 @@ def plan_limits():
         w = d.get(src) if isinstance(d, dict) else None
         if isinstance(w, dict) and isinstance(w.get('utilization'), (int, float)):
             out[dst] = {'pct': w['utilization'], 'resetsAt': w.get('resets_at') if isinstance(w.get('resets_at'), str) else None}
+    rows = (d.get('seven_day_breakdown') or {}).get('rows') if isinstance(d, dict) and isinstance(d.get('seven_day_breakdown'), dict) else None
+    if isinstance(rows, list):
+        out['breakdown'] = [{'key': str(x.get('key'))[:30], 'name': str(x.get('display_name'))[:40], 'pct': x['percent']} for x in rows[:8]
+                            if isinstance(x, dict) and isinstance(x.get('percent'), (int, float)) and x.get('key') and x.get('display_name')]
     if not any(k in out for k in ('fiveHour', 'sevenDay')):
         out['error'] = 'Anthropic did not report any limits for this plan'
     return out
@@ -221,8 +227,12 @@ def report(verbose=False):
     state = load_json(path, {})
     if state.get('v') != 1:
         state = {'v': 1, 'files': {}}
-    scan(state)
-    hours = totals(state)
+    counting = state.get('usage') != 'no'
+    if counting:
+        scan(state)
+    else:
+        state['files'] = {}  # nothing is kept from the logs either
+    hours = totals(state) if counting else {}
     body = {'reporter': VERSION, 'hostname': os.uname().nodename[:64], 'hours': hours}
     if state.get('limits') == 'yes':
         body['limits'] = plan_limits()
@@ -234,7 +244,10 @@ def report(verbose=False):
     except OSError as e:
         save_json(path, state)
         die(f'could not reach the dashboard: {e}')
+    was = (state.get('usage'), state.get('limits'))
     for line in answer.splitlines():
+        if line.startswith('usage='):
+            state['usage'] = line[6:].strip()
         if line.startswith('limits='):
             state['limits'] = line[7:].strip()
         if line.startswith('latest='):
@@ -247,8 +260,9 @@ def report(verbose=False):
         if 'limits' in body:
             say(f"Plan limits: {json.dumps(body['limits'])}")
         say(f'Answer from the dashboard:\n{answer.strip()}')
-    # plan limits were just switched on in Admin: send them right away
-    if state.get('limits') == 'yes' and 'limits' not in body:
+    # what to report was just changed in Admin: send it that way right away
+    changed = was != (None, None) and (state.get('usage'), state.get('limits')) != was
+    if changed or (state.get('limits') == 'yes' and 'limits' not in body) or (state.get('usage') == 'no' and hours):
         report(verbose)
 
 
@@ -261,6 +275,7 @@ def status():
     if state.get('sentAt'):
         s = state['sent']
         say(f"Last report: {time.strftime('%Y-%m-%d %H:%M', time.localtime(state['sentAt']))} ({s['hours']} hours with use, {s['replies']} replies)")
+        say(f"Claude Code tokens: {'counted' if state.get('usage') != 'no' else 'not counted (switched off in Admin)'}")
         say(f"Plan limits: {'on' if state.get('limits') == 'yes' else 'off (switch them on in Admin)'}")
         if s.get('limits'):
             say(f"  {json.dumps(s['limits'])}")

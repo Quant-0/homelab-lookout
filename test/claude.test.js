@@ -95,7 +95,7 @@ function reporter(cmd = 'test') {
   let run = reporter();
   ok(run.ok && /4 replies/.test(run.out) && /limits=no/.test(run.out), `the reporter sends, counting each reply once (3 now, 1 ten days ago) (${run.out.trim().split('\n')[0]})`);
   let c = await claude();
-  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.0.0', 'Home has Claude, with the machine reporting');
+  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.1.0' && c.usage === 1, 'Home has Claude, with the machine reporting');
   ok(c.week.tokens === 1476000 && c.week.replies === 3 && c.week.input === 16000 && c.week.output === 160000 && c.week.cacheRead === 1000000 && c.week.cacheWrite === 300000, `7 days: tokens by kind, the error line and the half-written line left out (${c.week.tokens})`);
   ok(Math.abs(c.week.cost - 4.65) < 0.011, `the cost at API prices, cache writes and reads included ($${c.week.cost})`);
   ok(Math.abs(c.week.cacheHit - 1000000 / 1316000) < 1e-6, 'cache hits: reads of all input');
@@ -119,6 +119,7 @@ function reporter(cmd = 'test') {
   c = await claude();
   ok(run.ok && /limits=yes/.test(run.out) && c.limits?.fiveHour?.pct === 37 && c.limits.sevenDay.pct === 81.5 && c.limits.plan === 'max' && c.limits.machine === 'workstation', 'the next report has the 5-hour and weekly limits (sent right after the switch)');
   ok(c.limits.fiveHour.resetsAt > Date.now() && c.limits.sevenDayOpus === null, 'with when they reset; limits the plan doesn\'t have are left out');
+  ok(c.limits.breakdown.map((x) => `${x.key}:${x.pct}`).join() === 'claude_code:70,chat:30,cowork:0', 'and the week split by product, for the whole account');
   cred(Date.now() - 1000);
   run = reporter();
   c = await claude();
@@ -126,6 +127,22 @@ function reporter(cmd = 'test') {
   cred(Date.now() + 3600e3);
   run = reporter('status');
   ok(run.ok && /Plan limits: on/.test(run.out) && /Last report/.test(run.out), 'lookout-claude status tells what it sent');
+
+  // plan limits only: the logs are not read, and no tokens are kept
+  r = await req('PUT', `/api/admin/claude/reporters/${id}`, { name: 'workstation', usage: false, limits: false });
+  ok(r.status === 400 && /Choose what it reports/.test(r.json.error), 'it has to report something');
+  r = await req('PUT', `/api/admin/claude/reporters/${id}`, { name: 'workstation', usage: false, limits: true });
+  c = await claude();
+  ok(r.status === 200 && c.usage === 0 && c.week.tokens === 0 && c.limits !== null, 'with token counting off the tokens are gone at once, the limits stay');
+  run = reporter();
+  c = await claude();
+  const st = JSON.parse(fs.readFileSync(path.join(state, 'state.json'), 'utf8'));
+  ok(run.ok && /usage=no/.test(run.out) && c.week.tokens === 0 && c.limits.sevenDay.pct === 81.5 && !Object.keys(st.files).length, 'the reporter then sends only the limits, and keeps nothing from the logs');
+  ok(/tokens: not counted/.test(reporter('status').out), 'lookout-claude status says so');
+  r = await req('PUT', `/api/admin/claude/reporters/${id}`, { name: 'workstation', usage: true, limits: true });
+  run = reporter();
+  c = await claude();
+  ok(run.ok && c.usage === 1 && c.week.tokens === 1477000, 'switched back on, it counts the logs again from the start');
 
   // junk in a report
   r = await fetch(`${BASE}/claude/report`, { method: 'POST', headers: { Authorization: `Bearer ${id}.${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ reporter: 'x'.repeat(500), hostname: 'a\u0000b', hours: { 'not-a-key': { s: 1 }, '2026-01-01T00': { s: 5 }, [new Date().toISOString().slice(0, 13)]: { s: -4, a: 9999, m: { 'gpt-4': [1, 1, 1, 1, 1, 1], 'claude-opus-5-5': [1, 'x', -5, 1e20, 0, 1] } } }, limits: { fiveHour: { pct: 'lots' } } }) });

@@ -33,7 +33,7 @@ const Claude = (() => {
     return `resets ${new Date(ms).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
   }
   const has = (c, key) => {
-    if (key === 'tokens' || key === 'cost' || key === 'sessions' || key === 'models') return c.reporters > 0 || (key !== 'sessions' && Boolean(c.api));
+    if (key === 'tokens' || key === 'cost' || key === 'sessions' || key === 'models') return c.usage > 0 || (key !== 'sessions' && Boolean(c.api));
     if (key === 'limits') return Boolean(c.limits && (c.limits.fiveHour || c.limits.sevenDay || c.limits.error));
     if (key === 'status') return Boolean(c.status);
     return false;
@@ -48,7 +48,7 @@ const Claude = (() => {
 
   // The headline: Claude Code today, else the API, else the plan limits, else the status
   function headline(c, stats) {
-    const code = c.reporters > 0;
+    const code = c.usage > 0;
     // fact: the wall's label for the same number, left out of the numbers under it
     if (stats.includes('tokens') && (code || c.api)) return { value: tok(code ? c.today.tokens : c.api.today.tokens), unit: code ? 'tokens today' : 'API tokens today', fact: 'Tokens today' };
     if (stats.includes('cost') && (code || c.api)) return code ? { value: usd(c.today.cost), unit: 'today at API prices', fact: 'Today' } : { value: usd(c.api.month), unit: 'API this month', fact: 'API month' };
@@ -60,7 +60,7 @@ const Claude = (() => {
   // The smaller numbers under the headline, for the stats chosen
   function facts(c, stats) {
     const out = [];
-    const code = c.reporters > 0;
+    const code = c.usage > 0;
     if (stats.includes('tokens') && code) out.push([tok(c.week.tokens), 'tokens, 7 days']);
     if (stats.includes('cost')) {
       if (code) out.push([usd(c.today.cost), 'today'], [usd(c.week.cost), '7 days']);
@@ -97,9 +97,22 @@ const Claude = (() => {
       el('strong', { class: 'num', text: `${fmt.n(w.pct)} %` }),
       el('span', { class: 'when', text: resetText(w.resetsAt) }));
   }
-  function limitRows(l) {
+  function limitRows(l, split = false) {
     if (!l) return [];
-    return [meter('5 hours', l.fiveHour), meter('Week', l.sevenDay), meter('Week, Opus', l.sevenDayOpus), meter('Week, Sonnet', l.sevenDaySonnet)].filter(Boolean);
+    return [meter('5 hours', l.fiveHour), meter('Week', l.sevenDay), meter('Week, Opus', l.sevenDayOpus), meter('Week, Sonnet', l.sevenDaySonnet), split ? splitBar(l.breakdown) : null].filter(Boolean);
+  }
+  // this week's use by product (Claude Code, Chats, Cowork, Other), across the whole account
+  function splitBar(rows) {
+    const list = (rows || []).filter((x) => x.pct > 0);
+    if (!list.length) return null;
+    return el('div', { class: 'cl-split' },
+      el('span', { class: 'l', text: 'This week by product' }),
+      el('span', { class: 'bar', role: 'img', 'aria-label': list.map((x) => `${x.name} ${fmt.n(x.pct)} %`).join(', ') }, list.map((x, i) => {
+        const part = el('i', { class: `p${i % 4}`, title: `${x.name}: ${fmt.n(x.pct)} %` });
+        part.style.setProperty('--w', `${x.pct}%`);
+        return part;
+      })),
+      el('span', { class: 'keys' }, list.map((x, i) => el('span', null, el('i', { class: `p${i % 4}` }), `${x.name} ${fmt.n(x.pct)} %`))));
   }
 
   function ring(label, w) {
@@ -115,7 +128,7 @@ const Claude = (() => {
   // --- Home: the tile ---
   // edit: { stats, hidden, onChange(stats, hidden) } while Customize is open
   function homeTile(c, onOpen, edit = null) {
-    const stats = edit ? edit.stats : c.home.stats;
+    const stats = shown(c, edit ? edit.stats : c.home.stats);
     const h = headline(c, stats);
     const l = stats.includes('limits') ? c.limits : null;
     const b = el(edit ? 'div' : 'button', { type: edit ? null : 'button', class: `big claude-tile${edit?.hidden ? ' tile-off' : ''}`, 'aria-label': edit ? null : 'Claude usage' },
@@ -126,10 +139,10 @@ const Claude = (() => {
         el('span', { class: 'cl-main' },
           el('span', { class: `big-num${h.cls ? ` ${h.cls}` : ''}` }, h.value, el('small', { text: h.unit })),
           el('span', { class: 'big-facts' }, facts(c, stats).map(([v, t]) => el('span', null, el('strong', { text: v }), ` ${t}`)))),
-        stats.includes('tokens') && c.reporters > 0 ? bars(c.days, 7) : null,
+        stats.includes('tokens') && c.usage > 0 ? bars(c.days, 7) : null,
         l ? el('span', { class: 'cl-limits' },
           el('span', { class: 'cl-sub', text: [l.plan ? `${PLANS[l.plan] || l.plan} plan` : 'Plan', 'limits'].join(' ') }),
-          limitRows(l), l.error ? el('span', { class: 'small muted', text: l.error }) : null) : null),
+          limitRows(l, true), l.error ? el('span', { class: 'small muted', text: l.error }) : null) : null),
       edit ? editBox(edit) : null);
     if (!edit) b.addEventListener('click', onOpen);
     return b;
@@ -160,7 +173,7 @@ const Claude = (() => {
   function detail(c, loggedIn) {
     const tile = (label, v, unit, sub) => el('div', { class: 'ptile' }, el('span', { class: 'l', text: label }), el('span', { class: 'v num' }, v, unit ? el('small', { text: ` ${unit}` }) : null), sub ? el('span', { class: 'sub', text: sub }) : null);
     const s = c.status;
-    const code = c.reporters > 0;
+    const code = c.usage > 0;
     const l = c.limits;
     const table = (head, rows) => el('div', { class: 'table-wrap' }, el('table', { class: 'cl-table' },
       el('thead', null, el('tr', null, head.map((t, i) => el('th', { class: i ? 'r' : null, text: t })))),
@@ -168,13 +181,13 @@ const Claude = (() => {
     return el('article', { class: 'detail claude-card' },
       el('header', { class: 'd-head' },
         el('span', { class: 'tile-icon' }, HD.icon('sparkles')),
-        el('div', { class: 't' }, el('h2', { text: 'Claude' }), el('p', { text: [code ? `Claude Code on ${c.machines.length} machine${c.machines.length === 1 ? '' : 's'}` : null, c.api ? 'API organization' : null, s ? 'status page' : null].filter(Boolean).join(' · ') })),
+        el('div', { class: 't' }, el('h2', { text: 'Claude' }), el('p', { text: [code ? `Claude Code on ${c.usage} machine${c.usage === 1 ? '' : 's'}` : c.limits ? 'Plan limits for the whole account' : null, c.api ? 'API organization' : null, s ? 'status page' : null].filter(Boolean).join(' · ') })),
         statusChip(s)),
       s?.incidents?.length ? s.incidents.map((x) => el('div', { class: `callout ${x.impact === 'critical' || x.impact === 'major' ? 'critical' : 'warning'}` },
         el('b', { text: x.name }), el('span', { class: 'small' }, `${x.status}${x.updatedAt ? ` · ${fmt.time(x.updatedAt)}` : ''} `, x.link ? el('a', { href: x.link, target: '_blank', rel: 'noopener noreferrer', text: 'More on status.claude.com' }) : null))) : null,
       l ? el('section', { class: 'cl-sec' },
         el('h4', { text: `${l.plan ? `${PLANS[l.plan] || l.plan} plan` : 'Plan'} limits` }),
-        el('div', { class: 'cl-limits' }, limitRows(l)),
+        el('div', { class: 'cl-limits' }, limitRows(l, true)),
         el('p', { class: 'small muted', text: [l.error, `From ${l.machine}, ${fmt.ago(l.at)}`, 'Read from Anthropic with that machine’s own sign-in (an unofficial source that may change).'].filter(Boolean).join(' · ') })) : null,
       code ? el('section', { class: 'cl-sec' },
         el('h4', { text: 'Claude Code' }),
@@ -216,7 +229,7 @@ const Claude = (() => {
   // The numbers for a trio, from the stats chosen (the first one is the big number)
   function wallFacts(c, stats) {
     const out = [];
-    const code = c.reporters > 0;
+    const code = c.usage > 0;
     for (const k of stats) {
       if (k === 'tokens' && (code || c.api)) out.push(['Tokens today', tok(code ? c.today.tokens : c.api.today.tokens)], ['7 days', tok(code ? c.week.tokens : c.api.week.tokens)]);
       if (k === 'cost' && (code || c.api)) out.push(code ? ['Today', usd(c.today.cost)] : ['API month', usd(c.api.month)]);
@@ -244,7 +257,7 @@ const Claude = (() => {
     const rest = wallFacts(c, stats);
     box.replaceChildren(...[lbl, // replaceChildren would turn null into the text "null"
       el('div', { class: `huge${h.cls ? ` ${h.cls}` : ''}` }, h.value, el('small', { text: h.unit })),
-      cfg.style === 'tile' && c.reporters > 0 ? el('div', { class: 'wall-chart cl-wall-bars' }, bars(c.days, 7)) : el('div', { class: 'wall-chart' }),
+      cfg.style === 'tile' && c.usage > 0 ? el('div', { class: 'wall-chart cl-wall-bars' }, bars(c.days, 7)) : el('div', { class: 'wall-chart' }),
       meters ? el('div', { class: 'cl-limits' }, limitRows(l)) : null,
       // with the limit bars, the numbers under them leave the limits out; a short panel hides the
       // bars (CSS) and shows the other row, limits included

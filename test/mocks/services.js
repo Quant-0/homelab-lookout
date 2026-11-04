@@ -268,7 +268,8 @@ const routes = {
   // the plan limits a Claude reporter asks for (LOOKOUT_CLAUDE_USAGE_URL)
   oauthusage(req, res) {
     if (req.headers.authorization !== 'Bearer oauth-token-123' || req.headers['anthropic-beta'] !== 'oauth-2025-04-20') return send(res, 401, { error: 'unauthorized' });
-    return send(res, 200, { five_hour: { utilization: 37.0, resets_at: new Date(Date.now() + 2 * 3600e3).toISOString() }, seven_day: { utilization: 81.5, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() }, seven_day_opus: null, iguana_necktie: { utilization: 3 }, extra_usage: { is_enabled: false } });
+    return send(res, 200, { five_hour: { utilization: 37.0, resets_at: new Date(Date.now() + 2 * 3600e3).toISOString() }, seven_day: { utilization: 81.5, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() }, seven_day_opus: null, iguana_necktie: { utilization: 3 }, extra_usage: { is_enabled: false },
+      seven_day_breakdown: { as_of: new Date().toISOString(), rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 70 }, { key: 'chat', display_name: 'Chats', percent: 30 }, { key: 'cowork', display_name: 'Cowork', percent: 0 }, { key: 'bad' }] } });
   },
   custom(req, res, p) {
     if (p === '/stats' && req.headers['x-token'] === KEY) return send(res, 200, { data: { users: 7, nested: { up: 'yes' } }, list: [1, 2] });
