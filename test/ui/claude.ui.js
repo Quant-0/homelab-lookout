@@ -73,6 +73,13 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   const lim = await page.textContent('.claude-tile');
   check(/42\s*% of the 5-hour limit/.test(lim) && /Claude Code 80 %/.test(lim) && /Chats 20 %/.test(lim) && !/tokens/.test(lim) && !/\$/.test(lim) && (await page.locator('.claude-tile .cl-bars').count()) === 0, 'limits only: the 5-hour limit as the number, the bars, the week by product, no tokens or cost');
   await page.screenshot({ path: `${S}/claude-limits-only.png` });
+  // an Ultra plan, and a plan name the page doesn't know yet
+  for (const [plan, text] of [['ultra', 'Ultra plan limits'], ['some_new_plan', 'Some new plan plan limits']]) {
+    await page.request.post(`${B}/claude/report`, { headers: { Authorization: `Bearer ${id}.${token}` }, data: { reporter: '1.1.1', hostname: 'ws', hours: {}, limits: { plan, fiveHour: { pct: 42, resetsAt: new Date(Date.now() + 7200e3).toISOString() }, sevenDay: { pct: 93, resetsAt: new Date(Date.now() + 3 * 864e5).toISOString() } } } });
+    await page.reload();
+    await page.waitForSelector('.claude-tile .cl-limits');
+    check((await page.textContent('.claude-tile')).includes(text), `the plan is named: ${text}`);
+  }
   await page.request.put(`${B}/api/admin/claude/reporters/${id}`, { data: { name: 'workstation', usage: true, limits: true }, headers: { 'X-CSRF-Token': cs } });
   await page.request.post(`${B}/claude/report`, { headers: { Authorization: `Bearer ${id}.${token}` }, data: { reporter: '1.1.0', hostname: 'ws', hours: { [hour]: { s: 2, a: 45, m: { 'claude-opus-5-5': [1000, 200000, 12000000, 0, 300000, 40] } } }, limits: { plan: 'max', fiveHour: { pct: 42, resetsAt: new Date(Date.now() + 7200e3).toISOString() }, sevenDay: { pct: 93, resetsAt: new Date(Date.now() + 3 * 864e5).toISOString() } } } });
 

@@ -10,7 +10,9 @@ const Claude = (() => {
   const STAT_NAMES = { tokens: 'Tokens', cost: 'Cost', sessions: 'Sessions and active time', models: 'Models and cache hits', limits: 'Plan limits', status: 'Claude status' };
   const STYLE_NAMES = { number: 'Big number', rings: 'Limit rings', tile: 'Full tile', ticker: 'Ticker line' };
   const STATUS_CLS = { none: 'good', minor: 'warning', major: 'critical', critical: 'critical', maintenance: 'warning' };
-  const PLANS = { pro: 'Pro', max: 'Max', team: 'Team', enterprise: 'Enterprise', free: 'Free' };
+  const PLANS = { pro: 'Pro', max: 'Max', ultra: 'Ultra', team: 'Team', enterprise: 'Enterprise', free: 'Free' };
+  // "max" -> "Max"; a plan not listed here still reads well ("some_plan" -> "Some plan")
+  const planName = (p) => PLANS[p] || `${p[0].toUpperCase()}${p.slice(1).replace(/_/g, ' ')}`;
 
   // 13 169 926 -> "13.2M"
   function tok(v) {
@@ -141,7 +143,7 @@ const Claude = (() => {
           el('span', { class: 'big-facts' }, facts(c, stats).map(([v, t]) => el('span', null, el('strong', { text: v }), ` ${t}`)))),
         stats.includes('tokens') && c.usage > 0 ? bars(c.days, 7) : null,
         l ? el('span', { class: 'cl-limits' },
-          el('span', { class: 'cl-sub', text: [l.plan ? `${PLANS[l.plan] || l.plan} plan` : 'Plan', 'limits'].join(' ') }),
+          el('span', { class: 'cl-sub', text: [l.plan ? `${planName(l.plan)} plan` : 'Plan', 'limits'].join(' ') }),
           limitRows(l, true), l.error ? el('span', { class: 'small muted', text: l.error }) : null) : null),
       edit ? editBox(edit) : null);
     if (!edit) b.addEventListener('click', onOpen);
@@ -186,7 +188,7 @@ const Claude = (() => {
       s?.incidents?.length ? s.incidents.map((x) => el('div', { class: `callout ${x.impact === 'critical' || x.impact === 'major' ? 'critical' : 'warning'}` },
         el('b', { text: x.name }), el('span', { class: 'small' }, `${x.status}${x.updatedAt ? ` · ${fmt.time(x.updatedAt)}` : ''} `, x.link ? el('a', { href: x.link, target: '_blank', rel: 'noopener noreferrer', text: 'More on status.claude.com' }) : null))) : null,
       l ? el('section', { class: 'cl-sec' },
-        el('h4', { text: `${l.plan ? `${PLANS[l.plan] || l.plan} plan` : 'Plan'} limits` }),
+        el('h4', { text: `${l.plan ? `${planName(l.plan)} plan` : 'Plan'} limits` }),
         el('div', { class: 'cl-limits' }, limitRows(l, true)),
         el('p', { class: 'small muted', text: [l.error, `From ${l.machine}, ${fmt.ago(l.at)}`, 'Read from Anthropic with that machine’s own sign-in (an unofficial source that may change).'].filter(Boolean).join(' · ') })) : null,
       code ? el('section', { class: 'cl-sec' },
@@ -206,7 +208,7 @@ const Claude = (() => {
           el('span', null, el('span', { class: `led ${x.removedAt ? 'off' : x.ok ? 'good' : x.never ? 'off' : 'critical'}` }), ' ', el('strong', { text: x.name }), x.host && x.host !== x.name ? el('span', { class: 'small muted', text: ` ${x.host}` }) : null,
             x.version && x.latest && x.version !== x.latest ? el('div', { class: 'small warning-text', text: `Reporter ${x.latest} available` }) : null),
           tok(x.today.tokens), tok(x.week.tokens), x.removedAt ? 'uninstalled' : x.at ? fmt.ago(x.at) : 'never yet'])),
-        el('p', { class: 'hint', text: 'Counted from Claude Code’s own logs on each machine. Costs are estimates at API list prices; a Pro or Max plan is billed by subscription.' })) : null,
+        el('p', { class: 'hint', text: 'Counted from Claude Code’s own logs on each machine. Costs are estimates at API list prices; a Pro, Max or Ultra plan is billed by subscription.' })) : null,
       c.api ? el('section', { class: 'cl-sec' },
         el('h4', { text: 'API organization (Usage and Cost API)' }),
         c.api.error ? el('div', { class: 'callout warning' }, el('b', { text: 'Could not read the latest numbers' }), el('span', { class: 'small', text: c.api.error })) : null,
