@@ -1206,7 +1206,7 @@ function openReporter(r, created) {
     el('div', { class: 'form-grid' },
       el('label', null, el('span', { text: 'Name (the machine)' }), name),
       el('label', { class: 'check wide' }, usage, ' Claude Code tokens: count what Claude Code on this machine uses (from its logs)'),
-      el('label', { class: 'check wide' }, limits, ' Plan limits: how much of the 5-hour and weekly limits is used, for the whole account, and how the week splits between Claude Code, chats and the rest (Pro and Max plans)')),
+      el('label', { class: 'check wide' }, limits, ' Plan limits: how much of the 5-hour and weekly limits is used, for the whole account, and how the week splits between Claude Code, chats and the rest (Pro, Max and Ultra plans)')),
     el('div', { class: 'form-actions' },
       el('button', { type: 'button', class: 'primary', text: r ? 'Save' : 'Create and show the install command', onclick: async () => {
         try {

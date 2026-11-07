@@ -12,7 +12,7 @@ A **Claude** tile on Home (and a panel on the wall display) shows how much Claud
 
 ## Claude reporter
 
-1. **Admin → Dashboard → Claude → Add reporter**. Give it the machine's name and choose what it reports: **Claude Code tokens**, **Plan limits** (Pro and Max plans), or both. With only plan limits it never reads the logs, and the tile shows just the limits.
+1. **Admin → Dashboard → Claude → Add reporter**. Give it the machine's name and choose what it reports: **Claude Code tokens**, **Plan limits** (Pro, Max and Ultra plans), or both. With only plan limits it never reads the logs, and the tile shows just the limits.
 2. **Create** shows the install command. Run it on the machine **as the user who uses Claude Code**, not with sudo:
 
 ```sh
@@ -40,7 +40,7 @@ With plan limits ticked, the reporter asks Anthropic how much of the 5-hour and 
 
 ## Costs
 
-For Claude Code the cost is an **estimate at API list prices** (cache writes and reads included). On a Pro or Max plan you pay the subscription instead, so read it as "what this would cost on the API". The API organization's costs are what Anthropic bills (before credits), per UTC day; Anthropic updates them within a few hours.
+For Claude Code the cost is an **estimate at API list prices** (cache writes and reads included). On a Pro, Max or Ultra plan you pay the subscription instead, so read it as "what this would cost on the API". The API organization's costs are what Anthropic bills (before credits), per UTC day; Anthropic updates them within a few hours.
 
 ## On Home and the wall
 
