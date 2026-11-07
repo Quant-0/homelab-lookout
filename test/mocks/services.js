@@ -266,7 +266,8 @@ const routes = {
     if (p.startsWith('/v1/organizations/analytics/cost')) return send(res, 200, { data: [row('claude-opus-5-5', { currency: 'USD', amount: '12345.000000', list_amount: '12345.000000', requests: 12 }, 'cost'), row('claude-haiku-4-5', { currency: 'USD', amount: '55.000000', list_amount: '55.000000', requests: 3 }, 'cost')], has_more: false, next_page: null, data_refreshed_at: null });
   },
   // the plan limits a Claude reporter asks for (LOOKOUT_CLAUDE_USAGE_URL)
-  oauthusage(req, res) {
+  oauthusage(req, res, p) {
+    if (p === '/profile') return req.headers.authorization === 'Bearer oauth-token-123' ? send(res, 200, { account: { has_claude_max: true }, organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x', plan_display_name: 'Ultra' } }) : send(res, 401, {});
     if (req.headers.authorization !== 'Bearer oauth-token-123' || req.headers['anthropic-beta'] !== 'oauth-2025-04-20') return send(res, 401, { error: 'unauthorized' });
     return send(res, 200, { five_hour: { utilization: 37.0, resets_at: new Date(Date.now() + 2 * 3600e3).toISOString() }, seven_day: { utilization: 81.5, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() }, seven_day_opus: null, iguana_necktie: { utilization: 3 }, extra_usage: { is_enabled: false },
       seven_day_breakdown: { as_of: new Date().toISOString(), rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 70 }, { key: 'chat', display_name: 'Chats', percent: 30 }, { key: 'cowork', display_name: 'Cowork', percent: 0 }, { key: 'bad' }] } });
