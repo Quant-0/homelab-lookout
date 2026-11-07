@@ -57,7 +57,7 @@ const conf = path.join(dir, 'reporter.conf');
 const state = path.join(dir, 'state');
 function reporter(cmd = 'test') {
   try {
-    const out = execFileSync('python3', [SCRIPT, cmd], { env: { ...process.env, LOOKOUT_CLAUDE_CONF: conf, LOOKOUT_CLAUDE_STATE: state, CLAUDE_CONFIG_DIR: home, LOOKOUT_CLAUDE_USAGE_URL: 'http://127.0.0.1:18090/oauthusage/api/oauth/usage' }, encoding: 'utf8', timeout: 30000 });
+    const out = execFileSync('python3', [SCRIPT, cmd], { env: { ...process.env, LOOKOUT_CLAUDE_CONF: conf, LOOKOUT_CLAUDE_STATE: state, CLAUDE_CONFIG_DIR: home, LOOKOUT_CLAUDE_USAGE_URL: 'http://127.0.0.1:18090/oauthusage/api/oauth/usage', LOOKOUT_CLAUDE_PROFILE_URL: 'http://127.0.0.1:18090/oauthusage/profile' }, encoding: 'utf8', timeout: 30000 });
     return { ok: true, out };
   } catch (e) {
     return { ok: false, out: `${e.stdout || ''}${e.stderr || ''}` };
@@ -95,7 +95,7 @@ function reporter(cmd = 'test') {
   let run = reporter();
   ok(run.ok && /4 replies/.test(run.out) && /limits=no/.test(run.out), `the reporter sends, counting each reply once (3 now, 1 ten days ago) (${run.out.trim().split('\n')[0]})`);
   let c = await claude();
-  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.1.1' && c.usage === 1, 'Home has Claude, with the machine reporting');
+  ok(c && c.reporters === 1 && c.machines[0].ok && c.machines[0].name === 'workstation' && c.machines[0].version === '1.1.2' && c.usage === 1, 'Home has Claude, with the machine reporting');
   ok(c.week.tokens === 1476000 && c.week.replies === 3 && c.week.input === 16000 && c.week.output === 160000 && c.week.cacheRead === 1000000 && c.week.cacheWrite === 300000, `7 days: tokens by kind, the error line and the half-written line left out (${c.week.tokens})`);
   ok(Math.abs(c.week.cost - 4.65) < 0.011, `the cost at API prices, cache writes and reads included ($${c.week.cost})`);
   ok(Math.abs(c.week.cacheHit - 1000000 / 1316000) < 1e-6, 'cache hits: reads of all input');
@@ -117,7 +117,7 @@ function reporter(cmd = 'test') {
   ok(r.status === 200, 'plan limits switched on');
   run = reporter();
   c = await claude();
-  ok(run.ok && /limits=yes/.test(run.out) && c.limits?.fiveHour?.pct === 37 && c.limits.sevenDay.pct === 81.5 && c.limits.plan === 'max' && c.limits.machine === 'workstation', 'the next report has the 5-hour and weekly limits (sent right after the switch)');
+  ok(run.ok && /limits=yes/.test(run.out) && c.limits?.fiveHour?.pct === 37 && c.limits.sevenDay.pct === 81.5 && c.limits.plan === 'Ultra' && c.limits.machine === 'workstation', 'the next report has the 5-hour and weekly limits (sent right after the switch), and the plan as the account has it now (Ultra, though the sign-in says max)');
   ok(c.limits.fiveHour.resetsAt > Date.now() && c.limits.sevenDayOpus === null, 'with when they reset; limits the plan doesn\'t have are left out');
   ok(c.limits.breakdown.map((x) => `${x.key}:${x.pct}`).join() === 'claude_code:70,chat:30,cowork:0', 'and the week split by product, for the whole account');
   cred(Date.now() - 1000);

@@ -24,12 +24,13 @@ import time
 import urllib.error
 import urllib.request
 
-VERSION = '1.1.1'
+VERSION = '1.1.2'
 HOME = os.path.expanduser('~')
 CONF = os.environ.get('LOOKOUT_CLAUDE_CONF') or os.path.join(HOME, '.config', 'lookout-claude', 'reporter.conf')
 STATE_DIR = os.environ.get('LOOKOUT_CLAUDE_STATE') or os.path.join(HOME, '.local', 'state', 'lookout-claude')
 CLAUDE_DIR = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(HOME, '.claude')
 USAGE_URL = os.environ.get('LOOKOUT_CLAUDE_USAGE_URL') or 'https://api.anthropic.com/api/oauth/usage'
+PROFILE_URL = os.environ.get('LOOKOUT_CLAUDE_PROFILE_URL') or 'https://api.anthropic.com/api/oauth/profile'
 KEEP_DAYS = 35
 GAP_MIN = 5  # quiet for longer than this between two lines is a break, not work
 
@@ -180,7 +181,24 @@ def totals(state):
 
 # --- plan limits: this machine's own sign-in, read here and only sent to Anthropic ---
 
-def plan_limits():
+# The account's plan as Anthropic names it now ("Ultra"): the sign-in keeps the plan it was made
+# with, so an upgrade shows here first. Asked at most once an hour; only the plan's name is kept.
+def plan_name(token, state):
+    cached = state.get('plan')
+    if isinstance(cached, dict) and time.time() - cached.get('at', 0) < 3600:
+        return cached.get('name')
+    req = urllib.request.Request(PROFILE_URL, headers={'Authorization': f'Bearer {token}', 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': f'homelab-lookout-claude/{VERSION}'})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            org = json.load(r).get('organization') or {}
+        name = org.get('plan_display_name') if isinstance(org.get('plan_display_name'), str) else None
+    except (OSError, ValueError, AttributeError):
+        name = None
+    state['plan'] = {'at': time.time(), 'name': name}
+    return name
+
+
+def plan_limits(state):
     cred = load_json(os.path.join(CLAUDE_DIR, '.credentials.json'), None)
     o = cred.get('claudeAiOauth') if isinstance(cred, dict) else None
     if not isinstance(o, dict) or not o.get('accessToken'):
@@ -195,7 +213,7 @@ def plan_limits():
         return {'error': f'Anthropic answered HTTP {e.code}', 'plan': o.get('subscriptionType')}
     except (OSError, ValueError) as e:
         return {'error': f'Could not reach Anthropic: {str(e)[:80]}', 'plan': o.get('subscriptionType')}
-    out = {'plan': o.get('subscriptionType') if isinstance(o.get('subscriptionType'), str) else None}
+    out = {'plan': plan_name(o['accessToken'], state) or (o.get('subscriptionType') if isinstance(o.get('subscriptionType'), str) else None)}
     for src, dst in (('five_hour', 'fiveHour'), ('seven_day', 'sevenDay'), ('seven_day_opus', 'sevenDayOpus'), ('seven_day_sonnet', 'sevenDaySonnet')):
         w = d.get(src) if isinstance(d, dict) else None
         if isinstance(w, dict) and isinstance(w.get('utilization'), (int, float)):
@@ -244,7 +262,7 @@ def report(verbose=False):
     hours = totals(state) if counting else {}
     body = {'reporter': VERSION, 'hostname': os.uname().nodename[:64], 'hours': hours}
     if state.get('limits') == 'yes':
-        body['limits'] = plan_limits()
+        body['limits'] = plan_limits(state)
     try:
         answer = post(conf, '/claude/report', body)
     except urllib.error.HTTPError as e:
