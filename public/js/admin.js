@@ -1334,12 +1334,13 @@ function openClimateSource(x, type = x?.type) {
     tls: el('input', { type: 'checkbox', checked: Boolean(x?.tls) }),
   };
   const field = (label, input, hint) => el('label', null, el('span', { text: label }), input, hint ? el('span', { class: 'hint', text: hint }) : null);
+  // only the chosen type's fields: an input can only sit in one of them
   const fields = {
-    hue: [field('Bridge address', f.address, 'Its IP address: the Hue app shows it under Settings → My Hue system → the bridge.')],
-    hass: [field('Address', f.address), field('Access token', f.secret, 'A long-lived access token (your profile → Security).')],
-    shelly: [field('Address', f.address, 'Battery H&T sensors sleep: leave it empty and let them push instead (below).'), field('User name', f.username, 'Only if the Shelly has a login'), field('Password', f.secret)],
-    mqtt: [field('Broker', f.address), el('label', { class: 'check' }, f.tls, ' TLS (port 8883)'), field('User name', f.username), field('Password', f.secret), field('Base topic', f.base, 'Zigbee2MQTT\'s base topic: its devices are read from <base>/<name>.')],
-  }[type];
+    hue: () => [field('Bridge address', f.address, 'Its IP address: the Hue app shows it under Settings → My Hue system → the bridge.')],
+    hass: () => [field('Address', f.address), field('Access token', f.secret, 'A long-lived access token (your profile → Security).')],
+    shelly: () => [field('Address', f.address, 'Battery H&T sensors sleep: leave it empty and let them push instead (below).'), field('User name', f.username, 'Only if the Shelly has a login'), field('Password', f.secret)],
+    mqtt: () => [field('Broker', f.address), el('label', { class: 'check' }, f.tls, ' TLS (port 8883)'), field('User name', f.username), field('Password', f.secret), field('Base topic', f.base, 'Zigbee2MQTT\'s base topic: its devices are read from <base>/<name>.')],
+  }[type]();
   const body = () => ({ type, name: f.name.value, address: f.address.value, username: f.username.value, base: f.base.value, tls: f.tls.checked, ...(f.secret.value ? { secret: f.secret.value } : {}) });
   const close = () => {
     box.hidden = true;

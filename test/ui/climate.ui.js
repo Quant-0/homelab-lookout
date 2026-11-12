@@ -20,9 +20,16 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForURL(B + '/');
   check(await page.locator('#climate-sec').isHidden(), 'no Climate on Home before a source is added');
 
-  // a Shelly that pushes, added in Admin
+  // each kind of source has its own fields, the address among them
   await page.goto(B + '/admin#climate');
   await page.waitForSelector('#climate-card');
+  for (const [type, extra] of [['hue', null], ['hass', 'secret'], ['shelly', 'username'], ['mqtt', 'base']]) {
+    await page.selectOption('#climate-add', type);
+    const shown = await page.locator('#climate-editor input[name=address]').isVisible() && (!extra || await page.locator(`#climate-editor input[name=${extra}]`).isVisible());
+    check(shown, `${type}: the address${extra ? ` and ${extra}` : ''} can be filled in`);
+    await page.click('#climate-editor button:has-text("Close")');
+  }
+  // a Shelly that pushes, added in Admin
   await page.selectOption('#climate-add', 'shelly');
   await page.fill('#climate-editor input[name=name]', 'Shellies');
   await page.click('#climate-editor button.primary');
