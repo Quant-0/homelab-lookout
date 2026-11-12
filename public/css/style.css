@@ -2528,3 +2528,14 @@ div.claude-tile { cursor: default; }
 /* without the token bars (plan limits only), the limits take the rest of the row */
 .cl-body:not(:has(.cl-bars)) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); }
 @media (max-width: 900px) { .cl-body:not(:has(.cl-bars)) { grid-template-columns: minmax(0, 1fr); } }
+
+/* Admin → Power & cost: prices by time of day, a row per period */
+.tou-row { display: grid; grid-template-columns: minmax(90px, 1fr) 110px auto auto auto; gap: 8px 12px; align-items: center; margin: 8px 0; }
+.tou-other { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+.tou-other input { width: 110px; }
+.tou-days { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.tou-days .check { gap: 3px; font-size: 12.5px; }
+.tou-time { display: inline-flex; align-items: center; gap: 6px; }
+.tou-time input { width: 7.5em; }
+@media (max-width: 760px) { .tou-row { grid-template-columns: 1fr 1fr; } .tou-days, .tou-time { grid-column: 1 / -1; } }
+#intl-status:empty { display: none; }

@@ -241,6 +241,17 @@ const HD = (() => {
   }
 
   const nf = (d) => new Intl.NumberFormat('en-GB', { minimumFractionDigits: d, maximumFractionDigits: d });
+  // The currency power costs are in (sent with the data: NOK in Norway, the chosen one elsewhere).
+  // Prices per kWh come in hundredths: shown as øre, cents or pence, else in the currency itself.
+  let currency = { code: 'NOK', minor: 'øre' };
+  const KRONER = ['NOK', 'SEK', 'DKK'];
+  const symbolOf = (code) => {
+    try {
+      return new Intl.NumberFormat('en-GB', { style: 'currency', currency: code, currencyDisplay: 'narrowSymbol' }).formatToParts(0).find((x) => x.type === 'currency')?.value || code;
+    } catch {
+      return code;
+    }
+  };
   const fmt = {
     n: (v, d = 0) => (v === null || v === undefined || Number.isNaN(v) ? '–' : nf(d).format(v)),
     pct: (v, d = 0) => (v === null || v === undefined ? '–' : `${nf(d).format(v * 100)} %`),
@@ -261,7 +272,16 @@ const HD = (() => {
       const m = Math.floor((s % 3600) / 60);
       return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
     },
-    kr: (v, d = 2) => (v === null || v === undefined ? '–' : `${nf(d).format(v)} kr`),
+    kr: (v, d = 2) => (v === null || v === undefined ? '–' : KRONER.includes(currency.code) ? `${nf(d).format(v)} kr` : `${symbolOf(currency.code)}${nf(d).format(v)}`),
+    // the unit after a cost shown as a big number: kr, €, £, $ …
+    money: () => (KRONER.includes(currency.code) ? 'kr' : symbolOf(currency.code)),
+    // a price per kWh, given in hundredths: "54.3 øre", "24.1 c", or "0.241 ¥"
+    price: (v, d = 1) => (v === null || v === undefined ? '–' : currency.minor ? `${nf(d).format(v)} ${currency.minor}` : `${nf(3).format(v / 100)} ${symbolOf(currency.code)}`),
+    priceUnit: () => `${currency.minor || symbolOf(currency.code)}/kWh`,
+    priceValue: (v, d = 1) => (v === null || v === undefined ? '–' : currency.minor ? nf(d).format(v) : nf(3).format(v / 100)),
+    setCurrency: (c) => {
+      if (c?.code) currency = { code: c.code, minor: c.minor || null };
+    },
     ago(ms) {
       if (!ms) return 'never';
       const s = Math.round((Date.now() - ms) / 1000);

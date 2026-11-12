@@ -272,6 +272,51 @@ const routes = {
     return send(res, 200, { five_hour: { utilization: 37.0, resets_at: new Date(Date.now() + 2 * 3600e3).toISOString() }, seven_day: { utilization: 81.5, resets_at: new Date(Date.now() + 3 * 86400e3).toISOString() }, seven_day_opus: null, iguana_necktie: { utilization: 3 }, extra_usage: { is_enabled: false },
       seven_day_breakdown: { as_of: new Date().toISOString(), rows: [{ key: 'claude_code', display_name: 'Claude Code', percent: 70 }, { key: 'chat', display_name: 'Chats', percent: 30 }, { key: 'cowork', display_name: 'Cowork', percent: 0 }, { key: 'bad' }] } });
   },
+  // ENTSO-E day-ahead prices (ENTSOE_API_URL): only position 1 is sent, the rest repeats it (curve A03)
+  entsoe(req, res, p, q) {
+    if (q.get('securityToken') !== 'entsoe-key') return send(res, 401, '<html><body>Unauthorized</body></html>');
+    if (q.get('in_Domain') !== '10Y1001A1001A46L') return send(res, 200, '<Acknowledgement_MarketDocument><Reason><code>999</code><text>No matching data found</text></Reason></Acknowledgement_MarketDocument>');
+    const ps = q.get('periodStart');
+    const start = `${ps.slice(0, 4)}-${ps.slice(4, 6)}-${ps.slice(6, 8)}T${ps.slice(8, 10)}:${ps.slice(10, 12)}Z`;
+    const end = new Date(Date.parse(start) + 3 * 864e5).toISOString().slice(0, 16) + 'Z';
+    return send(res, 200, `<?xml version="1.0"?><Publication_MarketDocument><TimeSeries><currency_Unit.name>EUR</currency_Unit.name><Period><timeInterval><start>${start}</start><end>${end}</end></timeInterval><resolution>PT60M</resolution><Point><position>1</position><price.amount>100.00</price.amount></Point></Period></TimeSeries></Publication_MarketDocument>`, { 'Content-Type': 'application/xml' });
+  },
+  // the ECB's daily reference rates (ECB_RATES_URL)
+  ecb(req, res, p) {
+    if (p === '/stats/eurofxref/eurofxref-daily.xml') return send(res, 200, "<gesmes:Envelope><Cube><Cube time='2026-11-12'><Cube currency='USD' rate='1.08'/><Cube currency='SEK' rate='11.5'/><Cube currency='GBP' rate='0.86'/></Cube></Cube></gesmes:Envelope>", { 'Content-Type': 'application/xml' });
+  },
+  // Tibber's GraphQL API (TIBBER_API_URL): hourly prices in EUR around now
+  tibber(req, res, p) {
+    if (p !== '/v1-beta/gql' || req.method !== 'POST') return;
+    if (req.headers.authorization !== 'Bearer tibber-token') return send(res, 401, { errors: [{ message: 'invalid token' }] });
+    const h0 = Math.floor(Date.now() / 3600e3) * 3600e3 - 12 * 3600e3;
+    const list = Array.from({ length: 48 }, (_, i) => ({ total: 1.25, startsAt: new Date(h0 + i * 3600e3).toISOString(), currency: 'EUR' }));
+    return send(res, 200, { data: { viewer: { homes: [{ id: '11111111-1111-1111-1111-111111111111', appNickname: 'Home', currentSubscription: { priceInfo: { today: list.slice(0, 24), tomorrow: list.slice(24) } } }] } } });
+  },
+  // Octopus (OCTOPUS_API_URL): the products, and Agile's half-hourly rates
+  octopus(req, res, p, q) {
+    if (p === '/v1/products/') return send(res, 200, { results: [
+      { code: 'AGILE-18-02-21', available_from: '2018-02-21T00:00:00Z', available_to: '2019-01-01T00:00:00Z' },
+      { code: 'AGILE-OUTGOING-19-05-13', available_from: '2025-01-01T00:00:00Z', available_to: null },
+      { code: 'AGILE-24-10-01', available_from: '2024-10-01T00:00:00Z', available_to: null },
+      { code: 'VAR-22-11-01', available_from: '2022-11-01T00:00:00Z', available_to: null },
+    ] });
+    if (p.startsWith('/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-C/standard-unit-rates/')) {
+      const from = Date.parse(q.get('period_from'));
+      const to = Date.parse(q.get('period_to'));
+      const results = [];
+      for (let t = from; t < to; t += 1800e3) results.push({ value_exc_vat: 20, value_inc_vat: 21, valid_from: new Date(t).toISOString(), valid_to: new Date(t + 1800e3).toISOString() });
+      return send(res, 200, { count: results.length, next: null, results: results.reverse() });
+    }
+  },
+  // a Home Assistant price sensor (the power settings' own address)
+  hassprice(req, res, p) {
+    if (req.headers.authorization !== 'Bearer ha-token') return send(res, 401, { message: 'Unauthorized' });
+    if (p === '/api/states/sensor.el_price') return send(res, 200, { entity_id: 'sensor.el_price', state: '0.31', attributes: { unit_of_measurement: 'EUR/kWh' } });
+    if (p === '/api/states/sensor.el_cents') return send(res, 200, { entity_id: 'sensor.el_cents', state: '31', attributes: { unit_of_measurement: 'c/kWh' } });
+    if (p === '/api/states/sensor.el_off') return send(res, 200, { entity_id: 'sensor.el_off', state: 'unavailable', attributes: {} });
+    return send(res, 404, { message: 'Entity not found.' });
+  },
   custom(req, res, p) {
     if (p === '/stats' && req.headers['x-token'] === KEY) return send(res, 200, { data: { users: 7, nested: { up: 'yes' } }, list: [1, 2] });
     if (p === '/stats') return send(res, 401, {});
@@ -285,6 +330,6 @@ http.createServer((req, res) => {
   const route = routes[name === 'qbittorrent5' ? 'qbittorrent' : name];
   if (name === '__stats') return send(res, 200, { piholeLogins, anthropicCalls });
   if (!route) return send(res, 404, {});
-  const handled = route(req, res, p + (u.search && !['tautulli', 'sabnzbd', 'pihole5', 'claudestatus', 'anthropic'].includes(name) ? u.search : ''), u.searchParams);
+  const handled = route(req, res, p + (u.search && !['tautulli', 'sabnzbd', 'pihole5', 'claudestatus', 'anthropic', 'entsoe', 'octopus'].includes(name) ? u.search : ''), u.searchParams);
   if (!handled && !res.headersSent) send(res, 404, { error: 'not found', path: p });
 }).listen(18090, '127.0.0.1', () => console.log('services mock on 18090'));

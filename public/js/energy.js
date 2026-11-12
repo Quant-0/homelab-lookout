@@ -58,7 +58,7 @@ function barChart(rows) {
       const hit = svg('rect', { class: 'hit', x: padL + band * i, y: padT, width: band, height: plotH });
       const show = () => {
         bar.classList.add('active');
-        tip.replaceChildren(el('strong', { text: r.key }), r.future ? 'Not yet' : `${fmt.n(r.kwh, 2)} kWh · ${fmt.kr(r.cost)}${r.avgPrice != null ? ` · ${fmt.n(r.avgPrice, 1)} øre/kWh` : ''}`);
+        tip.replaceChildren(el('strong', { text: r.key }), r.future ? 'Not yet' : `${fmt.n(r.kwh, 2)} kWh · ${fmt.kr(r.cost)}${r.avgPrice != null ? ` · ${fmt.price(r.avgPrice)}/kWh` : ''}`);
         tip.classList.remove('hidden');
         tip.style.left = `${Math.min(Math.max(cx - tip.offsetWidth / 2, 0), W - tip.offsetWidth)}px`;
         tip.style.top = `${Math.max(y(r.kwh) - tip.offsetHeight - 8, 0)}px`;
@@ -111,8 +111,8 @@ function render(r) {
     detail ? el('div', { class: 'detail', text: detail }) : '');
   $('en-tiles').replaceChildren(
     tile('Used', fmt.n(t.kwh, t.kwh < 10 ? 2 : 1), 'kWh', change(t, r.previous.totals)),
-    tile('Cost', fmt.n(t.cost, t.cost < 100 ? 2 : 0), 'kr', r.previous.totals.kwh > 0.001 ? `${fmt.kr(r.previous.totals.cost, 0)} in ${periodName(r.previous.period)}` : ''),
-    tile('Average price', t.avgPrice != null ? fmt.n(t.avgPrice, 1) : '–', 'øre/kWh', 'Energy and grid'));
+    tile('Cost', fmt.n(t.cost, t.cost < 100 ? 2 : 0), fmt.money(), r.previous.totals.kwh > 0.001 ? `${fmt.kr(r.previous.totals.cost, 0)} in ${periodName(r.previous.period)}` : ''),
+    tile('Average price', t.avgPrice != null ? fmt.priceValue(t.avgPrice) : '–', fmt.priceUnit(), 'Energy and grid'));
 
   $('en-chart-title').textContent = isYear ? `Per month, ${r.period} (kWh)` : `Per day, ${periodName(r.period)} (kWh)`;
   const logged = r.rows.filter((x) => !x.future);
@@ -120,8 +120,8 @@ function render(r) {
     t.kwh > 0 ? barChart(r.rows) : el('p', { class: 'empty', text: 'Nothing logged in this period.' }),
     el('details', { class: 'table-view' }, el('summary', { text: 'Show as table' }),
       el('div', { class: 'table-wrap' }, el('table', null,
-        el('thead', null, el('tr', null, el('th', { text: isYear ? 'Month' : 'Date' }), ['kWh', 'Cost', 'øre/kWh'].map((h) => el('th', { class: 'r', text: h })))),
-        el('tbody', null, logged.slice().reverse().map((x) => el('tr', null, el('td', { text: x.key }), el('td', { class: 'r num', text: fmt.n(x.kwh, 2) }), el('td', { class: 'r num', text: fmt.kr(x.cost) }), el('td', { class: 'r num', text: x.avgPrice != null ? fmt.n(x.avgPrice, 1) : '–' }))))))));
+        el('thead', null, el('tr', null, el('th', { text: isYear ? 'Month' : 'Date' }), ['kWh', 'Cost', fmt.priceUnit()].map((h) => el('th', { class: 'r', text: h })))),
+        el('tbody', null, logged.slice().reverse().map((x) => el('tr', null, el('td', { text: x.key }), el('td', { class: 'r num', text: fmt.n(x.kwh, 2) }), el('td', { class: 'r num', text: fmt.kr(x.cost) }), el('td', { class: 'r num', text: x.avgPrice != null ? fmt.priceValue(x.avgPrice) : '–' }))))))));
 
   // per device, largest first; shares of everything measured and estimated in the period
   const all = r.devices.reduce((a, d) => a + d.kwh + d.estKwh, 0);
@@ -153,6 +153,7 @@ async function load() {
     const p = current();
     const r = await HD.api('GET', `/api/energy/report${p ? `?period=${encodeURIComponent(p)}` : ''}`);
     $('global-error').classList.add('hidden');
+    HD.fmt.setCurrency(r.currency);
     render(r);
   } catch (e) {
     if (e.status === 401) location.href = '/login?next=energy';
