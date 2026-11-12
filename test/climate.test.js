@@ -202,7 +202,8 @@ net.createServer((sock) => {
   // --- the history, and the wall ---
   const h = await req('GET', `/api/history?range=24h&keys=${encodeURIComponent(`${x.hist}:temp`)}`);
   ok(h.json.series[`${x.hist}:temp`]?.length >= 1, 'temperature is kept for the graphs');
-  ok(d.wall.panels.some((p) => p.id === 'climate') && d.wall.hidden.includes('climate'), 'the wall has a Climate panel, hidden at first');
+  r = await req('PUT', '/api/admin/wall', { ...d.wall, panels: [...d.wall.panels, { type: 'climate', opts: { sensors: [x.key], humidity: false } }] });
+  ok(r.status === 200 && r.json.wall.panels.some((p) => p.type === 'climate' && p.opts.sensors[0] === x.key && p.opts.humidity === false), 'a Climate panel on the wall, with the sensors picked');
 
   // --- a source that stops answering, then removed ---
   r = await req('POST', '/api/admin/climate/sources', { type: 'shelly', name: 'Gone', address: '127.0.0.1:18499' });

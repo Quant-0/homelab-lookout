@@ -77,7 +77,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
 
   // the wall
   const wall = (await (await page.request.get(`${B}/api/dashboard`)).json()).wall;
-  await page.request.put(`${B}/api/admin/wall`, { data: { ...wall, hidden: wall.hidden.filter((x) => x !== 'climate') }, headers: { 'X-CSRF-Token': csrf } });
+  await page.request.put(`${B}/api/admin/wall`, { data: { ...wall, panels: [...wall.panels, { type: 'climate' }] }, headers: { 'X-CSRF-Token': csrf } });
   await page.goto(B + '/wall');
   await page.waitForSelector('#climate .clim-wall li');
   const wt = await page.textContent('#climate');

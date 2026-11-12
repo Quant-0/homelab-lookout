@@ -196,14 +196,17 @@ function reporter(cmd = 'test') {
   c = await claude();
   ok(r.status === 200 && JSON.stringify(c.home) === JSON.stringify({ hidden: true, stats: ['tokens', 'status'] }), 'Customize keeps what the tile shows (known ones, in order) and whether it is on Home');
   d = (await req('GET', '/api/dashboard')).json;
-  ok(d.wall.claude.style === 'number' && d.wall.hidden.includes('claude') && d.wall.panels.some((p) => p.id === 'claude'), 'the wall has a Claude panel, hidden at first');
-  const oldWall = { panels: d.wall.panels.filter((p) => p.id !== 'claude'), hidden: [], showServices: true, services: null, devices: null };
-  r = await req('PUT', '/api/admin/wall', oldWall);
-  ok(r.status === 200 && r.json.wall.hidden.includes('claude') && r.json.wall.panels.at(-1).id === 'claude', 'a wall saved before there was a Claude panel gets it hidden');
-  r = await req('PUT', '/api/admin/wall', { ...r.json.wall, hidden: [], claude: { style: 'rings', stats: ['limits', 'nope'] } });
-  ok(r.status === 200 && r.json.wall.claude.style === 'rings' && r.json.wall.claude.stats.join() === 'limits', 'its style and what it shows are kept');
-  r = await req('PUT', '/api/admin/wall', { ...r.json.wall, claude: { style: 'neon', stats: 'x' } });
-  ok(r.json.wall.claude.style === 'number' && r.json.wall.claude.stats.join() === 'tokens,limits,status', 'an unknown style falls back to the defaults');
+  ok(!d.wall.panels.some((p) => p.type === 'claude'), 'the wall has no Claude panel until one is added');
+  const claudeOf = (w) => w.panels.find((p) => p.type === 'claude');
+  r = await req('PUT', '/api/admin/wall', { ...d.wall, panels: [...d.wall.panels, { type: 'claude', w: 2, opts: { style: 'rings', stats: ['limits', 'nope'] } }] });
+  ok(r.status === 200 && claudeOf(r.json.wall).opts.style === 'rings' && claudeOf(r.json.wall).opts.stats.join() === 'limits' && claudeOf(r.json.wall).w === 2, 'a Claude panel: its style and what it shows are kept');
+  r = await req('PUT', '/api/admin/wall', { ...r.json.wall, panels: r.json.wall.panels.map((p) => (p.type === 'claude' ? { ...p, opts: { style: 'neon', stats: 'x' } } : p)) });
+  ok(claudeOf(r.json.wall).opts.style === 'number' && claudeOf(r.json.wall).opts.stats.join() === 'tokens,limits,status', 'an unknown style falls back to the defaults');
+  r = await req('PUT', '/api/admin/wall', { ...r.json.wall, panels: [...r.json.wall.panels, { type: 'claude' }] });
+  ok(r.status === 400 && /once/.test(r.json.error), 'one Claude panel per layout');
+  // a layout saved before named layouts: the default one, with Claude as it was
+  r = await req('PUT', '/api/admin/wall', { panels: [{ id: 'spot', size: 'normal' }, { id: 'claude', size: 'wide' }, { id: 'list', size: 'big' }], hidden: ['list'], claude: { style: 'ticker', stats: ['limits'] }, clock: false });
+  ok(r.status === 200 && r.json.wall.panels.map((p) => `${p.type}:${p.w}x${p.h}`).join() === 'spot:1x1,claude:2x1' && claudeOf(r.json.wall).opts.style === 'ticker' && r.json.wall.top.clock === false, `an older layout is read as the default one (${r.json.wall.panels.map((p) => p.type).join()})`);
 
   // visitors never see it
   const cfg = (await req('GET', '/api/admin/config')).json.settings.dashboard;

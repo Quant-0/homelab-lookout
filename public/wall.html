@@ -21,16 +21,8 @@
       <div class="wall-brand" id="wall-brand"><img src="/logo" alt=""><span id="wall-title"></span></div>
       <div class="clock"><b id="clock-time"></b><span id="clock-date"></span></div>
     </header>
-    <div class="wall-grid" id="wall-grid">
-      <section class="w spot" id="spot" data-panel="spot" aria-live="polite" aria-label="Needs you"></section>
-      <section class="w list" id="list" data-panel="list" aria-labelledby="list-h"><div class="lbl" id="list-h"></div><ul class="probs" id="probs"></ul></section>
-      <section class="w power" id="power" data-panel="power" aria-label="Power"></section>
-      <section class="w net" id="net" data-panel="net" aria-label="Network"></section>
-      <section class="w rack" id="rack" data-panel="rack" aria-label="Rack"><div class="lbl" id="rack-h"></div><div class="wall-rack" id="wall-rack"></div></section>
-      <section class="w devs" id="devs" data-panel="devices" aria-label="Devices"></section>
-      <section class="w claude" id="claude" data-panel="claude" aria-label="Claude"></section>
-      <section class="w climate" id="climate" data-panel="climate" aria-label="Climate"></section>
-    </div>
+    <div class="wall-edit-bar" id="wall-edit" hidden></div>
+    <div class="wall-grid" id="wall-grid"></div>
     <section class="cl-ticker" id="claude-ticker" aria-label="Claude" hidden></section>
     <section class="svc" id="svc" aria-label="Services"></section>
   </main>

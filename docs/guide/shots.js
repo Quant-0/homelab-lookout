@@ -276,7 +276,7 @@ function sampleClaude() {
       const { csrf } = await (await fetch('/api/session')).json();
       await fetch('/api/admin/wall', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(x) });
     }, lay);
-    await put({ ...before, hidden: [...before.hidden.filter((x) => x !== 'claude'), 'list'], claude: { style: 'rings', stats: ['tokens', 'cost', 'limits', 'status'] } });
+    await put({ ...before, panels: [...before.panels.filter((x) => x.type !== 'list'), { type: 'claude', opts: { style: 'rings', stats: ['tokens', 'cost', 'limits', 'status'] } }] });
     await w.reload(); await sleep(4000);
     await w.screenshot({ path: `${OUT}/claude-wall.png` });
     await put(before);
