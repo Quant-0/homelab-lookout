@@ -16,11 +16,11 @@ let spotTimer = null;
 let refreshTimer = null;
 let draft = null; // the layout being customized (previewed live, saved on Save)
 
-const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices', claude: 'Claude' };
+const PANEL_NAMES = { spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices', claude: 'Claude', climate: 'Climate' };
 const SIZE_NAMES = { normal: 'Normal', wide: 'Wide', tall: 'Tall', big: 'Big' };
 const DEFAULT_LAYOUT = {
-  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }],
-  hidden: ['devices', 'claude'], showServices: true, services: null, devices: null, clock: true, logo: true, cables: false, vmCount: true,
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }, { id: 'climate', size: 'normal' }],
+  hidden: ['devices', 'claude', 'climate'], showServices: true, services: null, devices: null, clock: true, logo: true, cables: false, vmCount: true,
   claude: { style: 'number', stats: ['tokens', 'limits', 'status'] },
 };
 const layout = () => draft || data?.wall || DEFAULT_LAYOUT;
@@ -309,7 +309,7 @@ function applyLayout() {
     node.style.order = String(i);
     node.classList.remove('size-normal', 'size-wide', 'size-tall', 'size-big');
     node.classList.add(`size-${p.size}`);
-    node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length)) || (p.id === 'claude' && (!data.claude || lay.claude?.style === 'ticker'));
+    node.hidden = hidden.has(p.id) || (p.id === 'rack' && (!data.rack?.enabled || !data.rack.items.length)) || (p.id === 'claude' && (!data.claude || lay.claude?.style === 'ticker')) || (p.id === 'climate' && !data.climate);
   });
   document.querySelector('.clock').hidden = !lay.clock;
   $('wall-brand').hidden = lay.logo === false;
@@ -476,6 +476,7 @@ function render() {
   renderServices();
   renderDevices();
   renderClaude();
+  if (data.climate) Climate.wallPanel($('climate'), data.climate);
 }
 
 async function refresh() {

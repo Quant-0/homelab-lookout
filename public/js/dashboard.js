@@ -1046,6 +1046,7 @@ function deviceDetail(info) {
       [dev.alerts.spacePct != null ? `full at ${dev.alerts.spacePct} %` : null, dev.alerts.diskC != null ? `disks hot at ${dev.alerts.diskC} °C` : null, dev.alerts.otherC != null ? `sensors at ${dev.alerts.otherC} °C` : null].filter(Boolean).join(', ').replace(/^./, (ch) => `Own limits: ${ch}`) || null,
     ].filter(Boolean).join(' · ')) : null,
     ...(dev.lookout || []).map((a) => HD.agentSection(a)),
+    Climate.deviceSection(d.climate, dev.id),
     dev.growing?.length ? el('section', { class: 'd-growing' }, el('h4', { text: 'Filling up' }), el('ul', null, dev.growing.map((x) => el('li', { class: x.forecast.days != null && x.forecast.days <= 30 ? 'soon' : null },
       el('span', { text: x.label }), el('span', { class: 'num muted', text: `${Math.round(x.pct)} % · +${x.forecast.perMonth} pp a month` }),
       el('span', { class: 'num', text: x.forecast.days != null ? `full in about ${x.forecast.days} days` : '' }))))) : null,
@@ -1070,6 +1071,10 @@ function refreshDrawer() {
   if (!drawerFor) return;
   if (drawerFor.id === 'power') {
     drawerFor.box.replaceChildren(powerDetail(lastData.power));
+    return;
+  }
+  if (drawerFor.id.startsWith('climate:')) {
+    drawerFor.box.replaceChildren(drawerFor.draw());
     return;
   }
   if (drawerFor.id === 'claude') {
@@ -1198,6 +1203,26 @@ function openClaude() {
   const box = el('div', null, Claude.detail(lastData.claude, lastData.loggedIn));
   const { close } = HD.drawer('Claude', box, { onClose: () => (drawerFor = null) });
   drawerFor = { id: 'claude', box, close };
+}
+
+// ---------------------------------------------------------------------------
+// Climate: a tile per sensor, by room (climate.js draws them)
+
+function renderClimate(d) {
+  const sec = $('climate-sec');
+  sec.hidden = !d.climate;
+  if (!d.climate) return;
+  $('climate-count').textContent = d.climate.sensors.length ? String(d.climate.sensors.length) : '';
+  $('climate').replaceChildren(Climate.card(d.climate, openClimate));
+}
+
+function openClimate(key) {
+  if (!lastData?.climate) return;
+  const draw = () => Climate.detail(lastData.climate, key, lastData.devices, lastData.loggedIn);
+  const box = el('div', null, draw());
+  const { close } = HD.drawer('Climate', box, { onClose: () => (drawerFor = null) });
+  drawerFor = { id: `climate:${key}`, box, close, draw };
+  HD.fillSparks();
 }
 
 // The internet provider: set in Admin, else what the UniFi console reports
@@ -1800,6 +1825,7 @@ function render(d) {
   renderNeeds(d);
   $('hero').replaceChildren(...[powerTile(d.power), internetTile(d)].filter(Boolean));
   renderClaude(d);
+  renderClimate(d);
   renderDevices();
   renderServicesSec(servicesData, d.homeServices);
   renderVms(d);
@@ -1815,6 +1841,11 @@ function render(d) {
 
 // Search results link to /#device-<id>; the rack is /#rack
 function jumpToHash() {
+  if (location.hash === '#climate') {
+    history.replaceState(null, '', location.pathname);
+    $('climate-sec').scrollIntoView({ block: 'start' });
+    return;
+  }
   if (location.hash === '#claude') {
     history.replaceState(null, '', location.pathname);
     openClaude();

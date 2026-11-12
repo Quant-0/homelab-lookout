@@ -161,6 +161,16 @@
         <div id="agent-editor" class="agent-editor" hidden></div>
         <div id="agent-list"></div>
       </section>
+      <section class="card" id="climate-card">
+        <div class="card-head">
+          <div class="title"><h3>Climate sensors</h3><p class="hint">Temperature, humidity and thermostats from a Philips Hue Bridge, Home Assistant, Shelly sensors or Zigbee2MQTT, on Home (Climate) and the wall display. Lookout only reads them; it never changes a setting.</p></div>
+          <label class="inline"><span class="sr-only">Temperature unit</span><select id="climate-unit"><option value="C">°C</option><option value="F">°F</option></select></label>
+          <select id="climate-add" aria-label="Add a climate source"><option value="">Add a source…</option><option value="hue">Philips Hue Bridge</option><option value="hass">Home Assistant</option><option value="shelly">Shelly (H&amp;T and others)</option><option value="mqtt">MQTT (Zigbee2MQTT)</option></select>
+        </div>
+        <div id="climate-editor" class="agent-editor" hidden></div>
+        <div id="climate-sources"></div>
+        <div id="climate-sensors"></div>
+      </section>
       </div>
       <div class="tab-panel" role="tabpanel" id="tab-services" aria-labelledby="tabbtn-services" hidden>
       <section class="card service-editor" id="svc-editor" hidden>

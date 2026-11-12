@@ -4,7 +4,7 @@
 
 | Group | Tab | What's there |
 |---|---|---|
-| Monitoring | **Devices** | The rack, devices and their connections, [Find devices](../features/find-devices.md), [Linux agents](../features/linux-agents.md) |
+| Monitoring | **Devices** | The rack, devices and their connections, [Find devices](../features/find-devices.md), [Linux agents](../features/linux-agents.md), [Climate sensors](../features/climate.md) |
 | | **Services** | Cards, status checks and integrations ([Services](../features/services.md)) |
 | | **Alerts** | Channels and what to send where ([Alerts](../features/alerts.md)) |
 | | **Check-ins & maintenance** | [Check-ins and maintenance windows](../features/checkins-and-maintenance.md) |
