@@ -32,6 +32,7 @@ const table = (head, rows, empty) => (rows.length
 async function load() {
   try {
     data = await HD.api('GET', `/api/report${period ? `?period=${period}` : ''}`);
+    HD.fmt.setCurrency(data.currency);
   } catch (e) {
     $('global-error').textContent = e.message;
     $('global-error').classList.remove('hidden');

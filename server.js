@@ -131,6 +131,7 @@ const DEFAULT_SETTINGS = {
     linkUrl: '', // where links in alert messages point; empty = this server's own address
     lookoutUpdates: true, // ask GitHub once a day whether a newer Homelab Lookout release is out
     trustedProxies: [], // reverse proxies whose X-Forwarded-For / -Proto are believed
+    timeZone: 'Europe/Oslo', // days, prices by time of day, schedules and times in messages
   },
   power: {
     plan: 'spot',
@@ -150,8 +151,10 @@ const DEFAULT_SETTINGS = {
       weekendNight: true,
       holidayNight: true,
     },
-    fixed: { gridMonthlyKr: 0, supplierMonthlyKr: 0, include: false },
+    fixed: { gridMonthlyKr: 0, supplierMonthlyKr: 0, include: false }, // in the plan's currency (kr in Norway)
     includeEstimates: false, // count estimated device power (rack equipment) in cost
+    // outside Norway (plan "intl"); amounts per kWh in the currency (0.25 = 25 cents)
+    intl: { currency: 'EUR', source: 'fixed', vatPct: 0, enteredInclVat: true, fixedPrice: 0, tou: { other: 0, periods: [] }, entsoeZone: 'SE3', hass: { url: '', entity: '', tlsMode: 'verify', fingerprint: '', inclVat: true, unit: 'auto' }, octopusRegion: 'C', tibberHome: '', markup: 0, grid: { mode: 'none', price: 0, tou: { other: 0, periods: [] } }, taxes: 0 },
   },
   server: {
     https: { enabled: true, port: parseInt(process.env.HTTPS_PORT || '8443', 10) },
@@ -497,6 +500,8 @@ function loadConfig(raw = readJson(CONFIG_FILE, {})) {
     agents: Array.isArray(raw.agents) ? raw.agents : [], // [{ id, name, tokenHash, deviceId, guest, watch, updates, interval, createdAt }]
     metricsTokens: Array.isArray(raw.metricsTokens) ? raw.metricsTokens : [], // [{ id, name, tokenHash, allow, createdAt }]
     claude: normalizeClaude(raw.claude), // { reporters: [{ id, name, tokenHash, limits, createdAt }], adminKey, status: { enabled, alert } }
+    // keys for electricity prices outside Norway, encrypted: { entsoe, tibber, hass }
+    powerKeys: Object.fromEntries(['entsoe', 'tibber', 'hass'].map((k) => [k, typeof raw.powerKeys?.[k] === 'string' && raw.powerKeys[k].startsWith('v1.') ? raw.powerKeys[k] : null])),
   };
   if (!Array.isArray(raw.devices)) migrateToDevices(raw);
   if (raw.settings?.dashboard?.showStoppedGuests === false && !raw.settings.dashboard.vms) config.settings.dashboard.vms.stopped = false;
@@ -991,6 +996,8 @@ function validateDashboard(d) {
     linkUrl: linkUrl.replace(/\/$/, ''),
     trustedProxies,
     lookoutUpdates: d.lookoutUpdates !== false,
+    // left out: kept; an unknown zone is refused
+    timeZone: d.timeZone === undefined ? config.settings.dashboard.timeZone || 'Europe/Oslo' : TIME_ZONES.has(d.timeZone) ? d.timeZone : (() => { throw new UserError('Choose a time zone from the list'); })(),
   };
 }
 
@@ -998,8 +1005,16 @@ function validatePower(p) {
   const g = p.grid || {};
   const s = p.support || {};
   const fx = p.fixed || {};
-  if (!['spot', 'norgespris'].includes(p.plan)) throw new UserError('Invalid plan');
+  if (!['spot', 'norgespris', 'intl'].includes(p.plan)) throw new UserError('Invalid plan');
   if (!AREAS.includes(p.area)) throw new UserError('Invalid price area');
+  // outside Norway: only checked closely when chosen, kept as it was otherwise
+  let intl;
+  try {
+    intl = validateIntl(p.intl || {});
+  } catch (e) {
+    if (p.plan === 'intl') throw e;
+    intl = structuredClone(DEFAULT_SETTINGS.power.intl);
+  }
   const dayStartHour = num(g.dayStartHour, 0, 23, 'Day start hour', { int: true });
   const dayEndHour = num(g.dayEndHour, 1, 24, 'Day end hour', { int: true });
   if (dayEndHour <= dayStartHour) throw new UserError('Day end hour must be after day start hour');
@@ -1031,6 +1046,7 @@ function validatePower(p) {
       include: fx.include === true,
     },
     includeEstimates: p.includeEstimates === true,
+    intl,
   };
 }
 
@@ -5507,23 +5523,26 @@ function schedulePolling() {
 }
 
 // ---------------------------------------------------------------------------
-// Time helpers (Europe/Oslo)
+// Time helpers, in the dashboard's time zone (Admin → Dashboard; Europe/Oslo unless changed)
 
-const zonedFmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: TZ,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  weekday: 'short',
-  hourCycle: 'h23',
-});
+const TIME_ZONES = new Set(Intl.supportedValuesOf('timeZone'));
+let zonedTz = null;
+let zonedFmt = null;
+function zoneFormatter() {
+  const tz = config?.settings?.dashboard?.timeZone || TZ;
+  if (tz !== zonedTz) {
+    zonedTz = tz;
+    zonedFmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' });
+    // dates worked out in the old zone
+    if (typeof bucketDayCache !== 'undefined') bucketDayCache.clear();
+    if (typeof claudeHourDates !== 'undefined') claudeHourDates.clear();
+  }
+  return zonedFmt;
+}
 
 function zoned(ms) {
   const p = {};
-  for (const { type, value } of zonedFmt.formatToParts(new Date(ms))) p[type] = value;
+  for (const { type, value } of zoneFormatter().formatToParts(new Date(ms))) p[type] = value;
   return {
     date: `${p.year}-${p.month}-${p.day}`,
     month: `${p.year}-${p.month}`,
@@ -5587,6 +5606,7 @@ async function loadSpot(area, date) {
 
 async function ensurePrices() {
   const p = config.settings.power;
+  if (p.plan === 'intl') return ensureIntlPrices();
   if (p.plan !== 'spot') return;
   const now = Date.now();
   await loadSpot(p.area, zoned(now).date);
@@ -5647,6 +5667,7 @@ function fixedPerHourKr(p) {
 
 // Returns total price in øre/kWh (energy incl. VAT/markup/subsidy + grid tariff), or null if unknown.
 function priceAt(t, p = config.settings.power) {
+  if (p.plan === 'intl') return intlPriceAt(t, p);
   const vat = p.vat ? 1.25 : 1;
   let energy;
   let spotOre = null;
@@ -5662,6 +5683,290 @@ function priceAt(t, p = config.settings.power) {
   }
   const grid = gridRateAt(t, p);
   return { energy, grid: grid.ore, total: energy + grid.ore, period: grid.period, spotOre };
+}
+
+// ---------------------------------------------------------------------------
+// Electricity prices outside Norway (plan "intl"): a currency, a source for the energy price, a
+// supplier markup, a grid fee (none, fixed or by time of day), taxes and VAT. Prices are kept in
+// hundredths of the currency per kWh (cents, øre, pence), like the Norwegian plans' øre, so the
+// energy log and the reports work the same. Sources:
+//   fixed    one price per kWh
+//   tou      prices by time of day and weekday (peak/off-peak), with a price for other times
+//   entsoe   the day-ahead market price of a bidding zone (ENTSO-E, a free API key), in EUR/MWh,
+//            converted with the ECB's daily reference rates
+//   hass     a Home Assistant sensor with the price now (Nord Pool, Tibber, Octopus, Amber …)
+//   tibber   the price Tibber bills, VAT and taxes included (a personal token)
+//   octopus  Octopus Agile in the UK, half-hourly, public (a region letter)
+// The API keys are kept encrypted in config.powerKeys, never in the settings.
+
+const INTL_SOURCES = ['fixed', 'tou', 'entsoe', 'hass', 'tibber', 'octopus'];
+const CURRENCIES = ['EUR', 'SEK', 'DKK', 'NOK', 'GBP', 'USD', 'CHF', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'ISK', 'AUD', 'CAD', 'NZD', 'JPY'];
+// day-ahead bidding zones: code shown, and ENTSO-E's EIC code
+const ENTSOE_ZONES = {
+  SE1: '10Y1001A1001A44P', SE2: '10Y1001A1001A45N', SE3: '10Y1001A1001A46L', SE4: '10Y1001A1001A47J',
+  DK1: '10YDK-1--------W', DK2: '10YDK-2--------M', FI: '10YFI-1--------U',
+  NO1: '10YNO-1--------2', NO2: '10YNO-2--------T', NO3: '10YNO-3--------J', NO4: '10YNO-4--------9', NO5: '10Y1001A1001A48H',
+  EE: '10Y1001A1001A39I', LV: '10YLV-1001A00074', LT: '10YLT-1001A0008Q',
+  'DE-LU': '10Y1001A1001A82H', NL: '10YNL----------L', BE: '10YBE----------2', FR: '10YFR-RTE------C', AT: '10YAT-APG------L', CH: '10YCH-SWISSGRIDZ',
+  PL: '10YPL-AREA-----S', CZ: '10YCZ-CEPS-----N', SK: '10YSK-SEPS-----K', HU: '10YHU-MAVIR----U', SI: '10YSI-ELES-----O', HR: '10YHR-HEP------M',
+  RO: '10YRO-TEL------P', BG: '10YCA-BULGARIA-R', GR: '10YGR-HTSO-----Y', ES: '10YES-REE------0', PT: '10YPT-REN------W', 'IT-North': '10Y1001A1001A73I', IE: '10Y1001A1001A59C',
+};
+const OCTOPUS_REGIONS = 'ABCDEFGHJKLMNP'.split('');
+const ENTSOE_URL = process.env.ENTSOE_API_URL || 'https://web-api.tp.entsoe.eu'; // these four overridable for the tests
+const ECB_URL = process.env.ECB_RATES_URL || 'https://www.ecb.europa.eu';
+const TIBBER_URL = process.env.TIBBER_API_URL || 'https://api.tibber.com';
+const OCTOPUS_URL = process.env.OCTOPUS_API_URL || 'https://api.octopus.energy';
+const POWER_KEYS = ['entsoe', 'tibber', 'hass'];
+const powerKeyHost = (k) => ({ id: `power-key-${k}`, type: 'power-price', address: k, username: '', tlsMode: '', fingerprint: '', secret: config.powerKeys?.[k] || null });
+const powerKey = (k) => (config.powerKeys?.[k] ? decryptSecret(powerKeyHost(k)) : null);
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$|^24:00$/;
+// Prices by time of day: periods (days 0 = Monday … 6, from–to; to before from runs past midnight)
+// tried in order, and a price for the rest of the time
+function validateTou(t, name) {
+  const periods = (Array.isArray(t?.periods) ? t.periods : []).slice(0, 12).map((x, i) => {
+    if (!HHMM.test(String(x?.from)) || !HHMM.test(String(x?.to)) || x.from === x.to) throw new UserError(`${name}, period ${i + 1}: times as HH:MM, from and to different`);
+    const days = [...new Set((Array.isArray(x.days) ? x.days : []).map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
+    if (!days.length) throw new UserError(`${name}, period ${i + 1}: choose at least one day`);
+    return { name: str(x.name, 30, 'Period name') || `Period ${i + 1}`, price: num(x.price, -100, 1000, `${name}, period ${i + 1} price`), days, from: x.from, to: x.to };
+  });
+  return { other: num(t?.other ?? 0, -100, 1000, `${name}: price at other times`), periods };
+}
+function touAt(tou, t) {
+  const z = zoned(t);
+  const min = z.hour * 60 + z.minute;
+  const m = (s) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+  for (const p of tou.periods) {
+    const from = m(p.from);
+    const to = m(p.to);
+    // past midnight, the part after midnight belongs to the day before
+    const inPeriod = from < to ? p.days.includes(z.weekday) && min >= from && min < to
+      : (p.days.includes(z.weekday) && min >= from) || (p.days.includes((z.weekday + 6) % 7) && min < to);
+    if (inPeriod) return { price: p.price, name: p.name };
+  }
+  return { price: tou.other, name: 'Other times' };
+}
+
+function validateIntl(x = {}) {
+  const currency = CURRENCIES.includes(x.currency) ? x.currency : 'EUR';
+  const source = INTL_SOURCES.includes(x.source) ? x.source : 'fixed';
+  const zone = Object.hasOwn(ENTSOE_ZONES, x.entsoeZone) ? x.entsoeZone : 'SE3';
+  const h = x.hass || {};
+  let hass = { url: '', entity: '', tlsMode: 'verify', fingerprint: '', inclVat: h.inclVat !== false, unit: ['auto', 'major', 'minor', 'mwh'].includes(h.unit) ? h.unit : 'auto' };
+  if (source === 'hass' || h.url) {
+    const u = parseServiceUrl(str(h.url, 300, 'Home Assistant address', { required: source === 'hass' }) || 'http://homeassistant.local:8123');
+    const entity = str(h.entity, 120, 'Price sensor', { required: source === 'hass' });
+    if (entity && !/^sensor\.[a-z0-9_]+$/.test(entity)) throw new UserError('Price sensor: an entity like sensor.electricity_price');
+    hass = { ...hass, url: u.href.replace(/\/$/, ''), entity, tlsMode: u.https && h.tlsMode === 'pin' ? 'pin' : 'verify', fingerprint: u.https && h.tlsMode === 'pin' ? normalizeFingerprint(h.fingerprint) : '' };
+  }
+  const g = x.grid || {};
+  const gridMode = ['none', 'fixed', 'tou'].includes(g.mode) ? g.mode : 'none';
+  return {
+    currency, source,
+    vatPct: num(x.vatPct ?? 0, 0, 50, 'VAT'),
+    enteredInclVat: x.enteredInclVat !== false,
+    fixedPrice: num(x.fixedPrice ?? 0, -100, 1000, 'Price per kWh'),
+    tou: source === 'tou' ? validateTou(x.tou, 'Energy price') : { other: num(x.tou?.other ?? 0, -100, 1000, 'Price'), periods: [] },
+    entsoeZone: zone,
+    hass,
+    octopusRegion: OCTOPUS_REGIONS.includes(x.octopusRegion) ? x.octopusRegion : 'C',
+    tibberHome: /^[0-9a-f-]{36}$/.test(String(x.tibberHome || '')) ? x.tibberHome : '',
+    markup: num(x.markup ?? 0, -100, 1000, 'Supplier markup'),
+    grid: { mode: gridMode, price: num(g.price ?? 0, 0, 1000, 'Grid fee'), tou: gridMode === 'tou' ? validateTou(g.tou, 'Grid fee') : { other: 0, periods: [] } },
+    taxes: num(x.taxes ?? 0, 0, 1000, 'Taxes'),
+  };
+}
+
+// --- exchange rates: the ECB's reference rates, euro based, once every 12 hours ---
+let ecbRates = { at: 0, rates: null, failedAt: 0 };
+async function eurTo(currency) {
+  if (currency === 'EUR') return 1;
+  const fresh = ecbRates.rates && Date.now() - ecbRates.at < 12 * 3600e3;
+  if (!fresh && Date.now() - ecbRates.failedAt > 10 * 60e3) {
+    try {
+      const r = await connRequest({ url: ECB_URL, tlsMode: 'verify' }, '/stats/eurofxref/eurofxref-daily.xml', { full: true, maxBytes: 1 << 20, headers: { Accept: 'application/xml' } });
+      if (r.status !== 200) throw new UserError(`HTTP ${r.status} from the ECB`);
+      const rates = {};
+      for (const [, c, v] of String(r.text).matchAll(/currency=['"]([A-Z]{3})['"]\s+rate=['"]([0-9.]+)['"]/g)) rates[c] = Number(v);
+      if (!Object.keys(rates).length) throw new UserError('No rates in the ECB file');
+      ecbRates = { at: Date.now(), rates, failedAt: 0 };
+    } catch (e) {
+      ecbRates.failedAt = Date.now();
+      log(`Exchange rates could not be fetched: ${e.message}`);
+    }
+  }
+  return ecbRates.rates?.[currency] ?? null;
+}
+
+// --- the sources: each fills intlSlots with [{ start, end, minor (per kWh), inclVat }] ---
+let intlSlots = { key: '', at: 0, slots: [], error: null, failedAt: 0 };
+const isoMin = (ms) => new Date(ms).toISOString().slice(0, 16).replace(/[-T:]/g, '');
+
+async function entsoeSlots(x) {
+  const key = powerKey('entsoe');
+  if (!key) throw new UserError('Add your ENTSO-E API key');
+  const start = osloDayStart(Date.now()) - 864e5;
+  const end = start + 3 * 864e5;
+  const q = new URLSearchParams({ securityToken: key, documentType: 'A44', in_Domain: ENTSOE_ZONES[x.entsoeZone], out_Domain: ENTSOE_ZONES[x.entsoeZone], periodStart: isoMin(start), periodEnd: isoMin(end) });
+  const r = await connRequest({ url: ENTSOE_URL, tlsMode: 'verify' }, `/api?${q}`, { full: true, maxBytes: 4 << 20, timeoutMs: 20000, headers: { Accept: 'application/xml' } });
+  const xml = String(r.text || '');
+  if (r.status === 401) throw new UserError('ENTSO-E refused the API key');
+  const reason = /<Reason>[\s\S]*?<text>([^<]{0,200})<\/text>/.exec(xml)?.[1];
+  if (r.status !== 200 || !xml.includes('<TimeSeries>')) throw new UserError(reason ? `ENTSO-E: ${reason}` : `HTTP ${r.status} from ENTSO-E`);
+  const rate = await eurTo(x.currency);
+  if (rate === null) throw new UserError(`No exchange rate for ${x.currency}`);
+  const slots = new Map();
+  for (const period of xml.matchAll(/<Period>([\s\S]*?)<\/Period>/g)) {
+    const p = period[1];
+    const t0 = Date.parse(/<start>([^<]+)<\/start>/.exec(p)?.[1]);
+    const t1 = Date.parse(/<end>([^<]+)<\/end>/.exec(p)?.[1]);
+    const res = /<resolution>PT(\d+)M<\/resolution>/.exec(p);
+    if (!Number.isFinite(t0) || !Number.isFinite(t1) || !res) continue;
+    const step = Number(res[1]) * 60e3;
+    const points = new Map([...p.matchAll(/<Point>\s*<position>(\d+)<\/position>\s*<price\.amount>(-?[0-9.]+)<\/price\.amount>/g)].map((m) => [Number(m[1]), Number(m[2])]));
+    // positions with the same price as the one before may be left out (curve type A03)
+    let last = null;
+    for (let i = 1; t0 + (i - 1) * step < t1; i++) {
+      if (points.has(i)) last = points.get(i);
+      if (last === null) continue;
+      const s = t0 + (i - 1) * step;
+      if (!slots.has(s)) slots.set(s, { start: s, end: s + step, minor: (last * rate) / 10, inclVat: false }); // per MWh → per kWh, in hundredths
+    }
+  }
+  if (!slots.size) throw new UserError('ENTSO-E sent no prices for this zone');
+  return [...slots.values()].sort((a, b) => a.start - b.start);
+}
+
+async function tibberSlots(x) {
+  const token = powerKey('tibber');
+  if (!token) throw new UserError('Add your Tibber token');
+  const query = '{ viewer { homes { id appNickname currentSubscription { priceInfo { today { total startsAt currency } tomorrow { total startsAt currency } } } } } }';
+  const r = await connRequest({ url: TIBBER_URL, tlsMode: 'verify' }, '/v1-beta/gql', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query }), full: true, timeoutMs: 15000 });
+  if (r.status === 401 || r.status === 403) throw new UserError('Tibber refused the token');
+  if (r.status !== 200 || !r.json?.data?.viewer) throw new UserError(`Tibber: ${r.json?.errors?.[0]?.message?.slice(0, 120) || `HTTP ${r.status}`}`);
+  const homes = r.json.data.viewer.homes || [];
+  const home = homes.find((h) => h.id === x.tibberHome) || homes.find((h) => h.currentSubscription?.priceInfo) || null;
+  const info = home?.currentSubscription?.priceInfo;
+  if (!info) throw new UserError('Tibber: no home with an active subscription');
+  const list = [...(info.today || []), ...(info.tomorrow || [])].map((e) => ({ start: Date.parse(e.startsAt), total: Number(e.total), currency: e.currency })).filter((e) => Number.isFinite(e.start) && Number.isFinite(e.total)).sort((a, b) => a.start - b.start);
+  if (list[0] && list[0].currency && list[0].currency !== x.currency) throw new UserError(`Tibber bills in ${list[0].currency}: choose that currency`);
+  return list.map((e, i) => ({ start: e.start, end: list[i + 1]?.start ?? e.start + (i ? e.start - list[i - 1].start : 3600e3), minor: e.total * 100, inclVat: true, final: true }));
+}
+
+let octopusProduct = { at: 0, code: null };
+async function octopusSlots(x) {
+  const get = async (p) => {
+    const r = await connRequest({ url: OCTOPUS_URL, tlsMode: 'verify' }, p, { full: true, maxBytes: 4 << 20, timeoutMs: 15000, headers: { Accept: 'application/json' } });
+    if (r.status !== 200 || !r.json) throw new UserError(`HTTP ${r.status} from Octopus`);
+    return r.json;
+  };
+  // the current Agile product, looked up once a day
+  if (!octopusProduct.code || Date.now() - octopusProduct.at > 864e5) {
+    const j = await get('/v1/products/?brand=OCTOPUS_ENERGY&is_variable=true&page_size=100');
+    const agile = (j.results || []).filter((p) => /^AGILE-/.test(p.code) && !/OUTGOING/i.test(p.code) && (!p.available_to || Date.parse(p.available_to) > Date.now()))
+      .sort((a, b) => Date.parse(b.available_from || 0) - Date.parse(a.available_from || 0))[0];
+    if (!agile) throw new UserError('Octopus: no Agile tariff found');
+    octopusProduct = { at: Date.now(), code: agile.code };
+  }
+  const code = octopusProduct.code;
+  const from = new Date(osloDayStart(Date.now()) - 864e5).toISOString();
+  const to = new Date(osloDayStart(Date.now()) + 2 * 864e5).toISOString();
+  const j = await get(`/v1/products/${code}/electricity-tariffs/E-1R-${code}-${x.octopusRegion}/standard-unit-rates/?period_from=${from}&period_to=${to}&page_size=200`);
+  const slots = (j.results || []).map((e) => ({ start: Date.parse(e.valid_from), end: Date.parse(e.valid_to), minor: Number(e.value_exc_vat), inclVat: false })).filter((e) => Number.isFinite(e.start) && Number.isFinite(e.end) && Number.isFinite(e.minor));
+  if (!slots.length) throw new UserError('Octopus sent no prices for this region');
+  return slots.sort((a, b) => a.start - b.start);
+}
+
+// Home Assistant only knows the price now: one slot from now, refreshed every poll
+async function hassSlots(x) {
+  const token = powerKey('hass');
+  if (!token) throw new UserError('Add a Home Assistant access token');
+  const r = await connRequest({ url: x.hass.url, tlsMode: x.hass.tlsMode, fingerprint: x.hass.fingerprint }, `/api/states/${encodeURIComponent(x.hass.entity)}`, { headers: { Authorization: `Bearer ${token}` }, full: true, timeoutMs: 8000 });
+  if (r.status === 401) throw new UserError('Home Assistant refused the token');
+  if (r.status === 404) throw new UserError(`Home Assistant has no ${x.hass.entity}`);
+  if (r.status !== 200 || !r.json) throw new UserError(`HTTP ${r.status} from Home Assistant`);
+  const v = Number(r.json.state);
+  if (!Number.isFinite(v)) throw new UserError(`${x.hass.entity} is ${String(r.json.state).slice(0, 30)}, not a number`);
+  // the unit tells whether it is per kWh in the currency (0.24), in hundredths (24 c) or per MWh
+  const unit = String(r.json.attributes?.unit_of_measurement || '');
+  const kind = x.hass.unit !== 'auto' ? x.hass.unit : /MWh/i.test(unit) ? 'mwh' : /^(c|ct|cent|cents|öre|øre|p|pence|¢)\s*\//i.test(unit) ? 'minor' : 'major';
+  const minor = kind === 'minor' ? v : kind === 'mwh' ? v / 10 : v * 100;
+  const now = Date.now();
+  return [{ start: now - 3600e3, end: now + 3600e3, minor, inclVat: x.hass.inclVat, current: true, unit }];
+}
+
+const INTL_FETCH = { entsoe: [entsoeSlots, 30 * 60e3], tibber: [tibberSlots, 15 * 60e3], octopus: [octopusSlots, 30 * 60e3], hass: [hassSlots, 60e3] };
+async function ensureIntlPrices(force = false) {
+  const x = config.settings.power.intl;
+  const f = INTL_FETCH[x.source];
+  if (!f) return;
+  const key = JSON.stringify([x.source, x.currency, x.entsoeZone, x.octopusRegion, x.tibberHome, x.hass]);
+  const fresh = intlSlots.key === key && Date.now() - intlSlots.at < f[1];
+  // tomorrow's prices come in the afternoon: a market source with only today asks again sooner
+  if (!force && fresh) return;
+  if (!force && intlSlots.key === key && intlSlots.error && Date.now() - intlSlots.failedAt < 5 * 60e3) return;
+  try {
+    intlSlots = { key, at: Date.now(), slots: await f[0](x), error: null, failedAt: 0 };
+  } catch (e) {
+    const keep = intlSlots.key === key ? intlSlots.slots.filter((s) => s.end > Date.now()) : [];
+    if (intlSlots.error !== e.message) log(`Electricity price (${x.source}): ${e.message}`);
+    intlSlots = { key, at: intlSlots.key === key ? intlSlots.at : 0, slots: keep, error: e.message, failedAt: Date.now() };
+  }
+}
+
+// The currency costs are in: kroner in Norway, the chosen one elsewhere, and what a hundredth is called
+const MINOR_UNITS = { NOK: 'øre', DKK: 'øre', SEK: 'öre', EUR: 'c', GBP: 'p', USD: '¢', AUD: 'c', CAD: '¢', NZD: 'c', CHF: 'Rp' };
+function currencyInfo(p = config.settings.power) {
+  const code = p.plan === 'intl' ? p.intl.currency : 'NOK';
+  return { code, minor: MINOR_UNITS[code] || null };
+}
+
+const POWER_KEY_NAMES = { entsoe: 'ENTSO-E API key', tibber: 'Tibber token', hass: 'Home Assistant token' };
+// For Admin: which keys are saved (never the keys), and whether the price source answers
+function powerPriceStatus() {
+  const p = config.settings.power;
+  const now = Date.now();
+  return {
+    keys: Object.fromEntries(POWER_KEYS.map((k) => [k, Boolean(config.powerKeys[k])])),
+    plan: p.plan,
+    source: p.plan === 'intl' ? p.intl.source : null,
+    error: p.plan === 'intl' && INTL_FETCH[p.intl.source] ? intlSlots.error : null,
+    fetchedAt: p.plan === 'intl' && INTL_FETCH[p.intl.source] ? intlSlots.at || null : null,
+    slots: p.plan === 'intl' ? intlSlots.slots.filter((s) => s.end > now).length : null,
+    priceNow: priceAt(now),
+    zones: Object.keys(ENTSOE_ZONES), currencies: CURRENCIES, regions: OCTOPUS_REGIONS,
+  };
+}
+
+// The price for one moment, in hundredths of the currency per kWh, or null
+function intlPriceAt(t, p) {
+  const x = p.intl;
+  const vat = 1 + x.vatPct / 100;
+  const entered = (v) => (x.enteredInclVat ? v : v * vat) * 100; // what you typed, per kWh, as on the bill
+  let energy;
+  let market = null;
+  let period = null;
+  if (x.source === 'fixed') energy = entered(x.fixedPrice);
+  else if (x.source === 'tou') {
+    const r = touAt(x.tou, t);
+    energy = entered(r.price);
+    period = r.name;
+  } else {
+    const s = intlSlots.slots.find((y) => (y.current ? Math.abs(t - Date.now()) < 864e5 * 2 : t >= y.start && t < y.end));
+    if (!s) return null;
+    market = s.minor;
+    energy = s.inclVat ? s.minor : s.minor * vat;
+  }
+  energy += entered(x.markup);
+  let grid = 0;
+  if (x.grid.mode === 'fixed') grid = entered(x.grid.price);
+  if (x.grid.mode === 'tou') {
+    const r = touAt(x.grid.tou, t);
+    grid = entered(r.price);
+    period ||= r.name;
+  }
+  const taxes = entered(x.taxes);
+  return { energy, grid: grid + taxes, total: energy + grid + taxes, period, spotOre: market };
 }
 
 // ---------------------------------------------------------------------------
@@ -5851,13 +6156,15 @@ function energyCsv(r, format) {
     if (/^[=+\-@\t]/.test(t)) t = `'${t}`;
     return /["\n;,]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
   };
-  const header = [r.by === 'day' ? 'Date' : 'Month', 'kWh', 'Cost (kr)', 'Average price (øre/kWh)', 'kWh without price'];
+  const info = currencyInfo();
+  const cur = { code: info.code === 'NOK' ? 'kr' : info.code, minor: info.minor || `1/100 ${info.code}` }; // Norway as it always was
+  const header = [r.by === 'day' ? 'Date' : 'Month', 'kWh', `Cost (${cur.code})`, `Average price (${cur.minor}/kWh)`, 'kWh without price'];
   const lines = [header.map(text).join(sep)];
   for (const row of r.rows.filter((x) => !x.future)) lines.push([text(row.key), num(row.kwh, 3), num(row.cost, 2), num(row.avgPrice, 1), num(row.unpricedKwh, 3)].join(sep));
   lines.push([text('Total'), num(r.totals.kwh, 3), num(r.totals.cost, 2), num(r.totals.avgPrice, 1), num(r.totals.unpricedKwh, 3)].join(sep));
   if (r.devices.length) {
     lines.push('');
-    lines.push(['Device', 'Measured kWh', 'Measured cost (kr)', 'Estimated kWh', 'Estimated cost (kr)'].map(text).join(sep));
+    lines.push(['Device', 'Measured kWh', `Measured cost (${cur.code})`, 'Estimated kWh', `Estimated cost (${cur.code})`].map(text).join(sep));
     for (const d of r.devices) lines.push([text(d.name), num(d.kwh, 3), num(d.cost, 2), num(d.estKwh, 3), num(d.estCost, 2)].join(sep));
   }
   return (no ? '﻿' : '') + lines.join('\r\n') + '\r\n';
@@ -5952,6 +6259,9 @@ function powerSummary() {
     plan: p.plan,
     area: p.area,
     vat: p.vat,
+    currency: currencyInfo(p),
+    // outside Norway: where the price comes from, and whether it answers
+    source: p.plan === 'intl' ? { kind: p.intl.source, zone: p.intl.source === 'entsoe' ? p.intl.entsoeZone : p.intl.source === 'octopus' ? p.intl.octopusRegion : null, error: INTL_FETCH[p.intl.source] ? intlSlots.error : null, vatPct: p.intl.vatPct } : null,
     priceNow,
     fixed: { monthlyKr: p.fixed.gridMonthlyKr + p.fixed.supplierMonthlyKr, included: p.fixed.include },
     estimate,
@@ -7414,12 +7724,12 @@ async function handleApi(req, res, url, session, viewer = null) {
     const prev = report.kind === 'month'
       ? (() => { const [yy, mm] = period.split('-').map(Number); return mm === 1 ? `${yy - 1}-12` : `${yy}-${String(mm - 1).padStart(2, '0')}`; })()
       : String(Number(period) - 1);
-    return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
+    return sendJson(res, 200, { ...report, previous: { period: prev, totals: energyReport(prev).totals }, periods: energyPeriods(), currency: currencyInfo(), loggedIn: Boolean(session), viewer: Boolean(viewer), title: config.settings.dashboard.title });
   }
   if (p === '/api/report' && m === 'GET') {
     if (!session && !viewer) return sendError(res, 401, 'Login required');
     const period = url.searchParams.get('period') || zoned(Date.now()).month;
-    return sendJson(res, 200, { ...reportPayload(period), loggedIn: Boolean(session), viewer: Boolean(viewer) });
+    return sendJson(res, 200, { ...reportPayload(period), currency: currencyInfo(), loggedIn: Boolean(session), viewer: Boolean(viewer) });
   }
   if (p === '/api/energy/export' && m === 'GET') {
     if (!sees) return sendError(res, 401, 'Login required');
@@ -7804,6 +8114,29 @@ async function handleApi(req, res, url, session, viewer = null) {
       return sendJson(res, 200, { ok: true });
     }
   }
+  // Electricity prices outside Norway: the API keys (write-only), checked by fetching prices
+  if (p === '/api/admin/power/keys' && m === 'PUT') {
+    const b = await readBody(req);
+    const texts = [];
+    for (const k of POWER_KEYS) {
+      if (b[k] === null) {
+        if (config.powerKeys[k]) texts.push(`${POWER_KEY_NAMES[k]} removed`);
+        config.powerKeys[k] = null;
+      } else if (typeof b[k] === 'string' && b[k].trim()) {
+        config.powerKeys[k] = encryptSecret({ ...powerKeyHost(k), secret: null }, validateSecret(b[k].trim()));
+        texts.push(`${POWER_KEY_NAMES[k]} saved`);
+      }
+    }
+    saveConfig();
+    for (const t of texts) event('settings', `Electricity price: ${t}`);
+    if (config.settings.power.plan === 'intl') await ensureIntlPrices(true);
+    return sendJson(res, 200, powerPriceStatus());
+  }
+  if (p === '/api/admin/power/status' && m === 'GET') {
+    if (config.settings.power.plan === 'intl') await ensureIntlPrices();
+    return sendJson(res, 200, powerPriceStatus());
+  }
+
   // Claude: reporters, the Admin API key and the status page
   if (p === '/api/admin/claude' && m === 'GET') return sendJson(res, 200, claudeAdminState());
   if (p === '/api/admin/claude/settings' && m === 'PUT') {
@@ -10917,6 +11250,8 @@ function backupBundle() {
       },
       alerts: { ...config.alerts, channels: config.alerts.channels.map((c) => ({ ...c, secret: undefined, secretPlain: c.secret ? secretOrNull(channelHost(c)) : null })) },
       claude: { ...config.claude, adminKey: undefined, adminKeyPlain: config.claude.adminKey ? secretOrNull(claudeKeyHost()) : null },
+      powerKeys: undefined,
+      powerKeysPlain: Object.fromEntries(POWER_KEYS.map((k) => [k, config.powerKeys[k] ? secretOrNull(powerKeyHost(k)) : null])),
     },
     docs,
     docsHistory,
@@ -11086,6 +11421,11 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
       return [];
     }
   });
+  config.powerKeys = { entsoe: null, tibber: null, hass: null };
+  for (const k of POWER_KEYS) {
+    const v = c.powerKeysPlain?.[k];
+    if (typeof v === 'string' && v && v.length <= 4096 && !hasControlChars(v)) config.powerKeys[k] = encryptSecret({ ...powerKeyHost(k), secret: null }, v);
+  }
   const ck = c.claude?.adminKeyPlain;
   if (typeof ck === 'string' && /^sk-ant-[A-Za-z0-9_-]{10,300}$/.test(ck)) config.claude.adminKey = encryptSecret({ ...claudeKeyHost(), secret: null }, ck);
   // Settings are validated like changes made in Admin; a section that doesn't pass gets the defaults

@@ -168,7 +168,7 @@ function renderPower() {
     el('div', { class: 'lbl' }, HD.icon('zap'), 'Power now', el('span', { class: 'r', text: [p.measured.total != null ? `${fmt.n(p.measured.total)} W measured` : null, p.estimatedW > 0 ? `${fmt.n(p.estimatedW)} W estimated` : null].filter(Boolean).join(' · ') })),
     el('div', { class: 'huge' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: 'W' })),
     el('div', { class: 'wall-chart' }, areaChart(history['power:total'])),
-    trio([['Today', fmt.n(u.today.cost, 2), 'kr'], ['This month', fmt.n(u.month.cost, 0), 'kr'], p.priceNow ? ['Price now', fmt.n(p.priceNow.total, 1), 'øre'] : null]));
+    trio([['Today', fmt.n(u.today.cost, 2), fmt.money()], ['This month', fmt.n(u.month.cost, 0), fmt.money()], p.priceNow ? ['Price now', fmt.priceValue(p.priceNow.total), fmt.priceUnit()] : null]));
 }
 
 // --- the internet, or how the lab is doing when there is no UniFi console ---
@@ -484,6 +484,7 @@ async function refresh() {
   try {
     const [d, s] = await Promise.all([getJson('/api/dashboard'), getJson('/api/services').catch(() => null)]);
     data = d;
+    fmt.setCurrency(d.power?.currency);
     data.rack.items = d.devices; // the server sends the devices once
     services = s;
     delay = d.refreshSeconds;

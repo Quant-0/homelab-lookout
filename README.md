@@ -59,7 +59,7 @@ It is one Node.js file and a folder of static pages, with **no npm dependencies*
 | **Virtualisation** | Proxmox VE (nodes, VMs, containers, storage, ZFS, SMART, backups), Docker (socket proxy), Portainer |
 | **Storage** | TrueNAS 25.04+, Synology DSM, QNAP and others over SNMPv3 |
 | **Network** | UniFi (and Protect cameras), TP-Link Omada, any SNMPv3 switch or router |
-| **Power** | UPSes over NUT or SNMP, Shelly and Tasmota plugs, Home Assistant power sensors; electricity prices for Norway (spot or Norgespris, plus grid tariff) |
+| **Power** | UPSes over NUT or SNMP, Shelly and Tasmota plugs, Home Assistant power sensors; electricity prices for Norway (spot or Norgespris, plus grid tariff) and elsewhere (fixed or by time of day, ENTSO-E spot prices across Europe, Tibber, Octopus Agile, or a Home Assistant sensor; any currency) |
 | **Inside machines** | The **Lookout agent**: a small shell script for any Linux machine (memory as Linux counts it, filesystems, systemd services, pending updates) |
 | **Claude** | Claude Code's own logs through a small reporter (tokens, sessions, plan limits), a Claude Console organization's usage and cost, and status.claude.com |
 | **Anything else** | Ping, TCP port, DNS lookup and web page checks; a custom JSON API card |

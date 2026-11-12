@@ -182,8 +182,73 @@ function fillPower(p) {
   f.supplierMonthlyKr.value = p.fixed.supplierMonthlyKr;
   f.fixedInclude.checked = p.fixed.include;
   f.includeEstimates.checked = p.includeEstimates;
+  // outside Norway
+  const x = p.intl;
+  f.currency.replaceChildren(...['EUR', 'SEK', 'DKK', 'NOK', 'GBP', 'USD', 'CHF', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'ISK', 'AUD', 'CAD', 'NZD', 'JPY'].map((c) => el('option', { value: c, text: c })));
+  f.currency.value = x.currency;
+  f.source.value = x.source;
+  f.fixedPrice.value = x.fixedPrice;
+  f.entsoeZone.replaceChildren(...ENTSOE_ZONES.map((z) => el('option', { value: z, text: z })));
+  f.entsoeZone.value = x.entsoeZone;
+  f.octopusRegion.value = x.octopusRegion;
+  f.hassUrl.value = x.hass.url;
+  f.hassEntity.value = x.hass.entity;
+  f.hassInclVat.checked = x.hass.inclVat;
+  f.vatPct.value = x.vatPct;
+  f.markup.value = x.markup;
+  f.taxes.value = x.taxes;
+  f.enteredInclVat.checked = x.enteredInclVat;
+  f.gridMode.value = x.grid.mode;
+  f.gridPrice.value = x.grid.price;
+  touDraft = { energy: structuredClone(x.tou), grid: structuredClone(x.grid.tou) };
+  renderTou('energy');
+  renderTou('grid');
+  loadPowerStatus();
   updatePlanFields();
 }
+
+const ENTSOE_ZONES = ['SE1', 'SE2', 'SE3', 'SE4', 'DK1', 'DK2', 'FI', 'NO1', 'NO2', 'NO3', 'NO4', 'NO5', 'EE', 'LV', 'LT', 'DE-LU', 'NL', 'BE', 'FR', 'AT', 'CH', 'PL', 'CZ', 'SK', 'HU', 'SI', 'HR', 'RO', 'BG', 'GR', 'ES', 'PT', 'IT-North', 'IE'];
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let touDraft = { energy: { other: 0, periods: [] }, grid: { other: 0, periods: [] } };
+
+// Prices by time of day: a row per period (name, price, days, from–to), and the price at other times
+function renderTou(which) {
+  const t = touDraft[which];
+  const box = $(which === 'energy' ? 'tou-energy' : 'tou-grid');
+  const changed = () => updatePlanFields();
+  const rows = t.periods.map((p, i) => {
+    const name = el('input', { value: p.name, maxlength: 30, 'aria-label': 'Period name', oninput: () => (p.name = name.value) });
+    const price = el('input', { type: 'number', step: '0.0001', value: p.price, 'aria-label': `${p.name} price per kWh`, oninput: () => { p.price = Number(price.value); changed(); } });
+    const from = el('input', { type: 'time', value: p.from, 'aria-label': 'From', onchange: () => (p.from = from.value) });
+    const to = el('input', { type: 'time', value: p.to === '24:00' ? '00:00' : p.to, 'aria-label': 'To', onchange: () => (p.to = to.value) });
+    const days = el('span', { class: 'tou-days' }, DAY_NAMES.map((d, k) => {
+      const cb = el('input', { type: 'checkbox', checked: p.days.includes(k), 'aria-label': d });
+      cb.addEventListener('change', () => (p.days = cb.checked ? [...p.days, k].sort() : p.days.filter((x) => x !== k)));
+      return el('label', { class: 'check' }, cb, d);
+    }));
+    return el('div', { class: 'tou-row' }, name, price, days, el('span', { class: 'tou-time' }, from, '–', to),
+      el('button', { type: 'button', class: 'icon-button', title: 'Remove', 'aria-label': `Remove ${p.name}`, onclick: () => { t.periods.splice(i, 1); renderTou(which); changed(); } }, HD.icon('trash')));
+  });
+  const other = el('input', { type: 'number', step: '0.0001', value: t.other, 'aria-label': 'Price at other times', oninput: () => { t.other = Number(other.value); changed(); } });
+  box.replaceChildren(
+    el('p', { class: 'hint', text: which === 'energy' ? 'Periods are tried from the top; a period that ends before it starts runs past midnight.' : 'Grid fee by time of day, tried from the top.' }),
+    ...rows,
+    el('div', { class: 'tou-other' }, el('span', { class: 'small', text: 'Price at other times' }), other),
+    el('button', { type: 'button', class: 'small', text: 'Add a period', onclick: () => { t.periods.push({ name: t.periods.length ? 'Off-peak' : 'Peak', price: t.other, days: [0, 1, 2, 3, 4], from: '07:00', to: '22:00' }); renderTou(which); changed(); } }));
+}
+
+// Which keys are saved, and whether the price source answers
+async function loadPowerStatus() {
+  try {
+    powerStatus = await api('GET', '/api/admin/power/status');
+  } catch {
+    return;
+  }
+  const f = $('power-form').elements;
+  for (const k of ['entsoe', 'tibber', 'hass']) f[`${k}Key`].placeholder = powerStatus.keys[k] ? 'Saved (type a new one to replace it)' : '';
+  updatePlanFields();
+}
+let powerStatus = null;
 
 function powerBody() {
   const p = $('power-form').elements;
@@ -211,12 +276,34 @@ function powerBody() {
       include: p.fixedInclude.checked,
     },
     includeEstimates: p.includeEstimates.checked,
+    intl: {
+      currency: p.currency.value,
+      source: p.source.value,
+      vatPct: Number(p.vatPct.value || 0),
+      enteredInclVat: p.enteredInclVat.checked,
+      fixedPrice: Number(p.fixedPrice.value || 0),
+      tou: touDraft.energy,
+      entsoeZone: p.entsoeZone.value,
+      hass: { url: p.hassUrl.value, entity: p.hassEntity.value, inclVat: p.hassInclVat.checked },
+      octopusRegion: p.octopusRegion.value,
+      markup: Number(p.markup.value || 0),
+      grid: { mode: p.gridMode.value, price: Number(p.gridPrice.value || 0), tou: touDraft.grid },
+      taxes: Number(p.taxes.value || 0),
+    },
   };
 }
 
 // Same formula as the server (gridRateAt / priceAt), shown so it can be compared with an invoice.
 function updatePlanFields() {
   const f = $('power-form').elements;
+  const intl = f.plan.value === 'intl';
+  for (const n of document.querySelectorAll('#power-form .intl-only')) n.classList.toggle('hidden', !intl);
+  for (const n of document.querySelectorAll('#power-form .no-only')) n.classList.toggle('hidden', intl);
+  for (const n of document.querySelectorAll('#power-form .src')) n.classList.toggle('hidden', !n.classList.contains(`src-${f.source.value}`));
+  for (const n of document.querySelectorAll('#power-form .grid-fixed')) n.classList.toggle('hidden', f.gridMode.value !== 'fixed');
+  for (const n of document.querySelectorAll('#power-form .grid-tou')) n.classList.toggle('hidden', f.gridMode.value !== 'tou');
+  for (const n of document.querySelectorAll('#power-form .cur-month')) n.textContent = intl ? f.currency.value : 'kr';
+  if (intl) return intlPreview();
   const spot = f.plan.value === 'spot';
   for (const n of document.querySelectorAll('#power-form .spot-only')) n.classList.toggle('hidden', !spot);
   for (const n of document.querySelectorAll('#power-form .fees-only')) n.classList.toggle('hidden', f.ratesInclFees.checked);
@@ -236,6 +323,29 @@ function updatePlanFields() {
   } else lines.push(`Energy: spot price${b.vat ? ' + VAT' : ''}${b.support.enabled ? ' − subsidy' : ''} + ${fmt.n(b.markupOre, 2)} øre markup (varies by hour)`);
   const fixed = b.fixed.gridMonthlyKr + b.fixed.supplierMonthlyKr;
   if (fixed) lines.push(`Fixed: ${fmt.kr(fixed)}/month (${b.fixed.include ? 'included in' : 'excluded from'} homelab cost)`);
+  $('price-preview').replaceChildren(...lines.map((l) => el('div', { text: l })));
+}
+
+// What the prices add up to, outside Norway
+function intlPreview() {
+  const b = powerBody();
+  const x = b.intl;
+  const cur = x.currency;
+  const vat = 1 + x.vatPct / 100;
+  const e = (v) => (x.enteredInclVat ? v : v * vat);
+  const n = (v) => `${fmt.n(v, 4)} ${cur}`;
+  const extra = e(x.markup) + e(x.taxes) + (x.grid.mode === 'fixed' ? e(x.grid.price) : 0);
+  const lines = [];
+  if (x.source === 'fixed') lines.push(`Total per kWh: ${n(e(x.fixedPrice) + extra)}${x.grid.mode === 'tou' ? ' plus the grid fee by time of day' : ''}`);
+  else if (x.source === 'tou') lines.push(`Per kWh: ${[...x.tou.periods.map((p) => `${p.name} ${n(e(p.price) + extra)}`), `other times ${n(e(x.tou.other) + extra)}`].join(' · ')}${x.grid.mode === 'tou' ? ' (plus the grid fee by time of day)' : ''}`);
+  else lines.push(`Per kWh: the ${({ entsoe: `spot price in ${x.entsoeZone}`, hass: 'price from Home Assistant', tibber: 'Tibber price', octopus: `Octopus Agile price, region ${x.octopusRegion}` })[x.source]}${x.source === 'tibber' || (x.source === 'hass' && x.hass.inclVat) ? '' : ` + ${fmt.n(x.vatPct, 1)} % VAT`} + ${n(extra)} (markup, taxes${x.grid.mode === 'fixed' ? ', grid fee' : ''})`);
+  const st = powerStatus;
+  if (st && st.plan === 'intl' && st.source === x.source) {
+    if (st.error) lines.push(`Not reading prices: ${st.error}`);
+    else if (st.priceNow) lines.push(`Now: ${fmt.n(st.priceNow.total / 100, 4)} ${cur} per kWh${st.slots ? ` · ${st.slots} prices ahead` : ''}`);
+  }
+  const fixed = b.fixed.gridMonthlyKr + b.fixed.supplierMonthlyKr;
+  if (fixed) lines.push(`Fixed: ${fmt.n(fixed, 2)} ${cur}/month (${b.fixed.include ? 'included in' : 'excluded from'} homelab cost)`);
   $('price-preview').replaceChildren(...lines.map((l) => el('div', { text: l })));
 }
 
@@ -327,6 +437,10 @@ function renderCarrier() {
 
 function fillDashboard(d) {
   const f = $('dash-form').elements;
+  // the browser's list of time zones, with the one set (it may not be in an older browser's list)
+  const zones = [...new Set([d.timeZone || 'Europe/Oslo', ...(Intl.supportedValuesOf?.('timeZone') || [])])].sort();
+  f.timeZone.replaceChildren(...zones.map((z) => el('option', { value: z, text: z.replace(/_/g, ' ') })));
+  f.timeZone.value = d.timeZone || 'Europe/Oslo';
   f.title.value = d.title;
   f.carrier.value = d.carrier || '';
   carrierDraft = structuredClone(d.carrierLogo || { kind: 'auto' });
@@ -366,6 +480,7 @@ async function saveSettings(msgId) {
       homeServices: d.homeServices.value,
       serviceAlerts: d.serviceAlerts.checked,
       vms: Object.fromEntries(Object.entries(state.settings.dashboard.vms).map(([k, v]) => [k, d[`vms.${k}`] ? d[`vms.${k}`].checked : v])),
+      timeZone: d.timeZone.value,
     },
     power: powerBody(),
   };
@@ -373,14 +488,28 @@ async function saveSettings(msgId) {
     const r = await api('PUT', '/api/admin/settings', body);
     state.settings = r.settings;
     showMsg(msgId, r.warning ? `Saved. ${r.warning}` : 'Saved', !r.warning);
+    return true;
   } catch (e) {
     showMsg(msgId, e.message, false);
+    return false;
   }
 }
 
-$('power-form').addEventListener('submit', (ev) => {
+$('power-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  saveSettings('power-msg');
+  if (!(await saveSettings('power-msg'))) return;
+  // the keys go on their own, write-only; then the source is asked for prices
+  const f = ev.target.elements;
+  const keys = Object.fromEntries(['entsoe', 'tibber', 'hass'].map((k) => [k, f[`${k}Key`].value.trim()]).filter(([, v]) => v));
+  if (f.plan.value !== 'intl' && !Object.keys(keys).length) return;
+  try {
+    powerStatus = await api('PUT', '/api/admin/power/keys', keys);
+    for (const k of Object.keys(keys)) f[`${k}Key`].value = '';
+    loadPowerStatus();
+    if (powerStatus.error) showMsg('power-msg', `Saved, but the price can't be read: ${powerStatus.error}`, false);
+  } catch (e) {
+    showMsg('power-msg', e.message, false);
+  }
 });
 
 $('dash-form').addEventListener('submit', (ev) => {

@@ -1114,7 +1114,7 @@ function powerTile(p) {
     el('span', { class: 'big-facts' },
       el('span', null, el('strong', { text: fmt.kr(u.today.cost) }), ' today'),
       el('span', null, el('strong', { text: fmt.kr(u.month.cost, 0) }), ' this month'),
-      pn ? el('span', null, el('strong', { text: `${fmt.n(pn.total, 1)} øre` }), ' per kWh now') : null),
+      pn ? el('span', null, el('strong', { text: fmt.price(pn.total) }), ' per kWh now') : null),
     p.watts != null ? el('span', { class: 'big-spark' }, HD.sparkSlot('power:total', { label: 'Measured draw', unit: ' W', range: '24h' })) : el('span', { class: 'small muted', text: 'Add a server with Redfish, a smart plug, or a UniFi switch with PoE to measure power.' }));
   b.addEventListener('click', openPower);
   return b;
@@ -1133,7 +1133,10 @@ function powerDetail(p) {
   const u = p.usage;
   const m = p.measured;
   const forecast = forecastOf(p);
-  const plan = p.plan === 'norgespris' ? 'Norgespris' : `Spot ${p.area}`;
+  const src = p.source;
+  const plan = p.plan === 'norgespris' ? 'Norgespris' : p.plan === 'intl'
+    ? { fixed: 'Fixed price', tou: 'Price by time of day', entsoe: `Spot ${src.zone}`, hass: 'Price from Home Assistant', tibber: 'Tibber', octopus: `Octopus Agile, region ${src.zone}` }[src.kind]
+    : `Spot ${p.area}`;
   const loggedDays = u.days.filter((x) => x.kwh > 0).length;
   const breakdown = [
     m.idrac != null ? `servers ${fmt.n(m.idrac)} W` : null,
@@ -1149,14 +1152,15 @@ function powerDetail(p) {
   return el('article', { class: 'detail power-card' },
     el('header', { class: 'd-head' },
       el('span', { class: 'tile-icon' }, HD.icon('zap')),
-      el('div', { class: 't' }, el('h2', { text: 'Power & cost' }), el('p', { text: `${plan}${pn ? ` · ${fmt.n(pn.total, 1)} øre/kWh now` : ''}${p.vat ? ' · incl. VAT' : ''}` }))),
+      el('div', { class: 't' }, el('h2', { text: 'Power & cost' }), el('p', { text: `${plan}${pn ? ` · ${fmt.price(pn.total)}/kWh now` : ''}${p.plan === 'intl' ? (p.source.vatPct ? ' · incl. VAT' : '') : p.vat ? ' · incl. VAT' : ''}` }))),
+    p.source?.error ? el('div', { class: 'callout warning' }, el('b', { text: 'The electricity price could not be read' }), el('span', { class: 'small', text: p.source.error })) : null,
     el('div', { class: 'big-num' }, p.watts != null ? fmt.n(p.watts) : '–', el('small', { text: `W ${p.includeEstimates && p.estimatedW > 0 ? 'measured + estimated' : 'measured now'}` })),
     el('div', { class: 'sect-head' }, HD.rangeTabs()),
     p.watts != null ? sparks([['power:total', 'Measured draw', ' W']]) : null,
     el('div', { class: 'power-tiles' },
-      tile('Today', kr(u.today.cost, 2), 'kr', `${fmt.n(u.today.kwh, 1)} kWh`),
-      tile('This month', kr(u.month.cost, 0), 'kr', `${fmt.n(u.month.kwh, 0)} kWh`),
-      forecast != null ? tile('Month forecast', kr(forecast, 0), 'kr', 'at this draw') : null,
+      tile('Today', kr(u.today.cost, 2), fmt.money(), `${fmt.n(u.today.kwh, 1)} kWh`),
+      tile('This month', kr(u.month.cost, 0), fmt.money(), `${fmt.n(u.month.kwh, 0)} kWh`),
+      forecast != null ? tile('Month forecast', kr(forecast, 0), fmt.money(), 'at this draw') : null,
       est ? tile('Per day', fmt.n(est.kwhDay, 1), 'kWh', `${fmt.kr(est.day, 0)} a day`) : null),
     loggedDays >= 2 ? el('div', { class: 'power-chart' }, el('div', { class: 'chart-title', text: 'Daily use, last 30 days (kWh)' }), renderDailyChart(u.days, 130)) : null,
     kv([
@@ -1856,6 +1860,7 @@ async function refresh() {
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     lastData = await r.json();
+    fmt.setCurrency(lastData.power?.currency);
     lastData.rack.items = lastData.devices; // the server sends the devices once
     delay = lastData.refreshSeconds;
     if (!layoutLoaded) {

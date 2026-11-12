@@ -10,7 +10,7 @@
 | | **Check-ins & maintenance** | [Check-ins and maintenance windows](../features/checkins-and-maintenance.md) |
 | Dashboard | **Dashboard** | Title, provider, what shows on Home, VMs, the status page, Claude, making it public |
 | | **Look** | Theme, accent, logo and app icon, background |
-| | **Power & cost** | Prices and tariffs ([Power and energy](../features/energy.md)) |
+| | **Power & cost** | Prices and tariffs, in Norway or elsewhere ([Power and energy](../features/energy.md)) |
 | System | **Backups** | Download, restore, automatic backups ([Backups](backups.md)) |
 | | **Sign-in & security** | Password, passkeys, signed-in browsers, remembered devices |
 | | **Server** | This server, the web server and certificate, address & reverse proxy |
@@ -21,7 +21,7 @@ Passwords, tokens and keys are entered only here, stored encrypted and never sho
 
 ![Admin → Dashboard](../guide/img/admin-dashboard.png)
 
-- **Title**, **internet provider** (empty uses the name the UniFi console reports) and **refresh interval**.
+- **Title**, **internet provider** (empty uses the name the UniFi console reports), **refresh interval** and **time zone** (for days, prices by time of day, schedules and times in messages).
 - **Provider logo**: *Automatic* looks up who owns your public IP in the internet registry and uses that company's icon; or upload one, paste a link, or none.
 - **Services on Home**: one line with the count (default), tiles, a compact list, only the ones that are down, or off. Untick *A service that is down shows under "Needs you"* to keep services out of Home's problems.
 - **VMs and containers**: where they show (Home, the Proxmox server's details, a count on the server in the rack) and with which numbers.
