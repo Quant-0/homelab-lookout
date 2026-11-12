@@ -68,7 +68,15 @@ Set the rack's size and numbering, and drag devices and panels, in **Admin → D
 
 The buttons fade out when nobody touches the screen. The full-screen button keeps the screen awake where the browser allows it. For a wall tablet, sign in once with *Remember this device for viewing*.
 
-**Customize** (signed in) changes the wall for every screen: which panels show, their order and size (Normal, Wide, Tall, Big), the top bar, patch cables, and which services and devices. **Default layout** brings the original back.
+**Customize** (signed in) turns the wall itself into the editor:
+
+- **Drag** a panel by its bar to move it; **drag its lower right corner** to make it wider or taller (it snaps to the grid). The **×** removes it.
+- Its **options** (the sliders button): a title of its own or none, and what it shows: the graph's time span (24 hours, 7 days, 30 days), which numbers, how long *Needs you* shows each problem, patch cables on the rack, the devices, the climate sensors, Claude's style.
+- The bar at the top: **columns** (2–6), **rows** (automatic, or a fixed number), **text size** (70–160 %), the **space** between panels, the top bar (logo and title, clock, VMs running), the services along the bottom, and **Add a panel**.
+- New panels: a big **clock**, **one device** (its front, state and numbers), **one service**, **a graph** of any value Lookout keeps (power, temperatures, CPU, traffic, ping, a UPS…), and **a note** with your own text.
+- **Layouts for each screen:** *New layout…* makes one with a name, such as *Kitchen tablet*. That screen opens `/wall?layout=kitchen-tablet`; plain `/wall` shows the default one. **Default** starts a layout again from the original panels.
+
+Nothing changes until **Save**; **Cancel** throws the changes away.
 
 ![Customize the wall](../guide/img/wall-customize.png)
 

@@ -65,6 +65,7 @@ const patterned = {
   passkeys: [['DELETE', '/api/admin/passkeys/AAAAAAAAAAAAAAAAAAAAAA']],
   portainerConn: [['POST', `/api/admin/services/${U}/portainer-connection`]],
   agents: [['PUT', `/api/admin/agents/${U}`], ['DELETE', `/api/admin/agents/${U}`], ['POST', `/api/admin/agents/${U}/token`]],
+  wallLayouts: [['DELETE', '/api/admin/wall/kitchen']],
   climateSources: [['PUT', `/api/admin/climate/sources/${U}`], ['DELETE', `/api/admin/climate/sources/${U}`], ['POST', `/api/admin/climate/sources/${U}/pair`], ['POST', `/api/admin/climate/sources/${U}/test`]],
   claudeReporters: [['PUT', `/api/admin/claude/reporters/${U}`], ['DELETE', `/api/admin/claude/reporters/${U}`], ['POST', `/api/admin/claude/reporters/${U}/token`]],
 };

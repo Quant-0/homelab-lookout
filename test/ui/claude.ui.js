@@ -86,7 +86,7 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   // the wall: a panel in each style, and the ticker
   const csrf = (await (await page.request.get(`${B}/api/session`)).json()).csrf;
   const wall = (await (await page.request.get(`${B}/api/dashboard`)).json()).wall;
-  const setWall = (style) => page.request.put(`${B}/api/admin/wall`, { data: { ...wall, hidden: [], claude: { style, stats: ['tokens', 'cost', 'limits', 'status'] } }, headers: { 'X-CSRF-Token': csrf } });
+  const setWall = (style) => page.request.put(`${B}/api/admin/wall`, { data: { ...wall, panels: [...wall.panels.filter((p) => p.type !== 'claude'), { type: 'claude', opts: { style, stats: ['tokens', 'cost', 'limits', 'status'] } }] }, headers: { 'X-CSRF-Token': csrf } });
   await setWall('rings');
   await page.goto(B + '/wall');
   await page.waitForSelector('#claude .cl-ring');
@@ -102,15 +102,19 @@ const check = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${m}`); if (!c) p
   await page.waitForSelector('#claude-ticker:not([hidden])');
   check(await page.locator('#claude').isHidden() && /12\.5M tokens today/.test(await page.textContent('#claude-ticker')) && /42 % 5 hours/.test(await page.textContent('#claude-ticker')), 'Ticker line: one row above the services instead of a panel');
   await page.screenshot({ path: `${S}/claude-wall-ticker.png` });
-  // the wall's Customize has the Claude panel's style
+  // the wall's Customize: the Claude panel's options, by its gear
+  page.on('dialog', (d) => d.accept());
   await page.click('#wall-customize');
-  await page.waitForSelector('select[name=claude-style]');
-  await page.selectOption('select[name=claude-style]', 'number');
-  await page.waitForSelector('#claude:not([hidden]) .huge');
-  check(await page.locator('#claude-ticker').isHidden(), 'choosing Big number in Customize previews it at once');
-  await page.click('.wall-edit button.primary');
-  await page.waitForSelector('.wall-edit', { state: 'detached' });
-  const saved = (await (await page.request.get(`${B}/api/dashboard`)).json()).wall.claude.style;
+  await page.waitForSelector('#claude .w-edit');
+  await page.click('#claude .w-edit button[aria-label^="Options"]');
+  await page.waitForSelector('dialog.drawer[open] .wall-edit');
+  await page.locator('dialog.drawer .we-opt', { hasText: 'Style' }).locator('select').selectOption('number');
+  await page.waitForSelector('#claude .huge');
+  check(await page.locator('#claude-ticker').isHidden(), 'choosing Big number in its options previews it at once');
+  await page.keyboard.press('Escape');
+  await page.click('#wall-edit button:has-text("Save")');
+  await page.waitForSelector('#wall-edit', { state: 'hidden' });
+  const saved = (await (await page.request.get(`${B}/api/dashboard`)).json()).wall.panels.find((p) => p.type === 'claude').opts.style;
   check(saved === 'number', 'and Save keeps it');
   await page.click('#claude');
   await page.waitForSelector('.claude-card');

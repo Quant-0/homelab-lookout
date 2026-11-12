@@ -33,7 +33,7 @@ async function req(method, p, body) {
   const one = r.json.cables[0];
   let d = (await req('GET', '/api/dashboard')).json;
   ok(d.cables.length === 1 && d.cables[0].id === one.id, 'the dashboard gets the cables');
-  ok(d.wall.cables === false, 'the wall shows no cables until switched on');
+  ok(d.wall.panels.find((p) => p.type === 'rack').opts.cables === false, 'the wall shows no cables until switched on');
 
   for (const [what, list] of [
     ['a port used twice', [one, { a: { item: gw.id, port: 'rj1' }, b: { item: pp.id, port: 'pp2' } }]],

@@ -1401,22 +1401,6 @@ function syncUnifiDevices(h, devices) {
   }
 }
 
-// The wall display: which panels, in what order and size, and which devices and services it shows
-const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices', 'claude', 'climate'];
-const WALL_SIZES = ['normal', 'wide', 'tall', 'big'];
-const DEFAULT_WALL = {
-  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }, { id: 'climate', size: 'normal' }],
-  hidden: ['devices', 'claude', 'climate'],
-  claude: { style: 'number', stats: ['tokens', 'limits', 'status'] }, // the Claude panel: how it looks and what it shows
-  showServices: true,
-  services: null, // null = the same as Home
-  devices: null, // null = every device
-  clock: true,
-  cables: false, // patch cables drawn over the rack
-  logo: true, // the dashboard's logo and title beside the clock
-  vmCount: true,
-};
-
 // --- Patch cables: from a port on one thing in the rack to a port on another (devices or patch
 // panels), with a colour and an optional label. Only what is in the rack can be patched; cables to
 // something that has been removed are dropped.
@@ -1448,43 +1432,159 @@ function validateCables(list, strict = true) {
 }
 const currentCables = () => validateCables(config.cables || [], false);
 
-function validateWall(b) {
-  if (!b || typeof b !== 'object') throw new UserError('Invalid wall layout');
-  const seen = new Set();
-  const panels = [];
-  for (const x of Array.isArray(b.panels) ? b.panels : []) {
-    if (!WALL_PANELS.includes(x?.id) || seen.has(x.id)) throw new UserError('Invalid wall panel');
-    if (!WALL_SIZES.includes(x.size)) throw new UserError('Invalid panel size');
-    seen.add(x.id);
-    panels.push({ id: x.id, size: x.size });
-  }
-  const added = DEFAULT_WALL.panels.filter((d) => !seen.has(d.id)); // panels added in later versions: as by default
-  for (const d of added) panels.push({ ...d });
-  const ids = (v, list, max) => (v === null || v === undefined ? null : Array.isArray(v) ? [...new Set(v.filter((id) => typeof id === 'string' && list.some((x) => x.id === id)))].slice(0, max) : null);
+// The wall display (/wall): one or more named layouts, each for a screen (/wall?layout=kitchen;
+// plain /wall is "default"). A layout is a grid of 2–6 columns (rows automatic or fixed) with
+// panels in order, each spanning columns and rows, with its own title and options; a text size,
+// the space between panels, the top bar and the services along the bottom. Layouts saved before
+// (one, with four sizes) are read as the default one.
+const WALL_TYPES = {
+  spot: 'Needs you (one at a time)', list: 'All problems', power: 'Power', net: 'Internet', rack: 'Rack', devices: 'Devices', claude: 'Claude', climate: 'Climate',
+  clock: 'Clock', device: 'One device', service: 'One service', graph: 'A graph', note: 'A note',
+};
+const WALL_SINGLE = ['spot', 'list', 'power', 'net', 'rack', 'devices', 'claude', 'climate']; // at most one of each in a layout
+const WALL_RANGES = ['24h', '7d', '30d'];
+const WALL_GAPS = ['tight', 'normal', 'roomy'];
+const MAX_WALL_LAYOUTS = 12;
+const MAX_WALL_PANELS = 40;
+const WALL_SLUG = /^[a-z0-9][a-z0-9-]{0,29}$/;
+const OLD_SIZES = { normal: [1, 1], wide: [2, 1], tall: [1, 2], big: [2, 2] };
+
+function defaultWallLayout() {
   return {
-    panels,
-    hidden: [...new Set([...(Array.isArray(b.hidden) ? b.hidden : []), ...added.filter((d) => DEFAULT_WALL.hidden.includes(d.id)).map((d) => d.id)].filter((id) => WALL_PANELS.includes(id)))],
-    showServices: b.showServices !== false,
-    services: ids(b.services, config.services, 60),
-    devices: ids(b.devices, config.devices, 100),
-    clock: b.clock !== false,
-    cables: b.cables === true,
-    logo: b.logo !== false,
-    vmCount: b.vmCount !== false,
-    claude: {
-      style: CLAUDE_WALL_STYLES.includes(b.claude?.style) ? b.claude.style : DEFAULT_WALL.claude.style,
-      stats: Array.isArray(b.claude?.stats) ? CLAUDE_STATS.filter((k) => b.claude.stats.includes(k)) : [...DEFAULT_WALL.claude.stats],
-    },
+    slug: 'default', name: 'Default', cols: 3, rows: 0, scale: 100, gap: 'normal',
+    top: { logo: true, clock: true, vmCount: true },
+    services: { show: true, list: null },
+    panels: [
+      { uid: 'spot', type: 'spot', w: 1, h: 1, title: null, opts: { seconds: 8 } },
+      { uid: 'power', type: 'power', w: 1, h: 1, title: null, opts: { range: '24h', show: ['chart', 'today', 'month', 'price'] } },
+      { uid: 'rack', type: 'rack', w: 1, h: 2, title: null, opts: { cables: false } },
+      { uid: 'list', type: 'list', w: 1, h: 1, title: null, opts: {} },
+      { uid: 'net', type: 'net', w: 1, h: 1, title: null, opts: { range: '24h', show: ['chart', 'now', 'clients', 'wifi'] } },
+    ],
   };
 }
 
-function wallLayout() {
-  if (!config.wall) return structuredClone(DEFAULT_WALL);
-  try {
-    return validateWall(config.wall); // drops devices and services that were removed since
-  } catch {
-    return structuredClone(DEFAULT_WALL);
+// A layout saved before named layouts (panels with Normal/Wide/Tall/Big, hidden ones listed)
+function wallFromOld(b) {
+  const L = defaultWallLayout();
+  const hidden = new Set(Array.isArray(b.hidden) ? b.hidden : []);
+  const panels = [];
+  for (const x of Array.isArray(b.panels) ? b.panels : []) {
+    if (!WALL_SINGLE.includes(x?.id) || hidden.has(x.id) || panels.some((p) => p.type === x.id)) continue;
+    const [w, h] = OLD_SIZES[x.size] || [1, 1];
+    const opts = x.id === 'rack' ? { cables: b.cables === true } : x.id === 'devices' ? { devices: b.devices ?? null } : x.id === 'claude' ? { ...(b.claude || {}) } : undefined;
+    panels.push({ uid: x.id, type: x.id, w, h, title: null, opts });
   }
+  if (!Array.isArray(b.panels)) return L;
+  return { ...L, top: { logo: b.logo !== false, clock: b.clock !== false, vmCount: b.vmCount !== false }, services: { show: b.showServices !== false, list: b.services ?? null }, panels };
+}
+
+const wallIds = (v, list, max) => (v === null || v === undefined ? null : Array.isArray(v) ? [...new Set(v.filter((id) => typeof id === 'string' && list.some((x) => x.id === id)))].slice(0, max) : null);
+
+function validateWallPanel(p, cols, used) {
+  if (!p || !WALL_TYPES[p.type]) throw new UserError('Unknown wall panel');
+  if (WALL_SINGLE.includes(p.type) && used.has(p.type)) throw new UserError(`${WALL_TYPES[p.type]} can be on a layout once`);
+  used.add(p.type);
+  const uid = typeof p.uid === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(p.uid) ? p.uid : `${p.type}-${crypto.randomBytes(4).toString('hex')}`;
+  const o = p.opts && typeof p.opts === 'object' ? p.opts : {};
+  const range = WALL_RANGES.includes(o.range) ? o.range : '24h';
+  const pick = (list, allowed) => (Array.isArray(list) ? allowed.filter((k) => list.includes(k)) : [...allowed]);
+  let opts = {};
+  if (p.type === 'spot') opts = { seconds: num(o.seconds ?? 8, 4, 60, 'Seconds per problem', { int: true }) };
+  if (p.type === 'power') opts = { range, show: pick(o.show, ['chart', 'today', 'month', 'price']) };
+  if (p.type === 'net') opts = { range, show: pick(o.show, ['chart', 'now', 'clients', 'wifi']) };
+  if (p.type === 'rack') opts = { cables: o.cables === true };
+  if (p.type === 'devices') opts = { devices: wallIds(o.devices, config.devices, 100) };
+  if (p.type === 'claude') opts = { style: CLAUDE_WALL_STYLES.includes(o.style) ? o.style : 'number', stats: Array.isArray(o.stats) ? CLAUDE_STATS.filter((k) => o.stats.includes(k)) : ['tokens', 'limits', 'status'] };
+  if (p.type === 'climate') opts = { sensors: Array.isArray(o.sensors) ? [...new Set(o.sensors.filter((k) => typeof k === 'string' && k.length <= 120))].slice(0, 60) : null, humidity: o.humidity !== false };
+  if (p.type === 'clock') opts = { date: o.date !== false, seconds: o.seconds === true };
+  if (p.type === 'device') {
+    if (!config.devices.some((d) => d.id === o.deviceId)) throw new UserError('One device: choose the device');
+    opts = { deviceId: o.deviceId };
+  }
+  if (p.type === 'service') {
+    if (!config.services.some((s) => s.id === o.serviceId)) throw new UserError('One service: choose the service');
+    opts = { serviceId: o.serviceId };
+  }
+  if (p.type === 'graph') {
+    if (!HIST_KEY.test(String(o.key || ''))) throw new UserError('A graph: choose what it shows');
+    opts = { key: o.key, key2: HIST_KEY.test(String(o.key2 || '')) ? o.key2 : null, range, unit: str(o.unit, 12, 'Unit'), decimals: num(o.decimals ?? 0, 0, 3, 'Decimals', { int: true }), label: str(o.label, 60, 'Label') };
+  }
+  if (p.type === 'note') opts = { text: str(o.text, 1000, 'Note', { multiline: true }), size: ['small', 'normal', 'large'].includes(o.size) ? o.size : 'normal' };
+  return {
+    uid, type: p.type,
+    w: num(p.w ?? 1, 1, cols, 'Panel width', { int: true }),
+    h: num(p.h ?? 1, 1, 4, 'Panel height', { int: true }),
+    title: p.title === null || p.title === undefined ? null : str(p.title, 40, 'Title'), // null: the usual one; '': none
+    opts,
+  };
+}
+
+function validateWallLayout(b, slug = b.slug) {
+  if (!b || typeof b !== 'object') throw new UserError('Invalid wall layout');
+  if (!WALL_SLUG.test(String(slug || ''))) throw new UserError('Layout address: lowercase letters, digits and -');
+  const cols = num(b.cols ?? 3, 2, 6, 'Columns', { int: true });
+  const panels = Array.isArray(b.panels) ? b.panels : [];
+  if (panels.length > MAX_WALL_PANELS) throw new UserError(`At most ${MAX_WALL_PANELS} panels`);
+  const used = new Set();
+  const uids = new Set();
+  return {
+    slug,
+    name: str(b.name, 40, 'Layout name') || (slug === 'default' ? 'Default' : slug),
+    cols,
+    rows: b.rows === 0 || b.rows === undefined || b.rows === null ? 0 : num(b.rows, 1, 8, 'Rows', { int: true }),
+    scale: num(b.scale ?? 100, 70, 160, 'Text size', { int: true }),
+    gap: WALL_GAPS.includes(b.gap) ? b.gap : 'normal',
+    top: { logo: b.top?.logo !== false, clock: b.top?.clock !== false, vmCount: b.top?.vmCount !== false },
+    services: { show: b.services?.show !== false, list: wallIds(b.services?.list, config.services, 60) },
+    panels: panels.map((p) => {
+      const out = validateWallPanel(p, cols, used);
+      if (uids.has(out.uid)) out.uid = `${out.type}-${crypto.randomBytes(4).toString('hex')}`;
+      uids.add(out.uid);
+      return out;
+    }),
+  };
+}
+
+// Every layout, checked again as it is read: devices and services removed since drop out
+function wallLayouts() {
+  const raw = config.wall;
+  const list = !raw ? [] : Array.isArray(raw.layouts) ? raw.layouts : [{ ...wallFromOld(raw) }];
+  const out = [];
+  for (const l of list) {
+    try {
+      const panels = (Array.isArray(l.panels) ? l.panels : []).filter((p) => !(p?.type === 'device' && !config.devices.some((d) => d.id === p.opts?.deviceId)) && !(p?.type === 'service' && !config.services.some((s) => s.id === p.opts?.serviceId)));
+      out.push(validateWallLayout({ ...l, panels }, l.slug));
+    } catch {
+      /* left out */
+    }
+  }
+  if (!out.some((l) => l.slug === 'default')) out.unshift(defaultWallLayout());
+  return out;
+}
+const wallLayout = (slug = 'default') => wallLayouts().find((l) => l.slug === slug) || wallLayouts()[0];
+
+// What a graph panel can show: every history series this dashboard keeps, with a name
+function wallSeries() {
+  const out = [{ key: 'power:total', label: 'Power draw', unit: 'W', decimals: 0 }];
+  const devName = (h) => config.devices.find((d) => d.id === h.deviceId)?.name || h.name;
+  for (const h of config.hosts) {
+    const d = results.get(h.id)?.data;
+    if (h.type === 'idrac') out.push({ key: `idrac:${h.id}:watts`, label: `${devName(h)} power`, unit: 'W', decimals: 0 }, { key: `idrac:${h.id}:inlet`, label: `${devName(h)} inlet temperature`, unit: '°C', decimals: 0 }, { key: `idrac:${h.id}:tmax`, label: `${devName(h)} hottest sensor`, unit: '°C', decimals: 0 });
+    if (h.type === 'unifi') out.push({ key: `unifi:${h.id}:wan:down`, key2: `unifi:${h.id}:wan:up`, label: 'Internet traffic (down, up)', unit: 'Mbps', decimals: 1 });
+    if (h.type === 'ping') out.push({ key: `ping:${h.id}:ms`, label: `${devName(h)} ping`, unit: 'ms', decimals: 0 });
+    if (h.type === 'synology') out.push({ key: `syno:${h.id}:temp`, label: `${devName(h)} temperature`, unit: '°C', decimals: 0 }, { key: `syno:${h.id}:cpu`, label: `${devName(h)} CPU`, unit: '%', decimals: 0 });
+    if (h.type === 'proxmox') for (const n of d?.nodes || []) out.push({ key: `pve:${h.id}:${n.name}:cpu`, label: `${n.name} CPU`, unit: '%', decimals: 0 }, { key: `pve:${h.id}:${n.name}:mem`, label: `${n.name} memory`, unit: '%', decimals: 0 });
+    if (h.type === 'nut' || h.type === 'snmp') out.push({ key: `ups:${h.id}:load`, label: `${devName(h)} UPS load`, unit: '%', decimals: 0 }, { key: `ups:${h.id}:charge`, label: `${devName(h)} UPS charge`, unit: '%', decimals: 0 });
+    if (['shelly', 'tasmota', 'hass'].includes(h.type)) out.push({ key: `plug:${h.id}:watts`, label: `${devName(h)} power`, unit: 'W', decimals: 0 });
+  }
+  for (const a of config.agents) out.push({ key: `agent:${a.id}:cpu`, label: `${a.name} CPU`, unit: '%', decimals: 0 }, { key: `agent:${a.id}:mem`, label: `${a.name} memory`, unit: '%', decimals: 0 });
+  for (const s of config.services) if (s.monitor) out.push({ key: `svc:${s.id}:ms`, label: `${s.name} response time`, unit: 'ms', decimals: 0 });
+  for (const x of climateSensors()) {
+    if (x.temp !== null) out.push({ key: `${x.hist}:temp`, label: `${x.room ? `${x.room} · ` : ''}${x.name} temperature`, unit: '°C', decimals: 1 });
+    if (x.humidity !== null) out.push({ key: `${x.hist}:hum`, label: `${x.room ? `${x.room} · ` : ''}${x.name} humidity`, unit: '%', decimals: 0 });
+  }
+  return out.filter((x) => HIST_KEY.test(x.key));
 }
 
 // The Claude tile on Home: shown or not, and which numbers it has
@@ -7568,7 +7668,8 @@ function dashboardPayload() {
     homeServices: s.homeServices,
     vms: s.vms,
     layout: config.layout,
-    wall: wallLayout(),
+    wall: wallLayout(), // the default layout
+    walls: wallLayouts(), // every one: a screen opens /wall?layout=<slug>
     cables: currentCables(),
     generatedAt: Date.now(),
     idrac: group('idrac'),
@@ -8482,13 +8583,37 @@ async function handleApi(req, res, url, session, viewer = null) {
     if (!added.length && !removed.length && !changed.length) requestCtx.getStore().logged = true;
     return sendJson(res, 200, { cables: config.cables });
   }
+  // Wall layouts: saved one at a time ({ slug, name, …layout }); a layout in the older form (with
+  // Normal/Wide/Tall/Big panels) is the default one; { reset: true } puts the default back
   if (p === '/api/admin/wall' && m === 'PUT') {
     const body = await readBody(req);
-    config.wall = body === null || body.reset === true ? null : validateWall(body);
+    let layouts = wallLayouts();
+    let saved;
+    if (body === null || body.reset === true) {
+      const slug = body?.slug && body.slug !== 'default' ? null : 'default';
+      layouts = layouts.map((l) => (l.slug === (slug || body.slug) ? { ...defaultWallLayout(), slug: l.slug, name: l.name } : l));
+      saved = layouts.find((l) => l.slug === (slug || body.slug));
+    } else {
+      const old = Array.isArray(body.panels) && body.panels.some((p) => p && 'size' in p);
+      saved = old ? validateWallLayout({ ...wallFromOld(body), slug: 'default', name: 'Default' }, 'default') : validateWallLayout(body, body.slug || 'default');
+      const i = layouts.findIndex((l) => l.slug === saved.slug);
+      if (i < 0 && layouts.length >= MAX_WALL_LAYOUTS) throw new UserError(`At most ${MAX_WALL_LAYOUTS} layouts`);
+      if (i < 0) layouts.push(saved);
+      else layouts[i] = saved;
+    }
+    config.wall = { v: 2, layouts };
     saveConfig();
-    log(config.wall ? 'Wall display layout saved' : 'Wall display layout reset');
-    return sendJson(res, 200, { wall: wallLayout() });
+    log(`Wall display layout ${saved?.name || ''} saved`);
+    return sendJson(res, 200, { wall: wallLayout(), walls: wallLayouts(), layout: saved });
   }
+  const wl = p.match(/^\/api\/admin\/wall\/([a-z0-9][a-z0-9-]{0,29})$/);
+  if (wl && m === 'DELETE') {
+    if (wl[1] === 'default') throw new UserError('The default layout stays');
+    config.wall = { v: 2, layouts: wallLayouts().filter((l) => l.slug !== wl[1]) };
+    saveConfig();
+    return sendJson(res, 200, { wall: wallLayout(), walls: wallLayouts() });
+  }
+  if (p === '/api/admin/wall/series' && m === 'GET') return sendJson(res, 200, { series: wallSeries() });
 
   if (p === '/api/admin/backgrounds' && m === 'POST') {
     if (config.backgrounds.length >= MAX_BACKGROUNDS) throw new UserError(`At most ${MAX_BACKGROUNDS} images; delete one first`);
