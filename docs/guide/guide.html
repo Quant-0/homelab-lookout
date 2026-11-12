@@ -215,6 +215,18 @@ h2, h3 { break-after: avoid; }
 </section>
 
 <section class="page">
+  <h2>Climate</h2>
+  <p>With climate sensors added in <span class="ui">Admin → Devices → Climate sensors</span>, Home has a <b>Climate</b> section: a tile per sensor, grouped by room, with the temperature, the humidity, a thermostat's setting and whether it heats, motion and a low battery. Click a tile for its graphs and details.</p>
+  <ul>
+    <li><b>Philips Hue Bridge:</b> enter its address, save, press the round button on the bridge and click <span class="ui">Pair</span>. Hue motion sensors give temperature, motion and light.</li>
+    <li><b>Home Assistant:</b> every temperature and humidity sensor and thermostat there, with an access token.</li>
+    <li><b>Shelly H&amp;T:</b> read when awake, or let a battery sensor push to the address Lookout shows.</li>
+    <li><b>Zigbee2MQTT:</b> the broker, user name, password and base topic.</li>
+  </ul>
+  <p>Give each sensor a name, a room, the device it belongs to and limits: too warm or too cold, a low battery and a silent sensor raise a <b>Room climate</b> alert. Lookout only reads them; it never changes a thermostat.</p>
+</section>
+
+<section class="page">
   <h2>Claude</h2>
   <p>When it is set up in <span class="ui">Admin → Dashboard → Claude</span>, a <b>Claude</b> tile shows how much Claude is used: Claude Code's tokens today and over the week, what that would cost at API prices, how much of your plan's limits is used, and whether Claude itself is up.</p>
   <figure><img src="img/claude-tile.png" alt=""><figcaption><b>The Claude tile:</b> today's tokens, the cost at API prices, the last 7 days and the plan limits.</figcaption></figure>

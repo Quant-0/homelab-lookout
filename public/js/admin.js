@@ -1264,6 +1264,154 @@ $('agent-new').addEventListener('click', async () => {
   openAgent(null);
 });
 
+// --- Climate sensors: the sources, and each sensor's name, room, device and limits ---
+
+let climateState = null;
+const CLIMATE_NAMES = { hue: 'Philips Hue Bridge', hass: 'Home Assistant', shelly: 'Shelly', mqtt: 'MQTT (Zigbee2MQTT)' };
+// limits are kept in °C; shown and entered in the unit chosen
+const toUnit = (c) => (c === null || c === undefined ? '' : climateState.unit === 'F' ? Math.round((c * 1.8 + 32) * 10) / 10 : c);
+const fromUnit = (v) => (v === '' ? null : climateState.unit === 'F' ? Math.round(((Number(v) - 32) / 1.8) * 10) / 10 : Number(v));
+
+async function loadClimate(st) {
+  try {
+    climateState = st || await api('GET', '/api/admin/climate');
+  } catch (e) {
+    $('climate-sources').replaceChildren(el('p', { class: 'msg error', text: e.message }));
+    return;
+  }
+  const s = climateState;
+  $('climate-unit').value = s.unit;
+  $('climate-sources').replaceChildren(s.sources.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'agents-table' },
+    el('thead', null, el('tr', null, ['Source', 'Status', 'Sensors', ''].map((t) => el('th', { text: t })))),
+    el('tbody', null, s.sources.map((x) => el('tr', null,
+      el('td', null, el('span', { class: `led ${x.ok === false ? 'critical' : x.ok ? 'good' : 'off'}` }), ' ', el('strong', { text: x.name }), el('div', { class: 'small muted', text: `${CLIMATE_NAMES[x.type]}${x.address ? ` · ${x.address}` : ''}` })),
+      el('td', { class: 'small' }, x.type === 'hue' && !x.paired ? 'Not paired yet' : x.error || (x.at ? `Read ${fmt.ago(x.at)}` : 'Waiting'), x.pushUrl && !x.address ? el('div', { class: 'small muted', text: 'Waits for the sensor to push' }) : null),
+      el('td', { class: 'small num', text: String(x.count) }),
+      el('td', { class: 'r' }, el('button', { type: 'button', class: 'small', text: 'Edit', onclick: () => openClimateSource(x) }))))))) : el('p', { class: 'small muted', text: 'No climate sources yet.' }));
+  const devOpts = [el('option', { value: '', text: '–' }), ...s.devices.map((d) => el('option', { value: d.id, text: d.name }))];
+  $('climate-sensors').replaceChildren(...[s.sensors.length ? el('div', { class: 'table-wrap' }, el('table', { class: 'agents-table clim-admin' },
+    el('caption', { class: 'small muted', text: `Each sensor: its name and room on Home, the device it belongs to, and limits for "Room climate" alerts (${s.unit === 'F' ? '°F' : '°C'})` }),
+    el('thead', null, el('tr', null, ['Sensor', 'Now', 'Room', 'Device', 'Too cold below', 'Too warm above', 'Show'].map((t) => el('th', { text: t })))),
+    el('tbody', null, s.sensors.map((x) => {
+      const f = {
+        name: el('input', { value: x.name, maxlength: 60, 'aria-label': 'Name' }),
+        room: el('input', { value: x.room, maxlength: 40, placeholder: 'Living room', 'aria-label': 'Room' }),
+        deviceId: el('select', { 'aria-label': 'Device' }, devOpts.map((o) => o.cloneNode(true))),
+        min: el('input', { type: 'number', step: '0.5', value: toUnit(x.min), class: 'num-s', 'aria-label': 'Too cold below' }),
+        max: el('input', { type: 'number', step: '0.5', value: toUnit(x.max), class: 'num-s', 'aria-label': 'Too warm above' }),
+        show: el('input', { type: 'checkbox', checked: !x.hidden, 'aria-label': 'Show' }),
+      };
+      f.deviceId.value = x.deviceId || '';
+      const save = async () => {
+        try {
+          climateState = await api('PUT', '/api/admin/climate/sensors', { key: x.key, name: f.name.value === x.name && !x.customName ? '' : f.name.value, room: f.room.value, deviceId: f.deviceId.value || null, hidden: !f.show.checked, min: fromUnit(f.min.value), max: fromUnit(f.max.value) });
+          row.classList.remove('error');
+        } catch (e) {
+          row.classList.add('error');
+          row.title = e.message;
+        }
+      };
+      for (const i of Object.values(f)) i.addEventListener('change', save);
+      const row = el('tr', { class: x.hidden ? 'off' : null },
+        el('td', null, f.name, el('div', { class: 'small muted', text: `${x.sourceName}${x.model ? ` · ${x.model}` : ''}` })),
+        el('td', { class: 'small num', text: [x.temp !== null ? `${toUnit(x.temp)}°` : null, x.humidity !== null ? `${x.humidity} %` : null].filter(Boolean).join(' · ') || '–' }),
+        el('td', null, f.room), el('td', null, f.deviceId), el('td', null, f.min), el('td', null, f.max), el('td', null, f.show));
+      return row;
+    })))) : null].filter(Boolean)); // replaceChildren would turn null into the text "null"
+}
+
+function openClimateSource(x, type = x?.type) {
+  const box = $('climate-editor');
+  box.hidden = false;
+  const msg = el('span', { class: 'msg', role: 'status' });
+  const v = (name, value, attrs = {}) => el('input', { name, value: value ?? '', spellcheck: 'false', ...attrs });
+  const f = {
+    name: v('name', x?.name || CLIMATE_NAMES[type], { maxlength: 48 }),
+    address: v('address', x?.address, { placeholder: { hue: '192.168.1.20', hass: 'http://homeassistant.local:8123', shelly: '192.168.1.30 (empty: it only pushes)', mqtt: '192.168.1.10:1883' }[type] }),
+    username: v('username', x?.username, { autocomplete: 'off' }),
+    secret: v('secret', '', { type: 'password', autocomplete: 'new-password', placeholder: x?.hasSecret ? 'Saved (type a new one to replace it)' : '' }),
+    base: v('base', x?.base || 'zigbee2mqtt'),
+    tls: el('input', { type: 'checkbox', checked: Boolean(x?.tls) }),
+  };
+  const field = (label, input, hint) => el('label', null, el('span', { text: label }), input, hint ? el('span', { class: 'hint', text: hint }) : null);
+  // only the chosen type's fields: an input can only sit in one of them
+  const fields = {
+    hue: () => [field('Bridge address', f.address, 'Its IP address: the Hue app shows it under Settings → My Hue system → the bridge.')],
+    hass: () => [field('Address', f.address), field('Access token', f.secret, 'A long-lived access token (your profile → Security).')],
+    shelly: () => [field('Address', f.address, 'Battery H&T sensors sleep: leave it empty and let them push instead (below).'), field('User name', f.username, 'Only if the Shelly has a login'), field('Password', f.secret)],
+    mqtt: () => [field('Broker', f.address), el('label', { class: 'check' }, f.tls, ' TLS (port 8883)'), field('User name', f.username), field('Password', f.secret), field('Base topic', f.base, 'Zigbee2MQTT\'s base topic: its devices are read from <base>/<name>.')],
+  }[type]();
+  const body = () => ({ type, name: f.name.value, address: f.address.value, username: f.username.value, base: f.base.value, tls: f.tls.checked, ...(f.secret.value ? { secret: f.secret.value } : {}) });
+  const close = () => {
+    box.hidden = true;
+    box.replaceChildren();
+  };
+  // Hue: press the bridge's link button, then Pair; asked every 2 s for 30 s
+  const pair = async (id) => {
+    for (let i = 0; i < 15; i++) {
+      msg.textContent = `Press the round link button on the bridge now… (${30 - i * 2} s)`;
+      msg.className = 'msg';
+      try {
+        const r = await api('POST', `/api/admin/climate/sources/${id}/pair`, {});
+        if (r.paired) {
+          await loadClimate(r);
+          msg.textContent = 'Paired: the sensors show below';
+          msg.className = 'msg ok';
+          return;
+        }
+      } catch (e) {
+        msg.textContent = e.message;
+        msg.className = 'msg error';
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    msg.textContent = 'The button was not pressed in time: press it, then Pair again';
+    msg.className = 'msg error';
+  };
+  const push = x?.pushUrl ? el('div', { class: 'agent-cmds' },
+    el('p', { class: 'small', text: 'For a battery H&T that sleeps: let it send its readings here. Gen 1: Settings → Actions → "Report sensor values" URL. Gen 2 and newer: Settings → Webhooks, on temperature and humidity changes, with the same address plus ?temp=${ev.tC} or ?hum=${ev.rh}.' }),
+    el('pre', { class: 'howto-code' }, el('code', { text: x.pushUrl })),
+    el('p', { class: 'hint', text: 'The address holds a secret: anyone with it can send readings for this source.' })) : null;
+  box.replaceChildren(
+    el('h4', { text: x ? `Edit ${x.name}` : `New: ${CLIMATE_NAMES[type]}` }),
+    el('div', { class: 'form-grid' }, field('Name', f.name), ...fields),
+    push,
+    el('div', { class: 'form-actions' },
+      el('button', { type: 'button', class: 'primary', text: x ? 'Save' : type === 'hue' ? 'Save, then pair' : 'Save', onclick: async () => {
+        try {
+          const r = x ? await api('PUT', `/api/admin/climate/sources/${x.id}`, body()) : await api('POST', '/api/admin/climate/sources', body());
+          await loadClimate(r);
+          const now = climateState.sources.find((y) => y.id === (x?.id || r.id));
+          if (!x) openClimateSource(now);
+          else {
+            msg.textContent = 'Saved';
+            msg.className = 'msg ok';
+          }
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.className = 'msg error';
+        }
+      } }),
+      x && type === 'hue' ? el('button', { type: 'button', text: x.paired ? 'Pair again' : 'Pair', onclick: () => pair(x.id) }) : null,
+      x ? el('button', { type: 'button', text: 'Read now', onclick: async () => loadClimate(await api('POST', `/api/admin/climate/sources/${x.id}/test`, {})) }) : null,
+      el('button', { type: 'button', text: 'Close', onclick: close }),
+      x ? el('button', { type: 'button', class: 'danger', text: 'Remove', onclick: async () => {
+        if (!confirm(`Remove ${x.name} and the settings of its sensors?`)) return;
+        await loadClimate(await api('DELETE', `/api/admin/climate/sources/${x.id}`));
+        close();
+      } }) : null,
+      msg));
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (x && type === 'hue' && !x.paired) msg.textContent = 'Now press the round link button on the bridge, then Pair within 30 seconds.';
+}
+$('climate-add').addEventListener('change', (ev) => {
+  const t = ev.target.value;
+  ev.target.value = '';
+  if (t) openClimateSource(null, t);
+});
+$('climate-unit').addEventListener('change', async (ev) => loadClimate(await api('PUT', '/api/admin/climate/settings', { unit: ev.target.value })));
+
 // --- Claude: reporters, the status page and the Admin API key ---
 
 let claudeState = null;
@@ -3547,8 +3695,8 @@ const TABS = ['devices', 'services', 'alerts', 'schedules', 'dashboard', 'look',
 const OLD_TABS = { hosts: 'devices', rack: 'devices', appearance: 'look', backup: 'backups', account: 'security', checkins: 'schedules', maintenance: 'schedules', sessions: 'security', server: 'system' };
 
 // links straight to a section: the tab it is on, then scrolled to
-const SECTIONS = { 'vm-settings': 'dashboard', claude: 'dashboard', access: 'system', metrics: 'system', passkeys: 'security' };
-const SECTION_CARDS = { 'vm-settings': 'vm-settings', claude: 'claude-card', access: 'access-card', metrics: 'metrics-card', passkeys: 'passkeys-card' };
+const SECTIONS = { 'vm-settings': 'dashboard', climate: 'devices', claude: 'dashboard', access: 'system', metrics: 'system', passkeys: 'security' };
+const SECTION_CARDS = { 'vm-settings': 'vm-settings', climate: 'climate-card', claude: 'claude-card', access: 'access-card', metrics: 'metrics-card', passkeys: 'passkeys-card' };
 
 function showTab(name, focus) {
   const section = SECTIONS[name] ? name : null;
@@ -3567,7 +3715,10 @@ function showTab(name, focus) {
   if (focus) $(`tabbtn-${name}`).focus();
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (name === 'devices' && state) refreshDevices(); // picks up newly discovered devices and statuses
-  if (name === 'devices') loadAgents();
+  if (name === 'devices') {
+    loadAgents();
+    loadClimate();
+  }
   if (name === 'services') loadServices();
   if (name === 'system') {
     loadWeb();

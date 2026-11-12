@@ -500,6 +500,7 @@ function loadConfig(raw = readJson(CONFIG_FILE, {})) {
     agents: Array.isArray(raw.agents) ? raw.agents : [], // [{ id, name, tokenHash, deviceId, guest, watch, updates, interval, createdAt }]
     metricsTokens: Array.isArray(raw.metricsTokens) ? raw.metricsTokens : [], // [{ id, name, tokenHash, allow, createdAt }]
     claude: normalizeClaude(raw.claude), // { reporters: [{ id, name, tokenHash, limits, createdAt }], adminKey, status: { enabled, alert } }
+    climate: normalizeClimate(raw.climate), // { sources: [{ id, type, name, address, …, secret, pushToken }], sensors: { key: { name, room, deviceId, hidden, min, max } }, unit }
     // keys for electricity prices outside Norway, encrypted: { entsoe, tibber, hass }
     powerKeys: Object.fromEntries(['entsoe', 'tibber', 'hass'].map((k) => [k, typeof raw.powerKeys?.[k] === 'string' && raw.powerKeys[k].startsWith('v1.') ? raw.powerKeys[k] : null])),
   };
@@ -596,7 +597,7 @@ const CONFIG_HISTORY_DAYS = 90;
 const CONFIG_HISTORY_MAX = 500;
 const CONFIG_HISTORY_BYTES = 20e6;
 const HISTORY_LISTS = ['devices', 'hosts', 'services', 'checkins', 'maintenance', 'agents', 'metricsTokens'];
-const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout', 'claude'];
+const HISTORY_SECTIONS = ['rack', 'cables', 'layout', 'wall', 'servicesLayout', 'claude', 'climate'];
 let configHistory = { last: null, versions: [] };
 let historyAuto = null; // texts of a change made outside a request, recorded right after
 
@@ -686,7 +687,7 @@ function loadConfigHistory() {
 
 // What a part is, for people: "Device atlas", "Power settings"
 const PART_NAMES = { devices: 'Device', hosts: 'Connection', services: 'Service', checkins: 'Check-in', maintenance: 'Maintenance window', agents: 'Agent', channels: 'Alert channel', metricsTokens: 'Metrics token' };
-const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings', claude: 'Claude settings' };
+const SECTION_NAMES = { alerts: 'Alert rules', 'settings/dashboard': 'Dashboard settings', 'settings/power': 'Power settings', 'settings/appearance': 'Look', rack: 'Rack', cables: 'Patch cables', layout: 'Home layout', wall: 'Wall display', servicesLayout: 'Services layout', backup: 'Backup settings', claude: 'Claude settings', climate: 'Climate sensors' };
 function partLabel(k, value) {
   const [list] = k.split('/');
   if (!PART_NAMES[list]) return SECTION_NAMES[k] || k;
@@ -776,6 +777,7 @@ function configReplaced() {
   svcSessions.clear();
   schedulePolling();
   scheduleClaude();
+  scheduleClimate();
 }
 
 // Undo one version: its parts as they were before it. A part changed again since is a conflict,
@@ -1400,11 +1402,11 @@ function syncUnifiDevices(h, devices) {
 }
 
 // The wall display: which panels, in what order and size, and which devices and services it shows
-const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices', 'claude'];
+const WALL_PANELS = ['spot', 'list', 'power', 'net', 'rack', 'devices', 'claude', 'climate'];
 const WALL_SIZES = ['normal', 'wide', 'tall', 'big'];
 const DEFAULT_WALL = {
-  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }],
-  hidden: ['devices', 'claude'],
+  panels: [{ id: 'spot', size: 'normal' }, { id: 'power', size: 'normal' }, { id: 'rack', size: 'tall' }, { id: 'list', size: 'normal' }, { id: 'net', size: 'normal' }, { id: 'devices', size: 'wide' }, { id: 'claude', size: 'normal' }, { id: 'climate', size: 'normal' }],
+  hidden: ['devices', 'claude', 'climate'],
   claude: { style: 'number', stats: ['tokens', 'limits', 'status'] }, // the Claude panel: how it looks and what it shows
   showServices: true,
   services: null, // null = the same as Home
@@ -4904,7 +4906,7 @@ const HIST_TIERS = [
 ];
 const HIST_STORED = ['m', 'q', 'h', 'd', 'dmin', 'dmax']; // what is kept per series (dmin/dmax come with d)
 const HIST_KEEP = { dmin: 731 * 86400e3, dmax: 731 * 86400e3 };
-const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem)|disk:[0-9a-f-]{36}:[\w.:/-]{1,160}|uphost:[0-9a-f-]{36}|agent:[0-9a-f-]{36}:(cpu|mem|load))$/;
+const HIST_KEY = /^(power:total|snmp:[0-9a-f-]{36}:(cpu|traffic)|ups:[0-9a-f-]{36}:(load|charge|watts)|omada:[0-9a-f-]{36}:[0-9a-f:]{17}:(clients|cpu)|idrac:[0-9a-f-]{36}:(watts|inlet|tmax)|pve:[0-9a-f-]{36}:[A-Za-z0-9._-]{1,64}:(cpu|mem)|syno:[0-9a-f-]{36}:(temp|cpu|mem)|nas:[0-9a-f-]{36}:load|unifi:[0-9a-f-]{36}:[0-9a-f:]{17}:(cpu|mem|temp|clients|poe)|unifi:[0-9a-f-]{36}:wan:(down|up)|ping:[0-9a-f-]{36}:ms|svc:[0-9a-f-]{36}:ms|pveg:[0-9a-f-]{36}:\d{1,9}:(rx|tx|read|write|cpu|mem)|upsvc:[0-9a-f-]{36}|plug:[0-9a-f-]{36}:watts|ctr:[0-9a-f-]{36}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(cpu|mem)|disk:[0-9a-f-]{36}:[\w.:/-]{1,160}|uphost:[0-9a-f-]{36}|agent:[0-9a-f-]{36}:(cpu|mem|load)|clim:[0-9a-f-]{36}:[0-9a-f]{10}:(temp|hum))$/;
 let history = { series: {} }; // key -> { m: [[t, v]], q: [...], h: [...], acc: { m: { t, sum, n }, ... }, seen }
 let historyDirty = false;
 
@@ -6865,6 +6867,7 @@ function loadStatic() {
     '/static/js/dashboard.js': 'js/dashboard.js',
     '/static/js/wall.js': 'js/wall.js',
     '/static/js/claude.js': 'js/claude.js',
+    '/static/js/climate.js': 'js/climate.js',
     '/static/js/look.js': 'js/look.js',
     '/static/js/rack.js': 'js/rack.js',
     '/static/js/models.js': 'js/models.js',
@@ -7591,6 +7594,7 @@ function dashboardPayload() {
     maintenance: activeMaintenance().map((w) => ({ id: w.id, name: w.name, until: w.until, all: w.targets.all, devices: w.targets.devices, services: w.targets.services })),
     services: s.serviceAlerts ? servicesSummary() : null,
     claude: claudeSummary(),
+    climate: climateSummary(),
   };
 }
 
@@ -8114,6 +8118,80 @@ async function handleApi(req, res, url, session, viewer = null) {
       return sendJson(res, 200, { ok: true });
     }
   }
+  // Climate sensors: the sources (Hue Bridge, Home Assistant, Shelly, MQTT) and each sensor's settings
+  if (p === '/api/admin/climate' && m === 'GET') return sendJson(res, 200, climateAdminState(req));
+  if (p === '/api/admin/climate/settings' && m === 'PUT') {
+    const b = await readBody(req);
+    config.climate.unit = b.unit === 'F' ? 'F' : 'C';
+    saveConfig();
+    return sendJson(res, 200, climateAdminState(req));
+  }
+  if (p === '/api/admin/climate/sources' && m === 'POST') {
+    if (config.climate.sources.length >= MAX_CLIMATE_SOURCES) throw new UserError(`At most ${MAX_CLIMATE_SOURCES} climate sources`);
+    const b = await readBody(req);
+    const s = { id: crypto.randomUUID(), ...validateClimateSource(b), secret: null, pushToken: b.type === 'shelly' ? crypto.randomBytes(24).toString('base64url') : null, createdAt: Date.now() };
+    const secret = validateSecret(b.secret);
+    if (secret && s.type !== 'hue') s.secret = encryptSecret(climateHostOf(s), secret);
+    config.climate.sources.push(s);
+    saveConfig();
+    event('devices', `Climate source added: ${s.name} (${CLIMATE_TYPES[s.type]})`);
+    scheduleClimate();
+    return sendJson(res, 201, { id: s.id, ...climateAdminState(req) });
+  }
+  if (p === '/api/admin/climate/sensors' && m === 'PUT') {
+    const b = await readBody(req);
+    const key = String(b.key || '');
+    if (!config.climate.sources.some((s) => key.startsWith(`${s.id}:`)) || key.length > 120) throw new UserError('No such sensor');
+    const v = validateClimateSensor(b);
+    if (!v.name && !v.room && !v.deviceId && !v.hidden && v.min === null && v.max === null) delete config.climate.sensors[key];
+    else config.climate.sensors[key] = v;
+    saveConfig();
+    recheckAlerts();
+    return sendJson(res, 200, climateAdminState(req));
+  }
+  const cs = p.match(/^\/api\/admin\/climate\/sources\/([0-9a-f-]{36})(\/pair|\/test)?$/);
+  if (cs) {
+    const s = config.climate.sources.find((x) => x.id === cs[1]);
+    if (!s) return sendError(res, 404, 'Not found');
+    if (cs[2] === '/pair' && m === 'POST') {
+      if (s.type !== 'hue') throw new UserError('Only a Hue Bridge is paired');
+      const r = await huePair(s);
+      if (r.waiting) return sendJson(res, 200, { waiting: true });
+      s.fingerprint = r.fingerprint;
+      s.secret = encryptSecret(climateHostOf(s), r.key);
+      saveConfig();
+      event('devices', `Hue Bridge ${s.name} paired`);
+      await pollClimate();
+      return sendJson(res, 200, { paired: true, ...climateAdminState(req) });
+    }
+    if (cs[2] === '/test' && m === 'POST') {
+      await pollClimate();
+      return sendJson(res, 200, climateAdminState(req));
+    }
+    if (!cs[2] && m === 'PUT') {
+      const b = await readBody(req);
+      const next = { ...s, ...validateClimateSource(b, s) };
+      const secret = validateSecret(b.secret);
+      if (b.secret === null || (s.type === 'hue' && next.address !== s.address)) next.secret = null; // removed, or another bridge: pair again
+      else if (secret && s.type !== 'hue') next.secret = encryptSecret(climateHostOf(next), secret);
+      else if (s.secret) next.secret = encryptSecret(climateHostOf(next), climateSecret(s)); // bound to the address and user name
+      Object.assign(s, next);
+      saveConfig();
+      event('devices', `Climate source updated: ${s.name}`);
+      scheduleClimate();
+      return sendJson(res, 200, climateAdminState(req));
+    }
+    if (!cs[2] && m === 'DELETE') {
+      config.climate.sources = config.climate.sources.filter((x) => x !== s);
+      for (const k of Object.keys(config.climate.sensors)) if (k.startsWith(`${s.id}:`)) delete config.climate.sensors[k];
+      saveConfig();
+      event('devices', `Climate source removed: ${s.name}`);
+      scheduleClimate();
+      recheckAlerts();
+      return sendJson(res, 200, climateAdminState(req));
+    }
+  }
+
   // Electricity prices outside Norway: the API keys (write-only), checked by fetching prices
   if (p === '/api/admin/power/keys' && m === 'PUT') {
     const b = await readBody(req);
@@ -9349,6 +9427,12 @@ async function handle(req, res) {
     }
     return sendError(res, 404, 'Not found');
   }
+  // a climate sensor that pushes its readings (a Shelly H&T's report URL or webhook)
+  const cp = p.match(/^\/climate\/push\/([A-Za-z0-9_-]{32})$/);
+  if (cp && (req.method === 'GET' || req.method === 'POST')) {
+    if (!openLimitOk(req, res)) return;
+    return handleClimatePush(req, res, cp[1], url);
+  }
   // the Claude reporter: its scripts (nothing secret in them) and its reports
   if (p.startsWith('/claude/')) {
     if (!openLimitOk(req, res)) return;
@@ -9533,6 +9617,12 @@ const ALERT_TYPES = {
   agent: { label: 'Linux machine (agent)', hint: 'From the Lookout agent: a systemd service failed or a watched one stopped, security updates are waiting, or the machine needs a reboot.', delay: 5 },
   container: { label: 'Container problem', hint: 'A Docker container keeps restarting, stopped although its restart policy says it should run, or fails its health check. Label a container lookout.ignore=true to leave it out.', delay: 2 },
   checkin: { label: 'Check-in missed', hint: 'A backup or cron job did not check in on time, or reported that it failed.', delay: 0 },
+  climate: {
+    label: 'Room climate',
+    hint: 'A climate sensor is warmer or colder than its own limits (set on the sensor in Admin), its battery is low, it has stopped reporting, or its source does not answer.',
+    delay: 5,
+    params: { battery: { label: 'Low battery at', unit: '%', min: 5, max: 50, def: 15 }, silentH: { label: 'Silent for', unit: 'hours', min: 1, max: 72, def: 6 } },
+  },
   claude: { label: 'Claude outage', hint: 'status.claude.com reports a major outage (with the status page switched on in Admin → Dashboard → Claude).', delay: 0, off: true },
   backup: {
     label: 'Backup failed',
@@ -10498,6 +10588,21 @@ function alertConditions(all = false) {
   }
   const w = measuredWatts().total;
   if (over('power', 'total', w, rules.power.watts, rules.power.watts * 0.05)) add('power', 'total', 'warning', `Power draw ${Math.round(w)} W`, `Limit ${rules.power.watts} W`, null, false);
+  // Climate sensors: their own limits, the battery, silence, and a source that doesn't answer
+  const cl = rules.climate;
+  for (const src of config.climate.sources) {
+    const st = climateReadings.get(src.id);
+    if (st?.ok === false && Date.now() - (st.failingSince ?? 0) >= offlineGraceMs()) add('climate', `${src.id}:source`, 'warning', `${src.name} is not answering`, st.error, null, false);
+  }
+  for (const x of climateSensors()) {
+    const who = x.room && !x.name.toLowerCase().includes(x.room.toLowerCase()) ? `${x.room}: ${x.name}` : x.name;
+    if (x.stale && Date.now() - x.at >= cl.silentH * 3600e3) add('climate', `${x.key}:silent`, 'warning', `${who} has stopped reporting`, `Last reading ${osloText(x.at)}`, null, false, x.deviceId);
+    else if (!x.stale && x.temp !== null) {
+      if (x.max !== null && over('climate', `${x.key}:hot`, x.temp, x.max, 0.5)) add('climate', `${x.key}:hot`, x.temp >= x.max + 5 ? 'critical' : 'warning', `${who} is ${climateTemp(x.temp)}`, `Above ${climateTemp(x.max)}`, null, true, x.deviceId);
+      if (x.min !== null && over('climate', `${x.key}:cold`, -x.temp, -x.min, 0.5)) add('climate', `${x.key}:cold`, x.temp <= x.min - 5 ? 'critical' : 'warning', `${who} is ${climateTemp(x.temp)}`, `Below ${climateTemp(x.min)}`, null, true, x.deviceId);
+    }
+    if (x.battery !== null && x.battery <= cl.battery) add('climate', `${x.key}:battery`, 'warning', `${who}: battery ${x.battery} %`, 'Change or charge the battery', null, false, x.deviceId);
+  }
   // Claude's status page: a major outage there (only while the page answers; Admin → Dashboard → Claude)
   const cs = claudeData.status;
   if (config.claude.status.enabled && config.claude.status.alert && !cs?.error && ['major', 'critical'].includes(cs?.indicator)) {
@@ -11251,6 +11356,7 @@ function backupBundle() {
       alerts: { ...config.alerts, channels: config.alerts.channels.map((c) => ({ ...c, secret: undefined, secretPlain: c.secret ? secretOrNull(channelHost(c)) : null })) },
       claude: { ...config.claude, adminKey: undefined, adminKeyPlain: config.claude.adminKey ? secretOrNull(claudeKeyHost()) : null },
       powerKeys: undefined,
+      climate: { ...config.climate, sources: config.climate.sources.map((x) => ({ ...x, secret: undefined, secretPlain: x.secret ? secretOrNull(climateHostOf(x)) : null })) },
       powerKeysPlain: Object.fromEntries(POWER_KEYS.map((k) => [k, config.powerKeys[k] ? secretOrNull(powerKeyHost(k)) : null])),
     },
     docs,
@@ -11383,6 +11489,7 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
     agents: [],
     metricsTokens: [],
     claude: normalizeClaude({ ...c.claude, adminKey: null }),
+    climate: { sources: [], sensors: {}, unit: 'C' },
   };
   // check-ins and windows are checked like in Admin, after the devices and services they name
   for (const x of arr(c.checkins)) {
@@ -11421,6 +11528,26 @@ async function restoreBundle(bundle, { admin = false, server = false } = {}) {
       return [];
     }
   });
+  // climate sources are checked like in Admin; their secrets encrypted again here
+  config.climate = { sources: [], sensors: {}, unit: c.climate?.unit === 'F' ? 'F' : 'C' };
+  for (const x of arr(c.climate?.sources).slice(0, MAX_CLIMATE_SOURCES)) {
+    try {
+      if (!UUID.test(x.id)) continue;
+      const s = { id: x.id, ...validateClimateSource(x), secret: null, pushToken: x.type === 'shelly' && /^[A-Za-z0-9_-]{32}$/.test(x.pushToken || '') ? x.pushToken : x.type === 'shelly' ? crypto.randomBytes(24).toString('base64url') : null, createdAt: Number(x.createdAt) || Date.now() };
+      if (s.type === 'hue' && /^[0-9a-f]{64}$/.test(x.fingerprint || '')) s.fingerprint = x.fingerprint;
+      if (typeof x.secretPlain === 'string' && x.secretPlain) s.secret = encryptSecret(climateHostOf(s), x.secretPlain);
+      config.climate.sources.push(s);
+    } catch {
+      /* dropped */
+    }
+  }
+  for (const [k, v] of Object.entries(c.climate?.sensors || {})) {
+    try {
+      if (config.climate.sources.some((s) => k.startsWith(`${s.id}:`)) && k.length <= 120) config.climate.sensors[k] = validateClimateSensor(v);
+    } catch {
+      /* dropped */
+    }
+  }
   config.powerKeys = { entsoe: null, tibber: null, hass: null };
   for (const k of POWER_KEYS) {
     const v = c.powerKeysPlain?.[k];
@@ -12503,6 +12630,502 @@ function claudeSummary() {
 }
 
 // ---------------------------------------------------------------------------
+// Climate (Admin → Devices → Climate sensors): temperature, humidity and thermostats, read only.
+// Sources:
+//   hue     a Philips Hue Bridge on the network: paired by pressing its link button; its motion
+//           sensors give temperature, motion, light level and battery (also other Zigbee sensors
+//           paired to it). HTTPS with the bridge's own certificate pinned when paired.
+//   hass    Home Assistant: temperature and humidity sensors, motion, and climate entities
+//           (thermostats: the temperature now, the one set, the mode and whether it heats)
+//   shelly  Shelly H&T and other Shelly sensors: read over HTTP when awake (powered), and/or
+//           pushed to its own secret URL (/climate/push/<token>) by the sensor's report URL or
+//           webhook, as battery H&Ts sleep between readings
+//   mqtt    an MQTT broker with Zigbee2MQTT: its device topics (<base>/<name>), kept connected
+// Lookout never sets anything on them. Each sensor is "<source id>:<its id>"; its name, room,
+// device and limits are set in config.climate.sensors. Temperatures are kept in °C.
+
+const CLIMATE_TYPES = { hue: 'Philips Hue Bridge', hass: 'Home Assistant', shelly: 'Shelly', mqtt: 'MQTT (Zigbee2MQTT)' };
+const MAX_CLIMATE_SOURCES = 20;
+const MAX_CLIMATE_SENSORS = 300;
+const CLIMATE_ID = /^[A-Za-z0-9_.:@/ -]{1,80}$/;
+const climateReadings = new Map(); // source id -> { at, ok, error, items: Map(id -> reading), failingSince }
+const climateHostOf = (s) => ({ id: s.id, type: `climate-${s.type}`, address: s.address || '', username: s.username || '', tlsMode: s.tlsMode || '', fingerprint: s.fingerprint || '', secret: s.secret });
+const climateSecret = (s) => (s.secret ? decryptSecret(climateHostOf(s)) : null);
+const climateKey = (sid, id) => `${sid}:${id}`;
+const climateHist = (key) => `clim:${key.slice(0, 36)}:${crypto.createHash('sha1').update(key.slice(37)).digest('hex').slice(0, 10)}`;
+const round1 = (v) => Math.round(v * 10) / 10;
+const numOr = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+
+function normalizeClimate(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const sources = (Array.isArray(r.sources) ? r.sources : []).filter((s) => UUID.test(s?.id) && CLIMATE_TYPES[s.type]).slice(0, MAX_CLIMATE_SOURCES);
+  const sensors = {};
+  for (const [k, v] of Object.entries(r.sensors && typeof r.sensors === 'object' ? r.sensors : {}).slice(0, 2000)) if (/^[0-9a-f-]{36}:/.test(k) && v && typeof v === 'object') sensors[k] = v;
+  return { sources, sensors, unit: r.unit === 'F' ? 'F' : 'C' };
+}
+
+function validateClimateSource(b, old = null) {
+  const type = old ? old.type : b.type;
+  if (!CLIMATE_TYPES[type]) throw new UserError('Choose what to read from');
+  const out = { type, name: str(b.name, 48, 'Name') || CLIMATE_TYPES[type], address: '', username: '', tlsMode: 'verify', fingerprint: '', base: '', tls: false };
+  if (type === 'hue') {
+    out.address = str(b.address, 100, 'Bridge address', { required: true });
+    if (!/^[A-Za-z0-9.-]{1,100}(:\d{1,5})?$/.test(out.address)) throw new UserError('Bridge address: an IP address like 192.168.1.20');
+    out.tlsMode = 'pin';
+    out.fingerprint = old && old.address === out.address ? old.fingerprint : ''; // pinned when paired
+  }
+  if (type === 'hass') {
+    const u = parseServiceUrl(str(b.address, 300, 'Home Assistant address', { required: true }));
+    out.address = u.href.replace(/\/$/, '');
+    out.tlsMode = u.https && b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+  }
+  if (type === 'shelly') {
+    out.address = str(b.address, 100, 'Address');
+    if (out.address && !/^[A-Za-z0-9.-]{1,100}(:\d{1,5})?$/.test(out.address)) throw new UserError('Address: an IP address like 192.168.1.30, or empty if it only pushes');
+    out.username = out.address ? str(b.username, 64, 'User name') : '';
+  }
+  if (type === 'mqtt') {
+    out.address = str(b.address, 100, 'Broker', { required: true });
+    if (!/^[A-Za-z0-9.-]{1,100}(:\d{1,5})?$/.test(out.address)) throw new UserError('Broker: host or IP, with :port if not 1883 (8883 with TLS)');
+    out.tls = b.tls === true;
+    out.tlsMode = out.tls && b.tlsMode === 'pin' ? 'pin' : 'verify';
+    out.fingerprint = out.tlsMode === 'pin' ? normalizeFingerprint(b.fingerprint) : '';
+    out.username = str(b.username, 64, 'User name');
+    out.base = str(b.base, 60, 'Base topic') || 'zigbee2mqtt';
+    if (!/^[A-Za-z0-9_\-/]{1,60}$/.test(out.base) || out.base.endsWith('/')) throw new UserError('Base topic: like zigbee2mqtt');
+  }
+  return out;
+}
+
+function validateClimateSensor(b) {
+  const lim = (v, name) => (v === null || v === undefined || v === '' ? null : num(v, -50, 120, name));
+  const out = {
+    name: str(b.name, 60, 'Name'),
+    room: str(b.room, 40, 'Room'),
+    deviceId: b.deviceId ? (config.devices.some((d) => d.id === b.deviceId) ? b.deviceId : (() => { throw new UserError('Choose a device'); })()) : null,
+    hidden: b.hidden === true,
+    min: lim(b.min, 'Too cold below'),
+    max: lim(b.max, 'Too warm above'),
+  };
+  if (out.min !== null && out.max !== null && out.min >= out.max) throw new UserError('"Too cold below" must be lower than "too warm above"');
+  return out;
+}
+
+// One reading, checked: what a source found about one sensor
+function climateReading(x) {
+  const t = numOr(x.temp);
+  const h = numOr(x.humidity);
+  const tgt = numOr(x.target);
+  const pct = (v) => (v === null ? null : Math.max(0, Math.min(100, Math.round(v))));
+  return {
+    name: String(x.name || '').replace(/[\u0000-\u001f]/g, '').slice(0, 60),
+    model: x.model ? String(x.model).replace(/[\u0000-\u001f]/g, '').slice(0, 60) : null,
+    temp: t !== null && t > -60 && t < 150 ? round1(t) : null,
+    humidity: h !== null && h >= 0 && h <= 100 ? round1(h) : null,
+    battery: pct(numOr(x.battery)),
+    motion: typeof x.motion === 'boolean' ? x.motion : null,
+    lux: numOr(x.lux) !== null && numOr(x.lux) >= 0 ? Math.round(numOr(x.lux)) : null,
+    target: tgt !== null && tgt > -60 && tgt < 150 ? round1(tgt) : null,
+    mode: x.mode ? String(x.mode).slice(0, 20) : null,
+    heating: typeof x.heating === 'boolean' ? x.heating : null,
+    reachable: x.reachable !== false,
+    at: Number.isFinite(x.at) && x.at > 0 ? Math.min(x.at, Date.now()) : Date.now(),
+  };
+}
+// a temperature as the dashboard shows it (°C, or °F if chosen)
+const climateTemp = (c) => (config.climate.unit === 'F' ? `${round1(c * 1.8 + 32)} °F` : `${c} °C`);
+const hasClimate = (r) => r.temp !== null || r.humidity !== null || r.target !== null;
+
+// --- Philips Hue (API v1) ---
+async function hueRequest(s, method, p, body = null, pin = s.fingerprint) {
+  const r = await connRequest({ url: `https://${s.address}`, tlsMode: 'pin', fingerprint: pin }, p, { method, body: body ? JSON.stringify(body) : null, full: true, timeoutMs: 8000 });
+  if (r.status !== 200 || r.json === null) throw new UserError(`HTTP ${r.status}: is this a Hue Bridge?`);
+  return r.json;
+}
+// The bridge's certificate, read from a handshake (nothing is sent), to pin it
+function peerFingerprint(address) {
+  const { host, port } = splitAddress(address.includes(':') ? address : `${address}:443`);
+  return new Promise((resolve, reject) => {
+    const sock = tls.connect({ host, port, rejectUnauthorized: false, timeout: 8000 }, () => {
+      const cert = sock.getPeerCertificate();
+      sock.destroy();
+      cert?.raw ? resolve(crypto.createHash('sha256').update(cert.raw).digest('hex')) : reject(new UserError('No certificate from the bridge'));
+    });
+    sock.on('error', (e) => reject(friendlyNetError(e)));
+    sock.on('timeout', () => {
+      sock.destroy();
+      reject(new UserError('The bridge did not answer'));
+    });
+  });
+}
+// Pairing: asks the bridge for a key; it gives one within 30 s of its link button being pressed
+async function huePair(s) {
+  const pin = await peerFingerprint(s.address);
+  const j = await hueRequest(s, 'POST', '/api', { devicetype: `homelab_lookout#${os.hostname().slice(0, 19)}` }, pin);
+  const ans = Array.isArray(j) ? j[0] : null;
+  if (ans?.error?.type === 101) return { waiting: true };
+  if (!ans?.success?.username) throw new UserError(ans?.error?.description ? `The bridge says: ${ans.error.description}` : 'The bridge did not give a key');
+  return { key: ans.success.username, fingerprint: pin };
+}
+async function collectHue(s) {
+  const key = climateSecret(s);
+  if (!key) throw new UserError('Not paired yet: press the link button on the bridge, then Pair');
+  const j = await hueRequest(s, 'GET', `/api/${encodeURIComponent(key)}/sensors`);
+  if (Array.isArray(j) && j[0]?.error) throw new UserError(j[0].error.type === 1 ? 'The bridge no longer knows this key: pair again' : `The bridge says: ${j[0].error.description}`);
+  // the parts of one physical sensor share the start of their unique id (its Zigbee address)
+  const groups = new Map();
+  for (const [hid, x] of Object.entries(j || {})) {
+    if (!/^(ZLL|ZHA)(Temperature|Presence|LightLevel|Humidity)$/.test(x?.type || '')) continue;
+    const dev = String(x.uniqueid || hid).split('-')[0];
+    const g = groups.get(dev) || { id: dev, parts: [] };
+    g.parts.push(x);
+    groups.set(dev, g);
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    const part = (re) => g.parts.find((x) => re.test(x.type));
+    const t = part(/Temperature$/);
+    const pres = part(/Presence$/);
+    const ll = part(/LightLevel$/);
+    const hum = part(/Humidity$/);
+    const at = Math.max(...g.parts.map((x) => Date.parse(`${x.state?.lastupdated}Z`)).filter(Number.isFinite), 0);
+    const lux = typeof ll?.state?.lightlevel === 'number' ? 10 ** ((ll.state.lightlevel - 1) / 10000) : null;
+    out.push({ id: g.id, name: (pres || t || g.parts[0]).name, model: (pres || t).productname || (pres || t).modelid, temp: typeof t?.state?.temperature === 'number' ? t.state.temperature / 100 : null, humidity: typeof hum?.state?.humidity === 'number' ? hum.state.humidity / 100 : null,
+      motion: typeof pres?.state?.presence === 'boolean' ? pres.state.presence : null, lux, battery: g.parts.find((x) => typeof x.config?.battery === 'number')?.config.battery ?? null,
+      reachable: !g.parts.some((x) => x.config?.reachable === false), at: at || Date.now() });
+  }
+  return out;
+}
+
+// --- Home Assistant: sensors grouped by their name (living_room_temperature + _humidity) ---
+async function collectHassClimate(s) {
+  const token = climateSecret(s);
+  if (!token) throw new UserError('Add an access token');
+  const r = await connRequest({ url: s.address, tlsMode: s.tlsMode, fingerprint: s.fingerprint }, '/api/states', { headers: { Authorization: `Bearer ${token}` }, full: true, timeoutMs: 10000, maxBytes: 16 << 20 });
+  if (r.status === 401) throw new UserError('Home Assistant refused the token');
+  if (r.status !== 200 || !Array.isArray(r.json)) throw new UserError(`HTTP ${r.status} from Home Assistant`);
+  const groups = new Map();
+  const group = (e, name) => {
+    const g = groups.get(name) || { id: name, name: null, at: 0 };
+    g.at = Math.max(g.at, Date.parse(e.last_updated) || 0);
+    groups.set(name, g);
+    return g;
+  };
+  const base = (id) => id.split('.')[1].replace(/_(temperature|temp|humidity|battery|battery_level|occupancy|motion|presence|illuminance|lux)$/, '');
+  const pretty = (e, id) => String(e.attributes?.friendly_name || id).replace(/\s+(Temperature|Humidity|Battery|Occupancy|Motion|Presence|Illuminance)$/i, '');
+  for (const e of r.json) {
+    const id = String(e?.entity_id || '');
+    const a = e?.attributes || {};
+    const v = numOr(e?.state);
+    if (id.startsWith('climate.')) {
+      const g = group(e, base(id));
+      const f = a.temperature_unit === '°F' || a.unit_of_measurement === '°F';
+      const c = (x) => (x === null ? null : f ? (x - 32) / 1.8 : x);
+      Object.assign(g, { name: g.name || a.friendly_name || id, temp: g.temp ?? c(numOr(a.current_temperature)), target: c(numOr(a.temperature)), mode: e.state, heating: a.hvac_action ? a.hvac_action === 'heating' : null, humidity: g.humidity ?? numOr(a.current_humidity), thermostat: true });
+    } else if (id.startsWith('sensor.') && v !== null && ['temperature', 'humidity', 'battery', 'illuminance'].includes(a.device_class)) {
+      const g = group(e, base(id));
+      g.name ||= pretty(e, id);
+      if (a.device_class === 'temperature') g.temp = a.unit_of_measurement === '°F' ? (v - 32) / 1.8 : v;
+      if (a.device_class === 'humidity') g.humidity = v;
+      if (a.device_class === 'battery') g.battery = v;
+      if (a.device_class === 'illuminance') g.lux = v;
+    } else if (id.startsWith('binary_sensor.') && ['motion', 'occupancy', 'presence'].includes(a.device_class)) {
+      const g = group(e, base(id));
+      g.name ||= pretty(e, id);
+      g.motion = e.state === 'on';
+    }
+  }
+  return [...groups.values()].filter((g) => g.temp != null || g.humidity != null || g.target != null).map((g) => ({ ...g, model: g.thermostat ? 'Thermostat' : null }));
+}
+
+// --- Shelly: H&T and sensors on add-ons, when awake ---
+async function collectShellyClimate(s) {
+  if (!s.address) return null; // only pushes
+  const secret = climateSecret(s);
+  const headers = secret ? { Authorization: `Basic ${Buffer.from(`${s.username || 'admin'}:${secret}`).toString('base64')}` } : {};
+  const get = async (p) => {
+    const r = await connRequest({ url: `http://${s.address}` }, p, { headers, full: true, timeoutMs: 6000 });
+    if (r.status === 401) throw new UserError('The Shelly asks for a password');
+    if (r.status !== 200 || !r.json) throw new UserError(`HTTP ${r.status}: is this a Shelly?`);
+    return r.json;
+  };
+  const info = await get('/shelly');
+  if ((Number(info.gen) || 1) >= 2) {
+    const st = await get('/rpc/Shelly.GetStatus');
+    const temps = Object.entries(st).filter(([k, v]) => /^temperature:\d+$/.test(k) && typeof v?.tC === 'number');
+    const hum = Object.entries(st).find(([k]) => /^humidity:\d+$/.test(k))?.[1];
+    if (!temps.length && !hum) throw new UserError('This Shelly has no temperature or humidity sensor');
+    const battery = Object.entries(st).find(([k]) => /^devicepower:\d+$/.test(k))?.[1]?.battery?.percent ?? null;
+    return temps.length > 1
+      ? temps.map(([k, v], i) => ({ id: `${info.id || s.address}:${k}`, name: `${info.name || s.name} ${i + 1}`, model: info.model, temp: v.tC, humidity: i === 0 ? hum?.rh : null, battery }))
+      : [{ id: info.id || s.address, name: info.name || s.name, model: info.model || info.app, temp: temps[0]?.[1].tC ?? null, humidity: hum?.rh ?? null, battery }];
+  }
+  const st = await get('/status');
+  if (!st.tmp && !st.hum) throw new UserError('This Shelly has no temperature or humidity sensor');
+  const c = st.tmp?.units === 'F' ? (st.tmp.value - 32) / 1.8 : st.tmp?.value ?? st.tmp?.tC;
+  return [{ id: info.mac || s.address, name: s.name, model: info.type, temp: st.tmp?.is_valid === false ? null : c, humidity: st.hum?.value ?? null, battery: st.bat?.value ?? null }];
+}
+
+// GET or POST /climate/push/<token>?temp=21.5&hum=40&bat=90&id=…: a Shelly's report URL or
+// webhook (Gen 1 H&T sends hum, temp and id; Gen 2 and newer webhooks can send ${ev.tC} and ${ev.rh})
+function handleClimatePush(req, res, token, url) {
+  const h = (t) => crypto.createHash('sha256').update(String(t)).digest();
+  const s = config.climate.sources.find((x) => x.type === 'shelly' && x.pushToken && crypto.timingSafeEqual(h(x.pushToken), h(token)));
+  if (!s) return sendError(res, 404, 'Not found');
+  const q = url.searchParams;
+  if (!['temp', 'tC', 'tF', 'hum', 'rh', 'bat'].some((k) => q.has(k))) return sendError(res, 400, 'Send temp, hum or both');
+  const id = String(q.get('id') || 'sensor').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 60) || 'sensor';
+  const st = climateReadings.get(s.id) || { at: 0, ok: true, error: null, items: new Map() };
+  const prev = st.items.get(id) || { name: q.has('id') ? id : s.name }; // its own id (shellyht-…), renamed in Admin
+  const n = (k) => (q.has(k) ? numOr(q.get(k)) : null);
+  const temp = n('temp') ?? n('tC') ?? (n('tF') !== null ? (n('tF') - 32) / 1.8 : null);
+  const next = climateReading({ ...prev, name: prev.name || s.name, temp: temp ?? prev.temp, humidity: n('hum') ?? n('rh') ?? prev.humidity, battery: n('bat') ?? prev.battery, at: Date.now() });
+  if (!hasClimate(next)) return sendError(res, 400, 'Send temp, hum or both');
+  st.items.set(id, next);
+  st.at = Date.now();
+  climateReadings.set(s.id, { ...st, pushedAt: Date.now() });
+  climateRecord(s.id, id, next);
+  alertsSoon();
+  return sendJson(res, 200, { ok: true });
+}
+
+// --- MQTT 3.1.1 (only what reading Zigbee2MQTT needs: connect, subscribe, QoS 0 messages) ---
+const mqttClients = new Map(); // source id -> { sock, stop, connected, error }
+function mqttString(s) {
+  const b = Buffer.from(s, 'utf8');
+  return Buffer.concat([Buffer.from([b.length >> 8, b.length & 255]), b]);
+}
+function mqttPacket(type, flags, body) {
+  const len = [];
+  let n = body.length;
+  do {
+    let d = n % 128;
+    n = Math.floor(n / 128);
+    if (n) d |= 128;
+    len.push(d);
+  } while (n);
+  return Buffer.concat([Buffer.from([(type << 4) | flags, ...len]), body]);
+}
+function startMqtt(s) {
+  stopMqtt(s.id);
+  const state = { stop: false, sock: null, connected: false, error: null, timer: null, ping: null, backoff: 2000 };
+  mqttClients.set(s.id, state);
+  const fail = (msg) => {
+    const st = climateReadings.get(s.id) || { items: new Map(), at: 0 };
+    climateReadings.set(s.id, { ...st, ok: false, error: msg, failingSince: st.failingSince || Date.now() });
+  };
+  const connect = () => {
+    if (state.stop) return;
+    const { host, port } = splitAddress(s.address.includes(':') ? s.address : `${s.address}:${s.tls ? 8883 : 1883}`);
+    const sock = s.tls ? tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: s.tlsMode !== 'pin', minVersion: 'TLSv1.2' }) : net.connect({ host, port });
+    state.sock = sock;
+    let buf = Buffer.alloc(0);
+    const password = climateSecret(s);
+    sock.setTimeout(90000);
+    sock.on(s.tls ? 'secureConnect' : 'connect', () => {
+      if (s.tls && s.tlsMode === 'pin') {
+        const cert = sock.getPeerCertificate();
+        if (!cert?.raw || crypto.createHash('sha256').update(cert.raw).digest('hex') !== s.fingerprint) {
+          fail('TLS fingerprint mismatch: nothing was sent');
+          return sock.destroy();
+        }
+      }
+      const flags = 0x02 | (s.username ? 0x80 : 0) | (s.username && password ? 0x40 : 0); // clean session
+      const body = Buffer.concat([mqttString('MQTT'), Buffer.from([4, flags, 0, 60]), mqttString(`lookout-${crypto.randomBytes(4).toString('hex')}`),
+        ...(s.username ? [mqttString(s.username)] : []), ...(s.username && password ? [mqttString(password)] : [])]);
+      sock.write(mqttPacket(1, 0, body));
+    });
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.length > 4 << 20) return sock.destroy();
+      for (;;) {
+        if (buf.length < 2) return;
+        let len = 0;
+        let mul = 1;
+        let i = 1;
+        for (; i < 5; i++) {
+          if (i >= buf.length) return;
+          len += (buf[i] & 127) * mul;
+          mul *= 128;
+          if (!(buf[i] & 128)) break;
+        }
+        const start = i + 1;
+        if (buf.length < start + len) return;
+        const type = buf[0] >> 4;
+        const qos = (buf[0] >> 1) & 3;
+        const body = buf.subarray(start, start + len);
+        buf = buf.subarray(start + len);
+        if (type === 2) { // CONNACK
+          if (body[1] !== 0) {
+            fail(body[1] === 4 || body[1] === 5 ? 'The broker refused the user name or password' : `The broker refused the connection (code ${body[1]})`);
+            return sock.destroy();
+          }
+          state.connected = true;
+          state.backoff = 2000;
+          const st = climateReadings.get(s.id) || { items: new Map(), at: 0 };
+          climateReadings.set(s.id, { ...st, ok: true, error: null, failingSince: null, at: Date.now() });
+          sock.write(mqttPacket(8, 2, Buffer.concat([Buffer.from([0, 1]), mqttString(`${s.base}/+`), Buffer.from([0])])));
+          clearInterval(state.ping);
+          state.ping = setInterval(() => sock.write(mqttPacket(12, 0, Buffer.alloc(0))), 45000);
+          state.ping.unref();
+        } else if (type === 3) { // PUBLISH
+          const tl = body.readUInt16BE(0);
+          const topic = body.subarray(2, 2 + tl).toString('utf8');
+          const payload = body.subarray(2 + tl + (qos ? 2 : 0)).toString('utf8');
+          mqttMessage(s, topic, payload);
+        }
+      }
+    });
+    const closed = (e) => {
+      clearInterval(state.ping);
+      state.connected = false;
+      if (state.stop) return;
+      if (e) fail(friendlyNetError(e).message);
+      else if (climateReadings.get(s.id)?.ok !== false) fail('The broker closed the connection');
+      state.timer = setTimeout(connect, state.backoff);
+      state.timer.unref();
+      state.backoff = Math.min(state.backoff * 2, 5 * 60e3);
+    };
+    sock.on('error', (e) => closed(e));
+    sock.on('timeout', () => sock.destroy());
+    sock.on('close', () => !sock.errored && closed(null));
+  };
+  connect();
+}
+function stopMqtt(id) {
+  const c = mqttClients.get(id);
+  if (!c) return;
+  c.stop = true;
+  clearTimeout(c.timer);
+  clearInterval(c.ping);
+  c.sock?.destroy();
+  mqttClients.delete(id);
+}
+// <base>/<device>: Zigbee2MQTT's JSON state of one device
+function mqttMessage(s, topic, payload) {
+  const name = topic.slice(s.base.length + 1);
+  if (!name || name.includes('/') || name === 'bridge' || payload.length > 65536) return;
+  let j;
+  try {
+    j = JSON.parse(payload);
+  } catch {
+    return;
+  }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return;
+  const id = name.replace(/[^A-Za-z0-9_.:@ -]/g, '_').slice(0, 80);
+  const st = climateReadings.get(s.id) || { at: 0, ok: true, error: null, items: new Map() };
+  const prev = st.items.get(id) || {};
+  const pick = (...keys) => keys.map((k) => numOr(j[k])).find((v) => v !== null) ?? null;
+  const reading = climateReading({
+    ...prev, name,
+    temp: pick('temperature', 'local_temperature') ?? prev.temp,
+    humidity: pick('humidity') ?? prev.humidity,
+    battery: pick('battery') ?? prev.battery,
+    motion: typeof j.occupancy === 'boolean' ? j.occupancy : typeof j.presence === 'boolean' ? j.presence : prev.motion ?? null,
+    lux: pick('illuminance_lux', 'illuminance') ?? prev.lux,
+    target: pick('current_heating_setpoint', 'occupied_heating_setpoint') ?? prev.target,
+    mode: typeof j.system_mode === 'string' ? j.system_mode : prev.mode,
+    heating: typeof j.running_state === 'string' ? j.running_state === 'heat' : prev.heating ?? null,
+    at: Date.now(),
+  });
+  if (!hasClimate(reading)) return;
+  st.items.set(id, reading);
+  climateReadings.set(s.id, { ...st, at: Date.now() });
+  climateRecord(s.id, id, reading);
+}
+
+// history: temperature and humidity of each sensor, for the graphs
+const climateLast = new Map();
+function climateRecord(sid, id, r) {
+  const key = climateKey(sid, id);
+  const t = Date.now();
+  if (t - (climateLast.get(key) || 0) < 50e3) return; // at most about once a minute
+  climateLast.set(key, t);
+  if (r.temp !== null) histRecord(`${climateHist(key)}:temp`, r.temp, t);
+  if (r.humidity !== null) histRecord(`${climateHist(key)}:hum`, r.humidity, t);
+}
+
+const CLIMATE_POLL = { hue: collectHue, hass: collectHassClimate, shelly: collectShellyClimate };
+async function pollClimate() {
+  await Promise.all(config.climate.sources.filter((s) => CLIMATE_POLL[s.type]).map(async (s) => {
+    const prev = climateReadings.get(s.id);
+    try {
+      const list = await CLIMATE_POLL[s.type](s);
+      if (list === null) return; // a Shelly that only pushes
+      const items = new Map(prev?.pushedAt ? prev.items : []);
+      for (const x of list) {
+        const id = String(x.id).replace(/[^A-Za-z0-9_.:@/ -]/g, '_').slice(0, 80);
+        const r = climateReading(x);
+        if (!hasClimate(r) && !(s.type === 'hue' && r.motion !== null)) continue;
+        items.set(id, r);
+        climateRecord(s.id, id, r);
+      }
+      climateReadings.set(s.id, { at: Date.now(), ok: true, error: null, items, failingSince: null, pushedAt: prev?.pushedAt });
+    } catch (e) {
+      climateReadings.set(s.id, { ...(prev || { items: new Map() }), at: Date.now(), ok: false, error: e.message, failingSince: prev?.failingSince || Date.now() });
+    }
+  }));
+  alertsSoon();
+}
+
+let climateTimer = null;
+function scheduleClimate() {
+  clearInterval(climateTimer);
+  for (const id of [...mqttClients.keys()]) if (!config.climate.sources.some((s) => s.id === id && s.type === 'mqtt')) stopMqtt(id);
+  for (const s of config.climate.sources) if (s.type === 'mqtt') startMqtt(s);
+  for (const id of [...climateReadings.keys()]) if (!config.climate.sources.some((s) => s.id === id)) climateReadings.delete(id);
+  if (!config.climate.sources.some((s) => CLIMATE_POLL[s.type])) return;
+  pollClimate();
+  climateTimer = setInterval(pollClimate, Math.max(30, config.settings.dashboard.refreshSeconds) * 1000);
+  climateTimer.unref();
+}
+
+// For pages: every sensor that isn't hidden, with its settings and whether it is up to date
+const CLIMATE_STALE_MS = 2 * 3600e3;
+function climateSensors({ hidden = false } = {}) {
+  const out = [];
+  for (const s of config.climate.sources) {
+    const st = climateReadings.get(s.id);
+    for (const [id, r] of st?.items || []) {
+      const key = climateKey(s.id, id);
+      const set = config.climate.sensors[key] || {};
+      if (set.hidden && !hidden) continue;
+      out.push({ key, hist: climateHist(key), source: s.type, sourceName: s.name, ...r, name: set.name || r.name || id, customName: Boolean(set.name), room: set.room || '', deviceId: set.deviceId || null, hidden: Boolean(set.hidden), min: set.min ?? null, max: set.max ?? null, stale: Date.now() - r.at > CLIMATE_STALE_MS });
+      if (out.length >= MAX_CLIMATE_SENSORS) return out;
+    }
+  }
+  return out.sort((a, b) => (a.room || '￿').localeCompare(b.room || '￿') || a.name.localeCompare(b.name));
+}
+function climateSummary() {
+  if (!config.climate.sources.length) return null;
+  return {
+    unit: config.climate.unit,
+    sensors: climateSensors(),
+    sources: config.climate.sources.map((s) => {
+      const st = climateReadings.get(s.id);
+      return { id: s.id, name: s.name, type: s.type, ok: st ? st.ok !== false : null, error: st?.ok === false ? st.error : null, at: st?.at || null };
+    }),
+  };
+}
+
+function climateAdminState(req) {
+  const base = linkBase();
+  return {
+    unit: config.climate.unit,
+    types: CLIMATE_TYPES,
+    sources: config.climate.sources.map((s) => {
+      const st = climateReadings.get(s.id);
+      return { id: s.id, type: s.type, name: s.name, address: s.address, username: s.username, tls: s.tls, tlsMode: s.tlsMode, fingerprint: s.type === 'hue' ? null : s.fingerprint, base: s.base, hasSecret: Boolean(s.secret), paired: s.type === 'hue' ? Boolean(s.secret) : null,
+        pushUrl: s.type === 'shelly' && s.pushToken ? `${base}/climate/push/${s.pushToken}` : null,
+        ok: st ? st.ok !== false : null, error: st?.ok === false ? st.error : null, at: st?.at || null, count: st?.items?.size || 0 };
+    }),
+    sensors: climateSensors({ hidden: true }),
+    devices: config.devices.filter((d) => !d.hidden).map((d) => ({ id: d.id, name: d.name })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Find devices (Admin → Devices): a scan of private networks you choose, started by hand only.
 // Each address gets a quick TCP knock on the ports homelab gear uses; what answers gets one plain
 // web request (no login is ever tried) to recognise it. The result suggests a device connection or
@@ -13336,6 +13959,7 @@ async function main() {
   if (nodeEnd && Date.now() > Date.parse(nodeEnd)) event('system', `Node.js ${process.versions.node} no longer gets security updates (support ended ${nodeEnd}); upgrade to Node.js 24`);
   schedulePolling();
   scheduleClaude();
+  scheduleClimate();
   setInterval(pruneEvents, 24 * 3600 * 1000).unref();
   setInterval(pruneIncidents, 24 * 3600 * 1000).unref();
   setInterval(() => incidentsDirty && saveIncidents(), 60 * 1000).unref();

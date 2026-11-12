@@ -10,6 +10,7 @@ Home answers one question: is everything all right?
 - **Needs you**: one row per problem, worst first, with how long it has lasted. Click a row to open the device. A connection that stops answering is listed after 2 minutes, so one slow reading doesn't raise an alarm. The same findings drive the [alerts](alerts.md).
 - **Power** and **Internet**: two big cards with the number now and a graph of the last day. Power opens the details: today, this month, the month's forecast, cost per day and the year. Internet comes from the gateway (UniFi or Omada): up or down, traffic against your last speed test, clients, the provider with its logo, and the public IP (only when signed in).
 - **Claude** (when set up, see [Claude usage](claude.md)): Claude Code's tokens today and this week, the cost at API prices, the plan limits and Claude's status.
+- **Climate** (when set up, see [Climate sensors](climate.md)): a tile per sensor by room, with the temperature, humidity, a thermostat's setting, motion and a low battery.
 - **Devices**: one tile per device, drawn as it looks, with one status (*OK*, *Warning*, *Fault*, *Offline*, *Unreachable* or *Maintenance*), its worst problem or its model, and one key number.
 - **At the bottom**: services up, VMs running and updates waiting, each a link.
 

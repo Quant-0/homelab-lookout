@@ -17,6 +17,7 @@ Start with **Getting started**, then read about the features you use. Every page
 - [Services and the status page](features/services.md): cards, status checks, integrations
 - [VMs and containers](features/vms-and-containers.md): Proxmox guests, backups, Docker and Portainer
 - [Linux agents](features/linux-agents.md): what Proxmox can't see from outside
+- [Climate sensors](features/climate.md): temperature, humidity and thermostats from Hue, Home Assistant, Shelly and Zigbee2MQTT
 - [Claude usage](features/claude.md): Claude Code tokens and plan limits, an API organization's cost, Claude's status
 - [Alerts and incidents](features/alerts.md): channels, push, webhooks, acknowledging
 - [Check-ins and maintenance](features/checkins-and-maintenance.md)
